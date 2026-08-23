@@ -1,6 +1,6 @@
 # Vision Active Learning Loop — Formal Design Specification
 
-**Status:** Approved scope; design specification awaiting user review
+**Status:** Conditionally approved scope; review invariants resolved in this revision, awaiting owner final approval
 **Date:** 2026-08-23
 **Repository:** `vision-active-learning-loop`
 **Target roles:** Computer Vision Engineer, Machine Learning Engineer, AI Engineer
@@ -68,12 +68,12 @@ The first release excludes:
 The primary conclusion is descriptive and seed-paired. “Reduced labeling cost” may be stated only when all of the following hold:
 
 1. hybrid normalized source-test AUBC is greater than random in all three formal seeds;
-2. hybrid reaches the registered source mAP target with no more acquired images and no more revealed boxes than random in every seed where both are observable;
+2. every seed has a conclusive target-cost comparison under the censoring truth table in Section 10.4, and hybrid satisfies that table’s image-and-box requirement against random;
 3. hybrid minimum-class recall and D40 recall at 40% are each no more than 3.0 absolute percentage points below random in any seed;
-4. no censored target is counted as a success; and
+4. no censored target is reported as observed attainment or an exact savings value; the sole permitted censored interpretation is `SUPPORTIVE` under Section 10.4’s lower-bound checks; and
 5. China Drone results are reported separately and are not used to rescue an in-domain failure.
 
-If these conditions are not met, the result is reported as mixed or negative. No claim of universal superiority, production readiness, or human labor savings is allowed.
+If any seed is `INSUFFICIENT`, or if any other condition is not met, “reduced labeling cost” is prohibited as a headline claim and the result is reported as mixed, negative, or insufficient as appropriate. No claim of universal superiority, production readiness, or human labor savings is allowed.
 
 ## 3. Data contract and licensing
 
@@ -125,17 +125,19 @@ Country labels are metadata for slicing and auditing. They are never detector ta
 
 ## 4. Manifest, duplicate control, and frozen splits
 
-### 4.1 Identity and grouping
+### 4.1 Global identity, duplicate control, and grouping
 
-Every source image receives a canonical `item_id = SHA256(pixel_file_bytes)`. Paths and filenames are not experimental identities. Before splitting:
+Every candidate image across Japan, India, Czech Republic, China MotorBike, and China Drone receives a canonical `item_id = SHA256(pixel_file_bytes)`. Paths and filenames are not experimental identities. Duplicate discovery is performed once over the **joint source-plus-shift universe**, before any source, pilot, formal-pool, source-test, or shift role is assigned:
 
-1. Exact SHA-256 matches are unioned and only the lexicographically smallest canonical item is retained; other copies are recorded as excluded aliases.
-2. A perceptual hash uses 16×16 pHash (256 bits). Images within Hamming distance 6 form connected components. One canonical image per component is retained after a curator verifies the component contact sheet.
-3. When official metadata or a validated filename parser exposes a route, sequence, video, or capture-session identifier, all retained images from that capture receive the same `split_group_id`.
-4. Otherwise, `split_group_id` is the retained image’s `item_id`. The fallback is explicit and counted in the data card.
-5. A group ID is the minimum member `item_id`; a group can never cross partitions.
+1. Exact SHA-256 matches are unioned globally.
+2. A perceptual hash uses 16×16 pHash (256 bits). Images within Hamming distance 6 form global connected components, and a curator verifies every proposed component contact sheet.
+3. A DINOv2 neighbor audit searches the complete retained source-plus-shift candidate universe and flags pairs with cosine similarity at least 0.995 for manual review. A confirmed pair is unioned into a reviewed near-duplicate component; it is not left as a diagnostic warning.
+4. If an exact, pHash-confirmed, or DINO-confirmed component spans any source country and China Drone, the **entire conflicting component** is excluded from every training and evaluation role. Each member records `cross_source_shift_exact_duplicate`, `cross_source_shift_phash_duplicate`, or `cross_source_shift_dino_duplicate` as its exclusion reason.
+5. If a component does not cross the source/shift boundary, only its lexicographically smallest `item_id` is retained; other members are recorded as excluded aliases.
+6. When official metadata or a validated filename parser exposes a route, sequence, video, or capture-session identifier, all retained images from that capture receive the same `split_group_id`.
+7. Otherwise, `split_group_id` is the retained image’s `item_id`. The fallback is explicit and counted in the data card. A group ID is the minimum member `item_id`, and a group can never cross partitions.
 
-The pHash threshold, parser version, alias decisions, and manifest digest are frozen before any active-learning model runs. A DINOv2 neighbor audit flags cross-partition pairs with cosine similarity at least 0.995 for manual review. The audit is diagnostic; it cannot be used to optimize model results.
+The pHash threshold, parser version, review decisions, exclusion ledger, and manifest digest are frozen before any acquisition scoring, detector training, pilot fit, or formal fit/evaluation. The only model executions allowed earlier are the synthetic Section 5.2 contract probe and the label-blind DINOv2 pass required for this global duplicate audit. Audit vectors are bound first to upstream archive/item hashes; only retained rows are then filtered and rebound to the final manifest digest for diversity use. A newly confirmed DINO neighbor before experimental execution invalidates the unused manifest, applies the global component rule, and generates a new manifest digest. Discovery after any pilot or formal model run invalidates that entire protocol version and experiment ID; the run cannot continue by editing the manifest in place.
 
 ### 4.2 Deterministic partition rule
 
@@ -153,13 +155,13 @@ Assign the entire group as follows:
 | 2000–2799 | pilot engineering pool (8%) | Pilot gate only; never formal training/test |
 | 2800–9999 | formal acquisition pool (72%) | Formal active-learning experiment |
 
-China Drone is independently de-duplicated and grouped with the same algorithms. Its retained annotated-train images form the shift test in full; none can enter a source partition.
+After the global duplicate pass, retained China Drone annotated-train images form the shift test in full; none can enter a source partition. The partition receipt proves that every exact/pHash/reviewed-neighbor component is contained in one role and that no retained component crosses source and shift.
 
 The trusted data curator performs one pre-model coverage audit after the deterministic split. It reports image and box counts by country/class, fallback-group rate, group sizes, and duplicate exclusions. The split is not redrawn to improve a model result. If a source country is absent from either formal pool or source test, or if a test class has zero boxes, the experiment is blocked and the split algorithm must be revised as a new protocol version before any formal run. The invalid split is retained in the audit record rather than silently retried.
 
 ### 4.3 Leakage rules
 
-- Split and duplicate control happen before active learning.
+- Joint source-plus-shift duplicate control and source splitting finish before acquisition scoring, detector training, pilot fits, or formal fits/evaluation; only the synthetic contract probe and label-blind DINO duplicate-audit pass may precede them.
 - Source test and China Drone labels are evaluation-only and never used for model choice, calibration, early stopping, threshold choice, acquisition, or pilot tuning.
 - Pilot images and labels never enter the formal pool, source test, shift test, pretrained base, or formal calibration sets.
 - Every artifact declares its input manifest digest. A mismatched digest is a hard error.
@@ -186,7 +188,30 @@ The checkpoint and Transformers implementation are Apache-2.0 licensed. RT-DETR 
 
 The interpretation is pinned to [Transformers 5.15.0 RT-DETR documentation](https://huggingface.co/docs/transformers/v5.15.0/en/model_doc/rt_detr). That implementation trains class outputs with focal-loss-style independent sigmoid probabilities. It does **not** provide a native mutually exclusive no-object softmax class. Section 7 therefore defines a derived and explicitly labeled background probability rather than claiming a model-native no-object logit.
 
-### 5.2 Frozen diversity encoder
+### 5.2 Release-blocking executable model-contract probe
+
+Generated documentation in Transformers 5.15.0 describes a no-object-inclusive output dimension, while the pinned focal-loss execution path uses independent foreground logits. Documentation is therefore not accepted as the executable contract. After the dependency/model lock but **before any RDD archive is processed, any embedding is computed, or any pilot/formal model runs**, a synthetic-input probe must execute the exact pinned checkpoint revision and Transformers 5.15.0 source.
+
+The probe resets the detector head to four labels using fixed `contract_probe_seed = 17` and performs label-free inference on a batch of two different-aspect-ratio synthetic RGB images. It is release-blocking and must verify all of these invariants:
+
+- `config.num_queries == 300`;
+- after head reset, `config.num_labels == 4` and every decoder class head has four output channels;
+- final `logits.shape == [2, 300, 4]` and `pred_boxes.shape == [2, 300, 4]`;
+- the acquisition accessor’s native foreground scores equal elementwise `sigmoid(logits)` for all four channels and never invoke the postprocessor’s non-focal softmax path; the only softmax permitted is the explicitly project-derived conditional `pi_qc` in Section 7.3, computed after preserving the independent sigmoid scores;
+- there is no fifth native logit and no tensor channel is misidentified as native no-object;
+- in `eval()` plus `torch.inference_mode()` with no labels, `intermediate_reference_points` is available with exact shape `[2, config.decoder_layers, 300, 4]`, where `config.decoder_layers >= 2`;
+- final boxes equal `intermediate_reference_points[:, -1, :, :]` exactly, and the localization term uses penultimate boxes `intermediate_reference_points[:, -2, :, :]`;
+- source-structure assertions against the pinned file verify that decoder layers are stacked on axis 1 without a query-axis gather, sort, or permutation, so query index `q` has the same correspondence at the penultimate and final layers;
+- the fixed processor is configured with bilinear aspect-preserving `size={"max_height": 640, "max_width": 640}`, `do_pad=true`, `pad_size={"height": 640, "width": 640}`, zero fill, `do_rescale=true`, `rescale_factor=1/255`, and `do_normalize=false`; its observed `pixel_values.shape == [2, 3, 640, 640]`, `pixel_mask.shape == [2, 640, 640]`, and mask extents match the expected resized regions; and
+- the model call contains no annotations, targets, or label-derived counts.
+
+The expected intermediate tensor order follows the pinned [RT-DETR source](https://github.com/huggingface/transformers/blob/v5.15.0/src/transformers/models/rt_detr/modeling_rt_detr.py), where decoder outputs are stacked as `[batch, decoder_layer, query, coordinate]` and final boxes are the last layer. The sigmoid assertion follows the pinned [RT-DETR image processor source](https://github.com/huggingface/transformers/blob/v5.15.0/src/transformers/models/rt_detr/image_processing_rt_detr.py), not the contradictory generated output prose.
+
+The probe emits a schema-validated, machine-readable `model_contract_receipt` containing the model repository/revision, canonical config JSON SHA-256, safetensors SHA-256, Transformers package version and source-tree commit/hash, hashes of the RT-DETR model/config/processor source files, observed config values and tensor shapes, processor JSON and its SHA-256, synthetic-input fixture digest, probe source SHA-256, timestamp, canonical environment fingerprint, invariant-by-invariant booleans, and final `PASS`/`FAIL`. The receipt itself is content-addressed and becomes an input to every later manifest and run.
+
+Any failed or unobservable invariant halts the protocol. The uncertainty formula, extractor, package, or checkpoint cannot be changed ad hoc; a different contract requires a new reviewed spec version, new probe, and new receipt.
+
+### 5.3 Frozen diversity encoder
 
 The sole diversity encoder is **DINOv2-small** from [`facebook/dinov2-small`](https://huggingface.co/facebook/dinov2-small) at revision:
 
@@ -204,7 +229,7 @@ That pinned model card and the [official DINOv2 repository](https://github.com/f
 
 For each retained image, the encoder produces the final-layer, post-LayerNorm CLS token (384 dimensions) using the checkpoint’s pinned 224-pixel preprocessing. The vector is converted to float32 and L2-normalized. Embeddings are computed once per manifest, stored without pixels, and bound to the image, processor, model revision, and tensor-file hashes. The encoder is never fine-tuned.
 
-### 5.3 Research-critical runtime lock
+### 5.4 Research-critical runtime lock
 
 The implementation plan must preserve these exact core versions:
 
@@ -239,7 +264,7 @@ For each seed:
 2. Train the shared 2% model from the same pinned pretrained detector base.
 3. Each arm uses the previous-budget model only to score/select the next acquisition batch.
 4. At 5%, 10%, 20%, and 40%, retrain that arm **from the same pretrained base**, not from the previous active-learning checkpoint.
-5. Train one shared 100% ceiling model because every arm has acquired the same full formal pool at that point.
+5. Train one shared **100% acquired-budget ceiling** because every arm has acquired every formal-pool image and revealed all of its labels at that point. The immutable calibration assignment still withholds approximately 20% of acquired images from gradient training, so this name never means “100% of images entered weight training.”
 
 The 2% point is plotted as a shared reference, not falsely counted as five independent fits.
 
@@ -248,7 +273,7 @@ The 2% point is plotted as a shared reference, not falsely counted as five indep
 Per seed:
 
 ```text
-1 shared 2% fit + (5 arms × 4 later budget fits) + 1 shared 100% ceiling = 22 fits
+1 shared 2% fit + (5 arms × 4 later budget fits) + 1 shared 100% acquired-budget ceiling = 22 fits
 ```
 
 Across three seeds:
@@ -353,13 +378,29 @@ Core-set uses only the frozen 384-D L2-normalized DINOv2 embeddings. Distance is
 d(a,b) = 1 - dot(a,b)
 ```
 
-Starting with every previously acquired embedding as the center set, greedy k-center repeatedly selects the unlabeled candidate with the largest distance to its nearest center, adds it as a center, and updates distances until the batch is full. Ties use ascending `item_id`. The shared 2% start guarantees at least one center. CPU/GPU chunking cannot change results beyond an absolute distance tolerance of `1e-7`; within tolerance the `item_id` tie break governs.
+Starting with every previously acquired embedding as the center set, greedy k-center repeatedly selects the unlabeled candidate with the largest distance to its nearest center, adds it as a center, and updates distances until the batch is full. The shared 2% start guarantees at least one center.
+
+#### 7.4.1 Canonical numerical execution
+
+Every formal core-set or hybrid k-center selection runs only on `cuda:0` in the canonical RTX 4090 environment recorded by the experiment lock. Embeddings and distance accumulators are contiguous row-major float32; TF32 is disabled. Candidates begin in ascending `item_id` order. Existing centers are applied in acquisition-event order `(round, rank, item_id)`, and newly selected centers are applied one at a time in selection order. Candidate rows are processed in fixed chunks of 4,096, with only the final chunk shorter. Each cosine distance is clamped to `[0, 2]`, and the nearest-center accumulator is updated by elementwise minimum after each center.
+
+Before comparison, each nonnegative distance becomes an integer key:
+
+```text
+distance_key(d) = int64(floor(clamp(d, 0, 2) × 10,000,000 + 0.5))
+```
+
+Selection sorts by `distance_key` descending, then `item_id` ascending. Raw floating-point distance is never a later tie breaker. This quantized key makes the formal item list unique in the locked environment; the project does not claim arbitrary CPU/GPU equivalence.
+
+An optimized implementation must produce the **exact same ordered item-ID sequence** as a simple registered reference implementation on every hand-built toy matrix and on fixed pilot subsamples covering small, equal-distance, near-boundary, multi-chunk, and hybrid-shortlist cases. The reference uses the same float32 CUDA device, center/candidate order, quantization rule, and per-center update semantics, but evaluates candidate-center pairs directly. Any item-ID mismatch fails the pilot even when distance error is numerically small.
+
+The reviewer CPU path replays only checked-in synthetic/reference fixtures with precomputed distance keys and expected IDs. It demonstrates logic and auditability, not full-data selection identity across arbitrary hardware.
 
 Tests must compare the optimized implementation to a brute-force toy matrix, verify nested selections, and verify invariant output under candidate input permutation.
 
 ### 7.5 Hybrid uncertainty plus diversity
 
-Hybrid first ranks every unlabeled image by the entropy image score. For a required batch of `b` images, it takes the first `min(5b, remaining_pool_size)` candidates, then runs the same greedy k-center rule over that candidate set relative to all previously acquired centers and within-batch selections. The factor 5 is frozen before the pilot. Ties at both stages follow `item_id`.
+Hybrid first ranks every unlabeled image by the entropy image score. For a required batch of `b` images, it takes the first `min(5b, remaining_pool_size)` candidates, then runs the same canonical, quantized greedy k-center rule over that candidate set relative to all previously acquired centers and within-batch selections. The factor 5 is frozen before the pilot. Uncertainty ties and final diversity-key ties both resolve by ascending `item_id`.
 
 The five formal arms are therefore exactly:
 
@@ -414,7 +455,25 @@ Before the pilot passes, automated firewall tests must prove:
 7. read attempts against source test, China Drone, or unrevealed pool annotations fail; and
 8. changing hidden annotation contents without changing public inputs leaves the pre-acquisition strategy output unchanged.
 
-### 8.4 Human-in-the-loop queue without fake humans
+### 8.4 Formal evaluation embargo
+
+Pilot execution can never mount, read, query, or receive metrics from the frozen source test or China Drone. During formal acquisition, detector training, job resume, checkpoint validation, and artifact validation, source-test and shift metrics remain cryptographically and operationally sealed; logs and user interfaces may show training diagnostics and acquired-only development diagnostics but no source-test/shift predictions or aggregate values.
+
+The trusted run coordinator issues a `formal_completion_seal` only after it verifies and content-addresses all of the following for the same experiment ID:
+
+- all 66 primary checkpoint artifacts;
+- all three shared 2% ledgers, all arm/round acquisition ledgers, and all three 100% acquired-budget ceiling ledgers;
+- every training manifest, calibration assignment/status/temperature-fit receipt, queue event chain, model-contract receipt, and dataset-manifest digest;
+- successful resume/idempotence and artifact-schema validation; and
+- a complete hash inventory with no missing, substituted, or post-hoc-modified artifact.
+
+Only then may the sealed evaluator be unmounted from its embargo state and run one manifest-driven batch over **all** registered checkpoints for both the source test and China Drone. Its output is keyed to the completion-seal digest. A technical retry is allowed only with byte-identical checkpoint/evaluation inputs and the same batch manifest; no partial result can influence whether or how another fit is run.
+
+Evaluator predictions or aggregates cannot flow back to a strategy, trainer, resume decision, artifact-validity decision, protocol configuration, calibration fit, threshold, or model-selection decision. The result store is write-only from the evaluator until the full batch finishes, after which aggregate reporting artifacts may be exposed.
+
+If any source-test or shift output is created or exposed before the 66-fit completion seal, the experiment ID is contaminated and permanently ineligible for continuation or publication. The output and cause remain in a forensic audit record, but every pilot/formal artifact under that experiment ID is invalidated; execution restarts under a new reviewed protocol version and experiment ID.
+
+### 8.5 Human-in-the-loop queue without fake humans
 
 The project provides a library/API/CLI queue contract, not an annotation UI. Each image follows:
 
@@ -444,7 +503,7 @@ Remainder zero assigns the image to calibration/dev; other remainders assign it 
 
 Calibration is evaluation-only and never changes acquisition ranking. Entropy and margin always use raw logits from Section 7.
 
-On each acquired calibration/dev set, form a fixed candidate denominator: the 100 largest raw query-class sigmoid scores per image before NMS or thresholding. Match candidates one-to-one to ground truth in descending score order. A candidate is correct only when class matches and IoU is at least 0.5; unmatched candidates are incorrect. Fit one scalar temperature `T ∈ [0.05, 10]` by minimizing binary negative log likelihood on these correctness outcomes. Apply `sigmoid(logit/T)` to source-test and shift-test candidates with the identical denominator construction.
+On each acquired calibration/dev set, form a fixed candidate denominator: the 100 largest raw query-class sigmoid scores per image before NMS or thresholding, ordered by score descending and then `(item_id, query_index, class_id)` ascending. Match candidates one-to-one to ground truth in that order. A candidate is correct only when class matches and IoU is at least 0.5; unmatched candidates are incorrect. Fit one scalar temperature `T ∈ [0.05, 10]` by minimizing binary negative log likelihood on these correctness outcomes. Apply `sigmoid(logit/T)` to source-test and shift-test candidates with the identical denominator construction after the formal evaluation embargo lifts.
 
 Temperature fitting is permitted only when the acquired calibration set has all of:
 
@@ -457,12 +516,21 @@ If any gate fails, `calibration_status = INSUFFICIENT`, temperature and calibrat
 
 ### 9.3 Calibration metrics
 
-For raw and, when eligible, calibrated confidence, report:
+For candidate confidence `p_i`, correctness `y_i ∈ {0,1}`, and denominator size `n`, binary Brier score is exactly:
 
-- binary Brier score over the fixed candidate denominator;
-- adaptive ECE with 15 equal-count bins, merging bins only when tied scores make a boundary impossible;
-- localization-aware ECE (LaECE) using confidence, precision, and matched IoU under the published detection-calibration formulation;
-- candidate count, image count, positive/negative outcome counts, per-class ground-truth support, temperature, and status.
+```text
+Brier = (1/n) × sum_i((p_i - y_i)^2)
+```
+
+Adaptive ECE sorts candidates by `(p_i, item_id, query_index, class_id)` ascending. Let `G = min(15, n)`. Proposed internal cuts are `ceil(j×n/G)` for `j = 1..G-1`; if a cut would split an equal-confidence run, move it right to the end of that run, then remove duplicate/end cuts. This produces deterministic, nonempty, contiguous bins and may yield fewer than 15 bins. For final bins `g`:
+
+```text
+adaptive_ECE = sum_g((|g|/n) × |mean_g(p) - mean_g(y)|)
+```
+
+For raw and, when eligible, calibrated confidence, report Brier, adaptive ECE, actual bin count, candidate/image count, positive/negative outcome counts, per-class ground-truth support, scalar temperature, and eligibility status. A zero denominator is `INSUFFICIENT` and produces null metrics.
+
+Localization-aware ECE (LaECE) is a possible post-v0.1 research extension. It is not a v0.1 required metric, completion gate, success criterion, or headline claim because this release does not freeze a LaECE formulation/version.
 
 Acquisition uncertainty, post-hoc confidence calibration, and detection accuracy are three separate tables and must not be rhetorically conflated.
 
@@ -494,6 +562,8 @@ Plot every individual seed curve and overlay mean and median; do not show only a
 
 The 2% point is visibly labeled shared. China Drone is plotted separately and excluded from label-efficiency integration.
 
+Every plot, table, artifact schema, and future README uses the exact label **100% acquired-budget ceiling**. Its caption states that all pool images have been acquired and all labels revealed, while the immutable calibration split still excludes approximately 20% of those images from gradient training.
+
 ### 10.3 Normalized area under the budget curve
 
 Primary AUBC uses source-test mAP50–95 at fractions `0.02, 0.05, 0.10, 0.20, 0.40`, trapezoidal integration, and range normalization:
@@ -502,18 +572,22 @@ Primary AUBC uses source-test mAP50–95 at fractions `0.02, 0.05, 0.10, 0.20, 0
 nAUBC = trapz(mAP, budget_fraction from 0.02 to 0.40) / (0.40 - 0.02)
 ```
 
-The 100% ceiling does not enter AUBC. Report nAUBC per seed/arm, paired arm-minus-random deltas by seed, their mean and median, and all-seed sign consistency.
+The 100% acquired-budget ceiling does not enter AUBC. Report nAUBC per seed/arm, paired arm-minus-random deltas by seed, their mean and median, and all-seed sign consistency.
 
 ### 10.4 Labels to target
 
-For each seed, the target is 90% of that seed’s shared 100%-ceiling source mAP50–95. `labels_to_90pct_ceiling` is the smallest **observed** budget point reaching the target; no curve smoothing or interpolation creates a success. Report images and revealed boxes at that point. If no point through 40% reaches it, report right-censored `> B(0.40)` and `> boxes_at_40pct`, never a numeric success.
+For each seed, the target is 90% of that seed’s shared **100% acquired-budget ceiling** source mAP50–95. That denominator comes from a model for which every pool image was acquired and every label revealed, while only the non-calibration portion entered gradient training. `labels_to_90pct_ceiling` is the smallest **observed** budget point reaching the target; no curve smoothing or interpolation creates a success. Report images and revealed boxes at that point. If no point through 40% reaches it, report right-censored `> B(0.40)` and `> boxes_at_40pct`, never a numeric success.
 
-Censored paired interpretation is fixed:
+The per-seed target-cost truth table is fixed:
 
-- hybrid observed and random censored: favorable for hybrid;
-- random observed and hybrid censored: criterion fails;
-- both censored: insufficient for a target-cost comparison;
-- both observed: compare images and boxes directly.
+| Hybrid | Random | Per-seed result | Required image/box comparison |
+|---|---|---|---|
+| Observed | Observed | `PASS` only if both costs qualify; otherwise `FAIL` | Hybrid acquired images **and** revealed boxes at first target attainment must each be no greater than random’s corresponding values |
+| Observed | Censored through 40% | `SUPPORTIVE` only if both lower-bound checks pass; otherwise `FAIL` | Hybrid attained-target images must be `<= B_random(0.40)` and hybrid attained-target boxes must be `<= boxes_random_at_40pct` |
+| Censored through 40% | Observed | `FAIL` | Random reached the target and hybrid did not |
+| Censored through 40% | Censored through 40% | `INSUFFICIENT` | No cost ordering is inferred |
+
+`SUPPORTIVE` satisfies the per-seed target-cost condition but is reported as a censored comparison, not an exact savings estimate. If **any** seed is `INSUFFICIENT`, “reduced labeling cost” is forbidden as a headline claim. The all-seed nAUBC and rare/minimum-class safety conditions in Section 2.3 still apply, shift results cannot rescue a source failure, and simulated-oracle budgets cannot be converted into human time or money.
 
 ### 10.5 Class imbalance and acquisition behavior
 
@@ -544,17 +618,24 @@ Random’s score time includes order/materialization overhead; core-set and hybr
 
 ### 11.1 Registered label-noise auxiliary
 
-Noise is an auxiliary sensitivity experiment and does not alter the 66 primary fits. For each seed, reuse the clean 20% acquisition manifests from only `random` and `hybrid_uncertainty_diversity`. Retrain from the same base after applying deterministic corruption to 10% of acquired positive training images (calibration images remain clean):
+Noise is an auxiliary sensitivity experiment and does not alter the 66 primary fits. For each seed, reuse the clean 20% acquisition manifests from only `random` and `hybrid_uncertainty_diversity`. Calibration images remain clean. Let `M` be the number of acquired, positive **training-partition** images for that arm/seed manifest, and define:
 
-- 40% of affected images: drop one deterministically selected box;
-- 30%: change one class to the next class modulo four;
-- 30%: jitter one box center and size independently by a signed value up to 10% of its width/height, then clip to the image.
+```text
+K        = floor(0.10 × M)
+n_drop   = floor(0.40 × K)
+n_class  = floor(0.30 × K)
+n_jitter = K - n_drop - n_class
+```
 
-Affected images and boxes are ranked by `SHA256("noise-v1" || seed || item_id || box_index)`. Images with no boxes are not eligible. This creates `2 arms × 3 seeds = 6` auxiliary fits. Report clean-versus-noisy deltas; do not claim a noise-aware acquisition strategy.
+Rank eligible images by `SHA256("noise-v1-image" || seed || arm || item_id)`, then `item_id`, and take the first `K`. Assign the first `n_drop` to box drop, the next `n_class` to class flip, and the remaining `n_jitter` to box jitter. When `K = 0`, the corruption is an explicitly reported no-op; it never forces one image to be corrupted.
+
+Within each affected image, rank target boxes by `SHA256("noise-v1-box" || seed || arm || item_id || canonical_box_index)`, then canonical box index, and modify only the first box. Drop removes that box. Class flip changes it to the next class modulo four. Jitter takes four consecutive unsigned 16-bit words from `SHA256("noise-v1-jitter" || seed || arm || item_id || canonical_box_index)`, maps each word `u` to `delta = -0.10 + 0.20×u/65535`, offsets center x/y by `delta_x×width` and `delta_y×height`, scales width/height by `1+delta_w` and `1+delta_h`, converts back to corners, and clips to image bounds.
+
+The immutable corruption manifest records `M`, `K`, all three realized counts, ordered affected IDs, target box IDs, operations/parameters, and a no-op status. It is hash-bound to the clean 20% acquisition manifest, dataset-manifest digest, seed/arm, and immutable training/calibration assignment; a mismatch is a hard failure. This creates `2 arms × 3 seeds = 6` auxiliary fits. Report clean-versus-noisy deltas; do not claim a noise-aware acquisition strategy.
 
 ### 11.2 Shift evaluation
 
-Every formal checkpoint is evaluated, without adaptation, on curated China Drone. No China Drone label or metric influences pilot decisions, formal method choice, calibration, thresholding, or stopping. Report the same detection and eligible calibration metrics, but label every result `shift_only` and keep it outside source nAUBC and success criteria.
+After the Section 8.4 formal completion seal lifts the evaluation embargo, every formal checkpoint is evaluated, without adaptation, on curated China Drone in the same sealed batch as source evaluation. No China Drone label or metric influences pilot decisions, formal method choice, calibration, thresholding, stopping, resume, or artifact validation. Report the same detection and eligible calibration metrics, but label every result `shift_only` and keep it outside source nAUBC and success criteria.
 
 ## 12. Pilot gate and protocol freeze
 
@@ -572,20 +653,62 @@ The pilot does not access either frozen test. It evaluates engineering validity 
 
 Formal execution starts only if all conditions pass:
 
-1. all nine fits complete on RTX 4090 with no OOM, NaN, Inf, or deterministic-algorithm fallback;
-2. detector loss is finite and decreases from the median of the first 10% of steps to the median of the final 10%;
-3. each uncertainty strategy has score standard deviation at least `1e-6` over at least 100 unlabeled pilot images;
-4. core-set/hybrid match brute-force selections on the registered toy matrices;
-5. all oracle-firewall adversarial tests pass and no group crosses a partition;
-6. interrupted jobs resume to the same final artifact hashes as uninterrupted jobs on the canonical host;
-7. every budget ledger equals its exact target with unique item IDs and nested acquisition sets;
-8. peak allocated VRAM is at most 22 GiB;
-9. median full-pool scoring extrapolation is at most 15 minutes per arm/round; and
-10. conservative extrapolated total for the 66 primary fits is at most 240 RTX 4090 GPU-hours.
+1. the Section 5.2 model-contract receipt is `PASS` and hash-bound to the run;
+2. all nine fits complete on RTX 4090 with no OOM, NaN, Inf, or deterministic-algorithm fallback;
+3. detector loss is finite and decreases from the median of the first 10% of steps to the median of the final 10%;
+4. each uncertainty strategy has score standard deviation at least `1e-6` over at least 100 unlabeled pilot images;
+5. core-set/hybrid produce the exact reference item-ID sequences on registered toy matrices and pilot subsamples;
+6. all oracle-firewall adversarial tests pass, global source/shift duplicate exclusions are applied, and no group crosses a role;
+7. interrupted jobs resume to the same final artifact hashes as uninterrupted jobs on the canonical host;
+8. every budget ledger equals its exact target with unique item IDs and nested acquisition sets;
+9. peak allocated VRAM is at most 22 GiB;
+10. the conservative projection for **every one** of the 20 formal arm/round acquisitions (five arms at 5%, 10%, 20%, and 40%) is at most 15 minutes; and
+11. the conservative step-count projection for all 66 primary detector fits is at most 240 RTX 4090 GPU-hours.
 
 Any failure stops formal execution. The response is to fix the engineering/protocol cause, increment the relevant protocol/component version, rerun the entire pilot, and record the failed attempt. It is not permissible to inspect frozen-test results, weaken a gate silently, or cherry-pick a passing run.
 
 After the pilot passes, freeze the manifest digest, exclusions, model/processor revisions, training recipe, seeds, budgets, acquisition formulas, tie breaks, metrics, calibration gate, and claim rules. Subsequent changes require a new experiment ID and complete formal rerun.
+
+### 12.3 Conservative compute projection
+
+The pilot cost gate uses component-specific workload models, not a single linear multiplier from reduced-pool wall time. Every bound is measured on the canonical RTX 4090 lock, includes a 15% safety factor, and is stored with raw timing samples, projected dimensions, formula version, and environment hash.
+
+#### Detector training
+
+After discarding model-load/warm-up steps, define `t_train_step_bound = 1.15 × p95(steady_state_step_seconds)` across all pilot fits. Separately measure bounded model-load, final-checkpoint serialization, and acquired-only development inference costs. For formal fit `j`, its frozen acquisition/calibration manifest gives exact `n_train_j` and `n_cal_j`, and `drop_last=false` gives:
+
+```text
+steps_per_epoch_j = ceil(n_train_j / 8)
+T_fit_j = 30 × steps_per_epoch_j × t_train_step_bound
+          + 1.15 × max(pilot_model_load_seconds)
+          + 1.15 × max(pilot_checkpoint_write_seconds)
+          + ceil(n_cal_j / 8) × 1.15 × p95(pilot_dev_inference_batch_seconds)
+```
+
+The projection enumerates the exact shared/per-arm jobs rather than multiplying an average fit: three shared 2% jobs, 60 arm/budget jobs, and three shared 100% acquired-budget ceiling jobs. Summing all 66 `T_fit_j` values must be at most 240 GPU-hours. Formal source/shift evaluation is embargoed and is not hidden inside this fit total.
+
+#### Detector uncertainty scoring
+
+For each entropy, margin, or hybrid arm/round, use that round’s exact projected remaining-pool `N_r`, inference batch size 8, 300 queries, four final logits, and all decoder-layer box tensors required by the localization contract. The bound is:
+
+```text
+T_detector_score(r) = bounded_model_load
+                      + ceil(N_r / 8) × bounded_inference_batch
+                      + raw_output_bytes(r) / bounded_materialization_throughput
+                      + bounded_score_and_sort(N_r)
+```
+
+Inference and materialization bounds come from p95 batch timings and the lower 5th-percentile measured write throughput, each with the 15% safety factor in the conservative direction. Random has deterministic hash/order materialization only; core-set has no detector-scoring charge.
+
+#### Core-set selection
+
+For each core-set round, project the actual remaining candidates `N_r`, existing centers `c_r`, new batch `b_r`, dimension `d=384`, 4,096-row chunks, and canonical float32 update order. Initializing or validating the nearest-center cache costs `O(N_r × c_r × d)`; applying the new centers costs `O(N_r × b_r × d)` with the remaining row count reduced after each selection. The timer model evaluates the exact tile/update counts using a canonical kernel benchmark grid that brackets the projected `N_r`, `c_r`, and `b_r`, including the 40% round. It takes the slowest bracketing throughput plus 15%; it never extrapolates only from the pilot’s small `b`.
+
+#### Hybrid selection
+
+For hybrid round `r`, report separately: detector score/materialization, deterministic top-`5b_r` shortlist construction, nearest-distance initialization from `c_r` centers over `s_r=min(5b_r,N_r)` candidates, and `b_r` canonical k-center updates over the shrinking shortlist. Its diversity path is modeled as `O(s_r × c_r × 384) + O(s_r × b_r × 384)` with exact tile counts and the same slowest-bracket-plus-15% rule.
+
+The final acquisition projection table shows every component and conservative total for every arm/round; the **maximum**, not median, is compared with the 15-minute gate. A separate project-total estimate reports, without mixing categories: 9 pilot fits, 66 primary fits, 6 noise fits, detector acquisition scoring, DINOv2 embedding, k-center/hybrid work, the embargoed batch evaluation, and report generation. The 66-fit definition and its 240-hour gate remain identifiable inside that total.
 
 ## 13. Reproducibility and evidence architecture
 
@@ -618,13 +741,16 @@ The **RTX 4090 24 GB** is canonical for preprocessing benchmarks, all pilot fits
 Conceptual artifact classes are:
 
 ```text
-upstream archive digests
-  → curated manifest + exclusions + split groups
+model/package lock → executable model-contract receipt
+  → upstream archive digests
+  → joint source/shift curated manifest + exclusions + split groups
     → public unlabeled mirror / sealed oracle manifests
       → frozen embedding matrix
       → acquisition request → queue events → acquired-label ledger
-        → training manifest → checkpoint
-          → sealed aggregate evaluation → metrics tables → plots/model card
+        → training/calibration manifest → checkpoint + calibration receipt
+          → all 66 checkpoint/ledger hashes → formal completion seal
+            → one embargoed source/shift evaluation batch
+              → immutable metrics tables → plots/model card
 ```
 
 Each arrow is represented by input hashes. An artifact store may contain local derived objects but the remote repository contains only schemas, small synthetic fixtures, configuration examples, aggregate results, and permitted identifiers/hashes.
@@ -633,7 +759,7 @@ Each arrow is represented by input hashes. An artifact store may contain local d
 
 A reviewer with no GPU and no RDD download must be able to run or inspect a five-minute path that demonstrates the project’s engineering contribution using a tiny original synthetic fixture and checked-in precomputed artifacts:
 
-1. display the frozen experiment contract, detector/encoder hashes, and 66-fit calculation;
+1. display the frozen experiment contract, passing model-contract receipt, detector/encoder hashes, 66-fit calculation, and formal completion-seal digest;
 2. replay one acquisition round for all five arms from synthetic raw-query logits and a small embedding matrix;
 3. show why selected items differ using per-query entropy/localization terms and nearest-center distances;
 4. verify exact budgets, nesting, deterministic ties, queue state transitions, and artifact hashes;
@@ -652,12 +778,12 @@ The project is planned for eight weeks, one milestone per week. A milestone is c
 | Milestone | Week | Deliverable | Completion gate |
 |---|---:|---|---|
 | M0 Protocol and license lock | 1 | Reviewed design, sources/license record, exact model/runtime decisions | User approves this spec; no unresolved scope decision |
-| M1 Data and firewall foundation | 2 | Curated manifest pipeline, dedup/group/split logic, sealed oracle layout | Synthetic and real-manifest audits pass; no cross-partition group |
-| M2 Fixed detector/encoder | 3 | Deterministic base training/eval, hashed DINO embeddings | Tiny overfit/smoke checks pass; revisions and hashes verified |
+| M1 Executable model contract | 2 | Locked runtime/model load and synthetic model-contract probe | Receipt proves every Section 5.2 invariant before RDD processing |
+| M2 Data, model, and firewall foundation | 3 | Global source/shift dedup, group/split manifests, sealed oracle, deterministic base, hashed DINO embeddings | Global manifest and firewall audits pass; no cross-role component/group |
 | M3 Acquisition and queue | 4 | Five strategies, budget ledger, queue export/import/replay | Hand-computed uncertainty and brute-force core-set tests pass |
 | M4 Pilot and freeze | 5 | Nine-fit pilot report and protocol snapshot | Every Section 12 gate passes |
-| M5 Formal source experiment | 6 | 66 primary fits and source metrics | All seeds/arms/budgets complete, resumable, and ledger-valid |
-| M6 Robustness and shift | 7 | China Drone evaluation, calibration, noise fits, compute accounting | Six noise fits complete; no test leakage; all statuses explicit |
+| M5 Embargoed formal execution | 6 | 66 primary checkpoints, acquisition ledgers, training/calibration manifests, hash inventory | Formal completion seal issued with zero source/shift metric exposure |
+| M6 One-shot evaluation and robustness | 7 | Batch-unsealed source/China Drone evaluation, calibration metrics, six noise fits, compute accounting | Embargo batch completes; six noise fits complete; no feedback path; all statuses explicit |
 | M7 Portfolio release | 8 | Reviewer path, README, model/data cards, static report | Five-minute path passes clean; self-audit passes; tag `v0.1.0` approved |
 
 The `v0.1.0` tag is not created during design. It is the M7 boundary after full evidence and explicit user approval.
@@ -666,23 +792,29 @@ The `v0.1.0` tag is not created during design. It is the M7 boundary after full 
 
 | Risk | Consequence | Pre-registered mitigation/decision |
 |---|---|---|
-| RT-DETR raw scores are misread as a no-object softmax | Invalid uncertainty ranking | Use the explicit derived five-state contract and raw-logit synthetic tests |
+| RT-DETR docs and executable outputs disagree | Invalid uncertainty ranking | Release-blocking synthetic model-contract receipt before RDD processing; no ad-hoc formula change |
 | DINOv2 upstream license metadata changes | Reuse uncertainty | Pin the Apache revision/file hash and archive its model card/notice; reject old noncommercial-card revision |
-| Country/capture duplicates cross splits | Inflated performance | SHA + pHash components, capture grouping, frozen manifest digest, neighbor audit |
+| A duplicate crosses source and China Drone | Inflated source/shift evidence | Joint global SHA/pHash/DINO review; exclude the whole conflicting component before roles |
 | Hidden annotations leak through code/config/cache | Invalid active learning | Container mount separation, opaque IDs, sealed evaluator, adversarial firewall suite |
+| Formal test metrics are viewed before all fits freeze | Human tuning/continuation bias | Completion seal, batch-only evaluator unseal, contaminated experiment-ID invalidation |
+| GPU distance ties change selected item identities | Non-reproducible arms | Canonical float32 RTX execution, integer distance keys, exact reference item-list tests |
 | Rare D40 examples make averages misleading | Harm hidden by mAP | D40 and minimum-class recall gates, supports, discovery rounds, individual seeds |
 | Calibration subset is too small at low budgets | Unstable confidence metrics | Budget-charged stable split plus explicit eligibility gates/INSUFFICIENT status |
 | Active methods acquire box-dense images | Image savings hide box cost | Report revealed-box curves and require image and box criteria for cost claim |
 | Three seeds invite overconfident inference | Fragile statistical story | Individual curves, paired deltas, mean/median, sign consistency; no confirmatory p-values |
-| Formal compute exceeds practical limit | Incomplete portfolio | Nine-fit pilot and 240-hour cap before protocol freeze |
-| Fixed 30 epochs under/over-train at some budgets | Budget-dependent optimization bias | Same registered recipe, 100% ceiling, training diagnostics; interpret limitations rather than tune on test |
+| Formal compute exceeds practical limit | Incomplete portfolio | Component/complexity-aware worst-round projections, 15-minute gates, and 240-hour fit cap |
+| Fixed 30 epochs under/over-train at some budgets | Budget-dependent optimization bias | Same registered recipe, 100% acquired-budget ceiling, training diagnostics; interpret limitations rather than tune on test |
 | China Drone is too different | Shift scores collapse | Report honestly as separate shift result; no adaptation or result rescue |
 | Simulated oracle is mistaken for human validation | Misleading product claim | Explicit actor/state labels and prohibition on human time/IAA/cost claims |
 | Dataset cannot be redistributed | Reviewer friction | Source downloader/checksums plus original tiny synthetic fast path; never mirror data |
 
 ## 17. Statistical reporting rules
 
-With only three seeds, formal reports use individual observations, mean, median, paired seed deltas, ranges, and all-seed sign consistency. They do not present small-sample p-values as proof. Image-level bootstrap intervals may describe evaluation-set sampling sensitivity, but must be labeled as such and never presented as between-seed uncertainty.
+With only three seeds, formal reports use individual observations, mean, median, paired seed deltas, ranges, and all-seed sign consistency. They do not present small-sample p-values as proof. The three individual seed curves remain primary and cannot be replaced by a bootstrap interval.
+
+If an appendix reports evaluation-set sampling sensitivity, it uses 2,000 deterministic **split-group bootstrap** replicates after the formal evaluation embargo. For the source test, groups are stratified by source country: within each country, sample with replacement the same number of `split_group_id` values as observed, and retain every image belonging to each selected group. A group selected multiple times is duplicated as a complete cluster with replicate-local image IDs before recomputing the metric. China Drone is bootstrapped independently by its own `split_group_id` values and is never pooled with source strata. The RNG stream is derived from `SHA256("group-bootstrap-v1" || checkpoint_hash || dataset_role)`.
+
+These intervals describe fixed-checkpoint sensitivity to the grouped evaluation sample only. They are not image-IID intervals, between-seed method uncertainty, evidence of strategy superiority, or a substitute for individual seed curves.
 
 Every figure/table identifies dataset role, arm, seed aggregation, budget unit, calibration status, and whether the point is shared. Failed jobs, invalid artifacts, protocol versions, and censored targets remain visible. A negative or null active-learning result is a valid project result when the protocol passed.
 
@@ -693,11 +825,15 @@ Every figure/table identifies dataset role, arm, seed aggregation, budget unit, 
 - [x] The detector, frozen encoder, revisions, hashes, preprocessing representation, and critical package versions are exact.
 - [x] Detector licensing is Apache-2.0; the chosen DINOv2 revision is Apache-2.0 and the old conflicting revision is excluded.
 - [x] RDD is conservatively treated as CC BY-SA 4.0 and pixels/annotations are not redistributed.
-- [x] Split, duplicate grouping, one-time curator coverage audit, and oracle access rules do not depend on model results.
+- [x] Global source-plus-shift duplicate components, source splitting, one-time curator coverage audit, and oracle access rules do not depend on detector results.
+- [x] A release-blocking executable probe resolves the RT-DETR no-object/output-shape ambiguity before RDD processing.
+- [x] Formal source/shift evaluation stays embargoed until a complete 66-fit artifact seal exists; premature output invalidates the experiment ID.
 - [x] The 2% reference is one shared fit; `1 + 5×4 + 1 = 22` per seed and `22×3 = 66` primary fits.
 - [x] Entropy and margin cover background, conditional class ambiguity, localization instability, fixed top-20 aggregation, zero postprocessed detections, and deterministic ties.
+- [x] Core-set/hybrid formal selection has one canonical float32 RTX execution, integer distance keys, fixed chunk/update order, and exact reference item-list gates.
 - [x] Calibration labels count against budget, are excluded from detector weights, never affect acquisition, and have an explicit insufficiency status.
 - [x] Class imbalance, label noise, distribution shift, duplicate leakage, compute, and censored target rules are registered.
+- [x] The target-cost truth table blocks an insufficient seed, label-noise rounding is exact, and bootstrap inference resamples country-stratified groups rather than images.
 - [x] The labeling queue is a simulated-oracle workflow contract, not a claim of a real annotator study or full inspection UI.
 - [x] Three-seed inference is descriptive and does not rely on overconfident p-values.
 - [x] RTX 4090 is canonical; Colab is optional/non-canonical and cannot fill formal gaps.
@@ -706,6 +842,6 @@ Every figure/table identifies dataset role, arm, seed aggregation, budget unit, 
 
 ## 19. Decisions that require a new reviewed protocol version
 
-The following cannot be changed as an implementation convenience: included countries, dataset roles, split ranges/salt, group/dedup thresholds, detector/encoder identity, uncertainty equations, hybrid factor, formal seeds/budgets, calibration split/gates, 30-epoch recipe, primary metrics/AUBC, claim gates, pilot caps, and 66-fit definition.
+The following cannot be changed as an implementation convenience: included countries, dataset roles, split ranges/salt, global group/dedup thresholds and exclusions, detector/encoder identity, executable model-contract invariants, uncertainty equations, hybrid factor, canonical distance quantization/order, formal seeds/budgets, evaluation embargo, calibration split/gates, 30-epoch recipe, primary metrics/AUBC, censoring/claim gates, component-aware pilot caps, and 66-fit definition.
 
 A required change must produce a written spec revision, explain the trigger, invalidate incompatible pilot/formal artifacts, and receive user approval before execution. After approval of this design, the next allowed deliverable is a separate implementation plan; no implementation should begin directly from this document.
