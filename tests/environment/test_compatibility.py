@@ -7,18 +7,26 @@ from types import SimpleNamespace
 import pytest
 
 import vision_active_learning_loop.environment as environment
+from vision_active_learning_loop.artifacts import receipts
+from vision_active_learning_loop.artifacts.receipts import (
+    ReceiptValidationError,
+    validate_receipt,
+)
 from vision_active_learning_loop.environment import EnvironmentContract
 
 
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
 BASE_IMAGE_DIGEST = (
     "sha256:8aef630a54bc5c5146ae5ce68e6af5caa3df0fb690bb91544175c91f307e4356"
 )
+UV_VERSION = "0.8.15"
 
 
 @pytest.fixture
 def contract() -> EnvironmentContract:
     return EnvironmentContract(
         python="3.12.11",
+        uv=UV_VERSION,
         torch="2.12.0+cu126",
         torchvision="0.27.0+cu126",
         transformers="5.15.0",
@@ -29,7 +37,9 @@ def contract() -> EnvironmentContract:
 @pytest.fixture
 def canonical_observation() -> dict[str, object]:
     return {
+        "schema_version": 1,
         "python": "3.12.11",
+        "uv": UV_VERSION,
         "torch": "2.12.0+cu126",
         "torchvision": "0.27.0+cu126",
         "transformers": "5.15.0",
@@ -38,7 +48,10 @@ def canonical_observation() -> dict[str, object]:
         "os": "Linux",
         "wsl": True,
         "gpu_name": "NVIDIA GeForce RTX 4090",
+        "gpu_uuid": "GPU-7639cc81-2a55-164e-e5be-c5cd71752a63",
+        "driver": "591.86",
         "container_image_digest": BASE_IMAGE_DIGEST,
+        "runtime_image_digest": "sha256:" + "1" * 64,
         "tf32": False,
         "deterministic_algorithms": True,
         "bf16_supported": True,
@@ -50,6 +63,7 @@ def _write_contract(path: Path) -> None:
         f"""
 schema_version: 1
 python: 3.12.11
+uv: {UV_VERSION}
 torch: 2.12.0+cu126
 torchvision: 0.27.0+cu126
 transformers: 5.15.0
@@ -226,6 +240,7 @@ def test_contract_loads_machine_readable_yaml(tmp_path: Path) -> None:
     loaded = EnvironmentContract.from_yaml(config)
     assert loaded == EnvironmentContract(
         python="3.12.11",
+        uv=UV_VERSION,
         torch="2.12.0+cu126",
         torchvision="0.27.0+cu126",
         transformers="5.15.0",
@@ -263,10 +278,10 @@ def test_receipt_status_fails_when_runtime_state_is_unsafe(
     receipt = json.loads(output.read_text(encoding="utf-8"))
 
     assert exit_code == 2
-    assert receipt["status"] == "FAIL"
+    assert receipt["normative"]["status"] == "FAIL"
     assert (
         "deterministic_algorithms must be exactly True (observed False)"
-        in receipt["errors"]
+        in receipt["normative"]["errors"]
     )
 
 
@@ -370,7 +385,9 @@ def test_check_rejects_set_data_root(
         ["--config", str(config), "--output", str(output)]
     ) == 2
     receipt = json.loads(output.read_text(encoding="utf-8"))
-    assert "VAL_DATA_ROOT must remain unset for Wave 0" in receipt["errors"]
+    assert "VAL_DATA_ROOT must remain unset for Wave 0" in receipt["normative"][
+        "errors"
+    ]
 
 
 @pytest.mark.parametrize("stdout", ["", "only-name,only-uuid"])
@@ -387,3 +404,212 @@ def test_gpu_observation_handles_empty_or_malformed_output(
         observed = "raised"
 
     assert observed == (None, None, None)
+
+
+def test_contract_loads_and_rejects_uv_drift(tmp_path: Path) -> None:
+    config = tmp_path / "wave0.yaml"
+    _write_contract(config)
+    contract = EnvironmentContract.from_yaml(config)
+    observed = {
+        "python": "3.12.11",
+        "uv": "0.11.18",
+        "torch": "2.12.0+cu126",
+        "torchvision": "0.27.0+cu126",
+        "transformers": "5.15.0",
+        "pycocotools": "2.0.10",
+        "cuda_runtime": "12.6",
+        "os": "Linux",
+        "wsl": True,
+        "gpu_name": "NVIDIA GeForce RTX 4090",
+        "container_image_digest": BASE_IMAGE_DIGEST,
+        "tf32": False,
+        "deterministic_algorithms": True,
+        "bf16_supported": True,
+    }
+
+    assert contract.uv == UV_VERSION
+    assert contract.validate(observed) == [
+        "uv must be exactly 0.8.15 (observed 0.11.18)"
+    ]
+
+
+def test_environment_check_publishes_content_addressed_pass_receipt(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    canonical_observation: dict[str, object],
+) -> None:
+    artifact_root = tmp_path / "artifacts"
+    artifact_root.mkdir()
+    config = tmp_path / "wave0.yaml"
+    _write_contract(config)
+    output = artifact_root / "wave0" / "receipts" / "environment-receipt.json"
+    monkeypatch.setenv("VAL_ARTIFACT_ROOT", str(artifact_root))
+    monkeypatch.delenv("VAL_DATA_ROOT", raising=False)
+    monkeypatch.setattr(
+        environment,
+        "observe_environment",
+        lambda document: canonical_observation
+        | {
+            "schema_version": 1,
+            "uv": UV_VERSION,
+            "gpu_uuid": "GPU-7639cc81-2a55-164e-e5be-c5cd71752a63",
+            "driver": "591.86",
+            "runtime_image_digest": "sha256:" + "1" * 64,
+        },
+    )
+
+    assert environment.check(["--config", str(config), "--output", str(output)]) == 0
+    stored = json.loads(output.read_text(encoding="utf-8"))
+    validate_receipt(
+        stored, PROJECT_ROOT / "schemas" / "environment-receipt.schema.json"
+    )
+    assert stored["receipt_type"] == "environment"
+    assert stored["normative"]["status"] == "PASS"
+    assert stored["normative"]["invariants"]["exact_uv"] is True
+    assert stored["metadata"]["receipt_content_sha256"]
+
+
+def test_environment_check_replaces_stale_false_pass_with_authoritative_uv_fail(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    canonical_observation: dict[str, object],
+) -> None:
+    artifact_root = tmp_path / "artifacts"
+    output = artifact_root / "wave0" / "receipts" / "environment-receipt.json"
+    output.parent.mkdir(parents=True)
+    output.write_text(
+        json.dumps({"status": "PASS", "deterministic_algorithms": False}),
+        encoding="utf-8",
+    )
+    config = tmp_path / "wave0.yaml"
+    _write_contract(config)
+    monkeypatch.setenv("VAL_ARTIFACT_ROOT", str(artifact_root))
+    monkeypatch.delenv("VAL_DATA_ROOT", raising=False)
+    monkeypatch.setattr(
+        environment,
+        "observe_environment",
+        lambda document: canonical_observation
+        | {
+            "schema_version": 1,
+            "uv": "0.11.18",
+            "gpu_uuid": "GPU-7639cc81-2a55-164e-e5be-c5cd71752a63",
+            "driver": "591.86",
+            "runtime_image_digest": "sha256:" + "1" * 64,
+        },
+    )
+
+    assert environment.check(["--config", str(config), "--output", str(output)]) == 2
+    stored = json.loads(output.read_text(encoding="utf-8"))
+    validate_receipt(
+        stored, PROJECT_ROOT / "schemas" / "environment-receipt.schema.json"
+    )
+    assert stored["receipt_type"] == "environment"
+    assert stored["normative"]["status"] == "FAIL"
+    assert stored["normative"]["invariants"]["exact_uv"] is False
+    assert "uv must be exactly 0.8.15 (observed 0.11.18)" in stored["normative"][
+        "errors"
+    ]
+
+
+def test_environment_receipt_rejects_rehashed_forged_uv_pass(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    canonical_observation: dict[str, object],
+) -> None:
+    artifact_root = tmp_path / "artifacts"
+    artifact_root.mkdir()
+    config = tmp_path / "wave0.yaml"
+    _write_contract(config)
+    output = artifact_root / "wave0" / "receipts" / "environment-receipt.json"
+    monkeypatch.setenv("VAL_ARTIFACT_ROOT", str(artifact_root))
+    monkeypatch.delenv("VAL_DATA_ROOT", raising=False)
+    monkeypatch.setattr(
+        environment,
+        "observe_environment",
+        lambda document: canonical_observation
+        | {
+            "schema_version": 1,
+            "uv": UV_VERSION,
+            "gpu_uuid": "GPU-7639cc81-2a55-164e-e5be-c5cd71752a63",
+            "driver": "591.86",
+            "runtime_image_digest": "sha256:" + "1" * 64,
+        },
+    )
+    assert environment.check(["--config", str(config), "--output", str(output)]) == 0
+    forged = json.loads(output.read_text(encoding="utf-8"))
+    forged["normative"]["observed"]["uv"] = "0.11.18"
+    forged["metadata"]["receipt_content_sha256"] = receipts._receipt_content_sha256(
+        forged
+    )
+
+    with pytest.raises(ReceiptValidationError, match="exact_uv"):
+        validate_receipt(
+            forged, PROJECT_ROOT / "schemas" / "environment-receipt.schema.json"
+        )
+
+
+def test_environment_check_rejects_malformed_gpu_uuid(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    canonical_observation: dict[str, object],
+) -> None:
+    artifact_root = tmp_path / "artifacts"
+    artifact_root.mkdir()
+    config = tmp_path / "wave0.yaml"
+    _write_contract(config)
+    output = artifact_root / "wave0" / "receipts" / "environment-receipt.json"
+    monkeypatch.setenv("VAL_ARTIFACT_ROOT", str(artifact_root))
+    monkeypatch.delenv("VAL_DATA_ROOT", raising=False)
+    monkeypatch.setattr(
+        environment,
+        "observe_environment",
+        lambda document: canonical_observation
+        | {
+            "schema_version": 1,
+            "uv": UV_VERSION,
+            "gpu_uuid": "GPU-111111111111111111111111111111111111",
+            "driver": "591.86",
+            "runtime_image_digest": "sha256:" + "1" * 64,
+        },
+    )
+
+    assert environment.check(["--config", str(config), "--output", str(output)]) == 2
+    stored = json.loads(output.read_text(encoding="utf-8"))
+    assert stored["normative"]["invariants"]["canonical_gpu"] is False
+
+
+def test_environment_receipt_rejects_invented_fail_cause(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    canonical_observation: dict[str, object],
+) -> None:
+    artifact_root = tmp_path / "artifacts"
+    artifact_root.mkdir()
+    config = tmp_path / "wave0.yaml"
+    _write_contract(config)
+    output = artifact_root / "wave0" / "receipts" / "environment-receipt.json"
+    monkeypatch.setenv("VAL_ARTIFACT_ROOT", str(artifact_root))
+    monkeypatch.delenv("VAL_DATA_ROOT", raising=False)
+    monkeypatch.setattr(
+        environment,
+        "observe_environment",
+        lambda document: canonical_observation
+        | {
+            "schema_version": 1,
+            "uv": "0.11.18",
+            "gpu_uuid": "GPU-7639cc81-2a55-164e-e5be-c5cd71752a63",
+            "driver": "591.86",
+            "runtime_image_digest": "sha256:" + "1" * 64,
+        },
+    )
+    assert environment.check(["--config", str(config), "--output", str(output)]) == 2
+    forged = json.loads(output.read_text(encoding="utf-8"))
+    forged["normative"]["errors"] = ["invented failure"]
+    forged["metadata"]["receipt_content_sha256"] = receipts._receipt_content_sha256(
+        forged
+    )
+
+    with pytest.raises(ReceiptValidationError, match="errors"):
+        validate_receipt(
+            forged, PROJECT_ROOT / "schemas" / "environment-receipt.schema.json"
+        )

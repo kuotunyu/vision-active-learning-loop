@@ -18,7 +18,10 @@
         "fixture_sha256",
         "probe_sha256",
         "environment_sha256",
+        "parent_environment_sha256",
+        "environment",
         "model_contract_receipt_sha256",
+        "parent_model_contract",
         "checkpoint_sha256",
         "checkpoint_state_sha256",
         "observed_shapes",
@@ -45,7 +48,10 @@
         "fixture_sha256": {"$ref": "#/$defs/sha256"},
         "probe_sha256": {"$ref": "#/$defs/sha256"},
         "environment_sha256": {"$ref": "#/$defs/sha256"},
+        "parent_environment_sha256": {"$ref": "#/$defs/sha256"},
+        "environment": {"$ref": "#/$defs/environment_evidence"},
         "model_contract_receipt_sha256": {"$ref": "#/$defs/sha256"},
+        "parent_model_contract": {"type": "object"},
         "checkpoint_sha256": {"$ref": "#/$defs/sha256"},
         "checkpoint_state_sha256": {"$ref": "#/$defs/sha256"},
         "observed_shapes": {
@@ -69,6 +75,7 @@
             "checkpoint_round_trip",
             "cublas_workspace_configured",
             "cudnn_benchmark_disabled",
+            "canonical_environment",
             "deterministic_algorithms",
             "deterministic_fallback_absent",
             "finite_gradients",
@@ -90,6 +97,7 @@
             "checkpoint_round_trip": {"type": "boolean"},
             "cublas_workspace_configured": {"type": "boolean"},
             "cudnn_benchmark_disabled": {"type": "boolean"},
+            "canonical_environment": {"type": "boolean"},
             "deterministic_algorithms": {"type": "boolean"},
             "deterministic_fallback_absent": {"type": "boolean"},
             "finite_gradients": {"type": "boolean"},
@@ -260,6 +268,53 @@
   },
   "$defs": {
     "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "environment_evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["observed", "selected_cuda", "parent_environment_sha256"],
+      "properties": {
+        "observed": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["schema_version", "python", "uv", "torch", "torchvision", "transformers", "pycocotools", "cuda_runtime", "gpu_name", "gpu_uuid", "driver", "os", "wsl", "container_image_digest", "runtime_image_digest", "tf32", "deterministic_algorithms", "bf16_supported", "data_root_unset"],
+          "properties": {
+            "schema_version": {"const": 1},
+            "python": {"type": "string"},
+            "uv": {"type": "string"},
+            "torch": {"type": "string"},
+            "torchvision": {"type": "string"},
+            "transformers": {"type": "string"},
+            "pycocotools": {"type": "string"},
+            "cuda_runtime": {"type": "string"},
+            "gpu_name": {"type": "string"},
+            "gpu_uuid": {"type": "string"},
+            "driver": {"type": "string"},
+            "os": {"type": "string"},
+            "wsl": {"type": "boolean"},
+            "container_image_digest": {"type": "string"},
+            "runtime_image_digest": {"type": "string"},
+            "tf32": {"type": "boolean"},
+            "deterministic_algorithms": {"type": "boolean"},
+            "bf16_supported": {"type": "boolean"},
+            "data_root_unset": {"type": "boolean"}
+          }
+        },
+        "selected_cuda": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["cuda_available", "device_count", "selected_index", "selected_name", "selected_uuid", "selected_device"],
+          "properties": {
+            "cuda_available": {"type": "boolean"},
+            "device_count": {"type": "integer", "minimum": 0},
+            "selected_index": {"type": "integer", "minimum": 0},
+            "selected_name": {"type": "string"},
+            "selected_uuid": {"type": "string"},
+            "selected_device": {"type": "string"}
+          }
+        },
+        "parent_environment_sha256": {"$ref": "#/$defs/sha256"}
+      }
+    },
     "state_digests": {
       "type": "object",
       "additionalProperties": false,

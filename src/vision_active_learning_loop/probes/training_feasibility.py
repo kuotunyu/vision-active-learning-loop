@@ -21,11 +21,17 @@ from typing import Any
 
 import numpy as np
 import torch
+import yaml
 from transformers import RTDetrForObjectDetection
 
 from ..artifacts.digests import canonical_json_sha256, sha256_file
 from ..artifacts.receipts import atomic_write_receipt, validate_receipt
 from ..cli_manifest import command
+from ..environment import (
+    EnvironmentContract,
+    environment_invariants,
+    observe_environment,
+)
 from ..models.assets import (
     load_pinned_asset_specs,
     verify_snapshot,
@@ -67,6 +73,26 @@ _FIXTURE_MANIFEST = (
     _project_root() / "fixtures" / "synthetic" / "wave0" / "fixture-manifest.json"
 )
 _STATE_DIGEST_KEYS = ("model", "optimizer", "scheduler", "scaler", "rng", "sampler")
+_ENVIRONMENT_COMPARISON_FIELDS = (
+    "schema_version",
+    "python",
+    "uv",
+    "torch",
+    "torchvision",
+    "transformers",
+    "pycocotools",
+    "cuda_runtime",
+    "gpu_name",
+    "gpu_uuid",
+    "driver",
+    "os",
+    "wsl",
+    "container_image_digest",
+    "runtime_image_digest",
+    "tf32",
+    "deterministic_algorithms",
+    "bf16_supported",
+)
 
 
 @dataclass(frozen=True)
@@ -108,6 +134,124 @@ class StepObservation:
     parameter_digest_after: str
     state_digests: Mapping[str, str]
     checkpoint_state: CheckpointState | None
+
+
+def _normalized_gpu_uuid(value: object) -> str | None:
+    if not isinstance(value, str) or not value:
+        return None
+    normalized = value.removeprefix("GPU-").lower()
+    groups = normalized.split("-")
+    if [len(group) for group in groups] != [8, 4, 4, 4, 12]:
+        return None
+    if any(
+        any(character not in "0123456789abcdef" for character in group)
+        for group in groups
+    ):
+        return None
+    return normalized
+
+
+def validate_live_environment_evidence(
+    parent_environment: Mapping[str, object],
+    evidence: Mapping[str, object],
+) -> dict[str, object]:
+    """Fail closed unless Task 5 is running in Task 4's canonical environment."""
+    observed = evidence.get("observed")
+    selected = evidence.get("selected_cuda")
+    if not isinstance(observed, Mapping) or not isinstance(selected, Mapping):
+        raise FeasibilityError("live environment evidence must be complete objects")
+    if parent_environment.get("status") != "PASS" or parent_environment.get(
+        "errors"
+    ) != []:
+        raise FeasibilityError("parent model-contract environment must be PASS")
+
+    contract = EnvironmentContract.from_yaml(
+        _project_root() / "configs" / "environment" / "wave0.yaml"
+    )
+    parent_errors = contract.validate(parent_environment)
+    if parent_errors:
+        raise FeasibilityError(
+            "parent model-contract environment is non-canonical: "
+            + "; ".join(parent_errors)
+        )
+    expected_parent_sha256 = canonical_json_sha256(dict(parent_environment))
+    if evidence.get("parent_environment_sha256") != expected_parent_sha256:
+        raise FeasibilityError("parent environment digest mismatch")
+
+    live_errors = contract.validate(observed)
+    live_invariants = environment_invariants(contract, observed)
+    failed_invariants = [
+        name for name, passed in live_invariants.items() if passed is not True
+    ]
+    if live_errors or failed_invariants:
+        raise FeasibilityError(
+            "live environment is non-canonical: "
+            + "; ".join([*live_errors, *failed_invariants])
+        )
+    for field in _ENVIRONMENT_COMPARISON_FIELDS:
+        if observed.get(field) != parent_environment.get(field):
+            raise FeasibilityError(
+                f"live {field} differs from the parent model-contract environment"
+            )
+
+    if (
+        selected.get("cuda_available") is not True
+        or type(selected.get("device_count")) is not int
+        or selected.get("device_count", 0) < 1
+        or selected.get("selected_index") != 0
+        or selected.get("selected_device") != "cuda:0"
+    ):
+        raise FeasibilityError("canonical training feasibility must select cuda:0")
+    if selected.get("selected_name") != contract.gpu_name:
+        raise FeasibilityError("selected CUDA device must be NVIDIA GeForce RTX 4090")
+    selected_uuid = _normalized_gpu_uuid(selected.get("selected_uuid"))
+    observed_uuid = _normalized_gpu_uuid(observed.get("gpu_uuid"))
+    parent_uuid = _normalized_gpu_uuid(parent_environment.get("gpu_uuid"))
+    if (
+        selected_uuid is None
+        or selected_uuid != observed_uuid
+        or selected_uuid != parent_uuid
+    ):
+        raise FeasibilityError("selected CUDA UUID differs from environment evidence")
+    return {
+        "observed": dict(observed),
+        "selected_cuda": dict(selected),
+        "parent_environment_sha256": expected_parent_sha256,
+    }
+
+
+def _observe_live_environment(
+    parent_environment: Mapping[str, object],
+) -> dict[str, object]:
+    config_path = _project_root() / "configs" / "environment" / "wave0.yaml"
+    config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    if not isinstance(config, Mapping):
+        raise FeasibilityError("environment contract must be a mapping")
+    observed = observe_environment(config)
+    observed["data_root_unset"] = "VAL_DATA_ROOT" not in os.environ
+    selected_index = torch.cuda.current_device()
+    raw_uuid = getattr(torch.cuda.get_device_properties(selected_index), "uuid", None)
+    if isinstance(raw_uuid, bytes):
+        selected_uuid = raw_uuid.decode("ascii")
+    elif raw_uuid is None:
+        selected_uuid = None
+    else:
+        selected_uuid = str(raw_uuid)
+    evidence = {
+        "observed": observed,
+        "selected_cuda": {
+            "cuda_available": torch.cuda.is_available(),
+            "device_count": torch.cuda.device_count(),
+            "selected_index": selected_index,
+            "selected_name": torch.cuda.get_device_name(selected_index),
+            "selected_uuid": selected_uuid,
+            "selected_device": f"cuda:{selected_index}",
+        },
+        "parent_environment_sha256": canonical_json_sha256(
+            dict(parent_environment)
+        ),
+    }
+    return validate_live_environment_evidence(parent_environment, evidence)
 
 
 def configure_determinism(seed: int) -> DeterminismState:
@@ -513,6 +657,7 @@ def _build_receipt(
     checkpoint_load_seconds: float,
     resume_verified: bool,
     run_id: str,
+    live_environment: Mapping[str, object],
 ) -> dict[str, object]:
     normative_contract = _mapping(model_contract.get("normative"), "model contract")
     state = observation.checkpoint_state
@@ -578,6 +723,7 @@ def _build_receipt(
         "cublas_workspace_configured": observation.cublas_workspace_config
         == _CUBLAS_WORKSPACE_CONFIG,
         "cudnn_benchmark_disabled": not observation.cudnn_benchmark,
+        "canonical_environment": True,
         "deterministic_algorithms": observation.deterministic_algorithms,
         "deterministic_fallback_absent": not observation.deterministic_fallback_detected,
         "finite_gradients": observation.finite_gradients,
@@ -591,7 +737,9 @@ def _build_receipt(
         "synthetic_labels_only": True,
         "tf32_disabled": runtime["tf32"] is False,
     }
-    errors = [name for name, passed in invariants.items() if passed is not True]
+    errors = sorted(
+        name for name, passed in invariants.items() if passed is not True
+    )
     copied_hashes = {
         name: str(normative_contract[name])
         for name in (
@@ -600,13 +748,18 @@ def _build_receipt(
             "source_sha256",
             "processor_sha256",
             "fixture_sha256",
-            "environment_sha256",
         )
     }
     normative = {
         **copied_hashes,
+        "environment_sha256": canonical_json_sha256(dict(live_environment)),
+        "parent_environment_sha256": str(
+            live_environment["parent_environment_sha256"]
+        ),
+        "environment": dict(live_environment),
         "probe_sha256": _probe_hash(),
         "model_contract_receipt_sha256": model_contract_digest,
+        "parent_model_contract": copy.deepcopy(dict(model_contract)),
         "checkpoint_sha256": checkpoint_digest,
         "checkpoint_state_sha256": expected_state_sha256,
         "observed_shapes": {name: list(value) for name, value in shapes.items()},
@@ -664,6 +817,9 @@ def _execute_probe(
     normative = _mapping(model_contract.get("normative"), "model contract normative")
     if normative.get("status") != "PASS":
         raise FeasibilityError("model-contract receipt must be PASS")
+    parent_environment = _mapping(
+        normative.get("environment"), "model-contract environment"
+    )
     model_contract_digest = sha256_file(model_contract_path)
     spec = load_pinned_asset_specs(
         _project_root() / "configs" / "models" / "pinned-models.yaml"
@@ -685,6 +841,7 @@ def _execute_probe(
     device = torch.device("cuda", torch.cuda.current_device())
     if torch.cuda.get_device_name(device) != "NVIDIA GeForce RTX 4090":
         raise FeasibilityError("canonical training feasibility requires RTX 4090")
+    live_environment = _observe_live_environment(parent_environment)
 
     model = RTDetrForObjectDetection.from_pretrained(
         snapshot,
@@ -759,6 +916,7 @@ def _execute_probe(
             checkpoint_load_seconds=checkpoint_load_seconds,
             resume_verified=resume_verified,
             run_id=output_path.stem,
+            live_environment=live_environment,
         )
     finally:
         del batch
@@ -779,6 +937,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             arguments.checkpoint_root,
             arguments.output,
         )
+        if output.exists():
+            raise FeasibilityError(
+                "fresh output path is required for each feasibility attempt"
+            )
         receipt = _execute_probe(model_contract, checkpoint_root, output)
         atomic_write_receipt(output, receipt)
     except (

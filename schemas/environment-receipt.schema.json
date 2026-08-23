@@ -1,0 +1,103 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "environment-receipt.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["receipt_type", "schema_version", "normative", "metadata"],
+  "properties": {
+    "receipt_type": {"const": "environment"},
+    "schema_version": {"const": 1},
+    "normative": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["contract", "contract_sha256", "observed", "invariants", "status", "errors"],
+      "properties": {
+        "contract": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["schema_version", "python", "uv", "torch", "torchvision", "transformers", "pycocotools", "cuda_runtime", "canonical_os", "requires_wsl", "gpu_name", "container_image_digest", "tf32", "deterministic_algorithms", "bf16_supported"],
+          "properties": {
+            "schema_version": {"const": 1},
+            "python": {"const": "3.12.11"},
+            "uv": {"const": "0.8.15"},
+            "torch": {"const": "2.12.0+cu126"},
+            "torchvision": {"const": "0.27.0+cu126"},
+            "transformers": {"const": "5.15.0"},
+            "pycocotools": {"const": "2.0.10"},
+            "cuda_runtime": {"const": "12.6"},
+            "canonical_os": {"const": "Linux"},
+            "requires_wsl": {"const": true},
+            "gpu_name": {"const": "NVIDIA GeForce RTX 4090"},
+            "container_image_digest": {"const": "sha256:8aef630a54bc5c5146ae5ce68e6af5caa3df0fb690bb91544175c91f307e4356"},
+            "tf32": {"const": false},
+            "deterministic_algorithms": {"const": true},
+            "bf16_supported": {"const": true}
+          }
+        },
+        "contract_sha256": {"$ref": "#/$defs/sha256"},
+        "observed": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["schema_version", "python", "uv", "torch", "torchvision", "transformers", "pycocotools", "cuda_runtime", "gpu_name", "gpu_uuid", "driver", "os", "wsl", "container_image_digest", "runtime_image_digest", "tf32", "deterministic_algorithms", "bf16_supported", "data_root_unset"],
+          "properties": {
+            "schema_version": {},
+            "python": {},
+            "uv": {},
+            "torch": {},
+            "torchvision": {},
+            "transformers": {},
+            "pycocotools": {},
+            "cuda_runtime": {},
+            "gpu_name": {},
+            "gpu_uuid": {"type": ["string", "null"]},
+            "driver": {},
+            "os": {},
+            "wsl": {},
+            "container_image_digest": {},
+            "runtime_image_digest": {},
+            "tf32": {},
+            "deterministic_algorithms": {},
+            "bf16_supported": {},
+            "data_root_unset": {"type": "boolean"}
+          }
+        },
+        "invariants": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["approved_base_image", "bf16_supported", "canonical_gpu", "canonical_os_wsl", "data_root_unset", "deterministic_algorithms", "exact_cuda_runtime", "exact_pycocotools", "exact_python", "exact_torch", "exact_torchvision", "exact_transformers", "exact_uv", "runtime_image_recorded", "tf32_disabled"],
+          "properties": {
+            "approved_base_image": {"type": "boolean"},
+            "bf16_supported": {"type": "boolean"},
+            "canonical_gpu": {"type": "boolean"},
+            "canonical_os_wsl": {"type": "boolean"},
+            "data_root_unset": {"type": "boolean"},
+            "deterministic_algorithms": {"type": "boolean"},
+            "exact_cuda_runtime": {"type": "boolean"},
+            "exact_pycocotools": {"type": "boolean"},
+            "exact_python": {"type": "boolean"},
+            "exact_torch": {"type": "boolean"},
+            "exact_torchvision": {"type": "boolean"},
+            "exact_transformers": {"type": "boolean"},
+            "exact_uv": {"type": "boolean"},
+            "runtime_image_recorded": {"type": "boolean"},
+            "tf32_disabled": {"type": "boolean"}
+          }
+        },
+        "status": {"enum": ["PASS", "FAIL"]},
+        "errors": {"type": "array", "items": {"type": "string"}}
+      }
+    },
+    "metadata": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["timestamp"],
+      "properties": {
+        "timestamp": {"type": "string"},
+        "receipt_content_sha256": {"$ref": "#/$defs/sha256"}
+      }
+    }
+  },
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+  }
+}

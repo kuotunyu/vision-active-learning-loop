@@ -11,6 +11,8 @@ import vision_active_learning_loop.probes.training_feasibility as feasibility_pr
 from vision_active_learning_loop.artifacts.digests import canonical_json_sha256
 from vision_active_learning_loop.artifacts.receipts import (
     ReceiptValidationError,
+    _receipt_content_sha256,
+    _stored_receipt_sha256,
     atomic_write_receipt,
     validate_receipt,
 )
@@ -23,10 +25,94 @@ from vision_active_learning_loop.probes.training_feasibility import (
     deterministic_comparison,
     evaluate_step_observation,
     resolve_cli_paths,
+    validate_live_environment_evidence,
 )
+from ..artifacts.test_receipts import build_valid_model_contract_receipt
 
 
 HASH = "a" * 64
+
+
+def _parent_environment() -> dict[str, object]:
+    return {
+        "schema_version": 1,
+        "python": "3.12.11",
+        "uv": "0.8.15",
+        "torch": "2.12.0+cu126",
+        "torchvision": "0.27.0+cu126",
+        "transformers": "5.15.0",
+        "pycocotools": "2.0.10",
+        "cuda_runtime": "12.6",
+        "gpu_name": "NVIDIA GeForce RTX 4090",
+        "gpu_uuid": "GPU-11111111-1111-1111-1111-111111111111",
+        "driver": "591.86",
+        "os": "Linux",
+        "wsl": True,
+        "container_image_digest": "sha256:8aef630a54bc5c5146ae5ce68e6af5caa3df0fb690bb91544175c91f307e4356",
+        "runtime_image_digest": "sha256:7ba1dd9364de4bdfc60ee14c42f3441d736e46fcd41128992c3cd49c67059ae2",
+        "tf32": False,
+        "deterministic_algorithms": True,
+        "bf16_supported": True,
+        "status": "PASS",
+        "errors": [],
+        "torch_execution": {
+            "cuda_available": True,
+            "device_count": 1,
+            "selected_index": 0,
+            "selected_name": "NVIDIA GeForce RTX 4090",
+            "torch_selected_gpu_uuid": "11111111-1111-1111-1111-111111111111",
+            "selected_device": "cuda:0",
+            "nvidia_smi_gpu_name": "NVIDIA GeForce RTX 4090",
+            "nvidia_smi_gpu_uuid": "GPU-11111111-1111-1111-1111-111111111111",
+            "model_device": "cuda:0",
+            "pixel_values_device": "cuda:0",
+            "pixel_mask_device": "cuda:0",
+            "logits_device": "cuda:0",
+            "final_boxes_device": "cuda:0",
+            "penultimate_boxes_device": "cuda:0",
+            "intermediate_boxes_device": "cuda:0",
+        },
+    }
+
+
+def _environment_evidence() -> dict[str, object]:
+    parent = _parent_environment()
+    observed = {
+        name: parent[name]
+        for name in (
+            "schema_version",
+            "python",
+            "uv",
+            "torch",
+            "torchvision",
+            "transformers",
+            "pycocotools",
+            "cuda_runtime",
+            "gpu_name",
+            "gpu_uuid",
+            "driver",
+            "os",
+            "wsl",
+            "container_image_digest",
+            "runtime_image_digest",
+            "tf32",
+            "deterministic_algorithms",
+            "bf16_supported",
+        )
+    }
+    observed["data_root_unset"] = True
+    return {
+        "observed": observed,
+        "selected_cuda": {
+            "cuda_available": True,
+            "device_count": 1,
+            "selected_index": 0,
+            "selected_name": "NVIDIA GeForce RTX 4090",
+            "selected_uuid": "11111111-1111-1111-1111-111111111111",
+            "selected_device": "cuda:0",
+        },
+        "parent_environment_sha256": canonical_json_sha256(parent),
+    }
 
 
 def _observation(**changes: object) -> StepObservation:
@@ -71,18 +157,29 @@ def _observation(**changes: object) -> StepObservation:
 def _receipt() -> dict[str, object]:
     observation = _observation()
     comparison = deterministic_comparison(observation)
+    environment = _environment_evidence()
+    parent = build_valid_model_contract_receipt()
+    parent["metadata"]["receipt_content_sha256"] = _receipt_content_sha256(
+        parent
+    )
+    parent_normative = parent["normative"]
     return {
         "receipt_type": "feasibility",
         "schema_version": 1,
         "normative": {
-            "model_sha256": HASH,
-            "config_sha256": HASH,
-            "source_sha256": HASH,
-            "processor_sha256": HASH,
-            "fixture_sha256": HASH,
-            "probe_sha256": HASH,
-            "environment_sha256": HASH,
-            "model_contract_receipt_sha256": HASH,
+            "model_sha256": parent_normative["model_sha256"],
+            "config_sha256": parent_normative["config_sha256"],
+            "source_sha256": parent_normative["source_sha256"],
+            "processor_sha256": parent_normative["processor_sha256"],
+            "fixture_sha256": parent_normative["fixture_sha256"],
+            "probe_sha256": feasibility_probe._probe_hash(),
+            "environment_sha256": canonical_json_sha256(environment),
+            "parent_environment_sha256": environment[
+                "parent_environment_sha256"
+            ],
+            "environment": environment,
+            "model_contract_receipt_sha256": _stored_receipt_sha256(parent),
+            "parent_model_contract": parent,
             "checkpoint_sha256": HASH,
             "checkpoint_state_sha256": HASH,
             "observed_shapes": {
@@ -98,6 +195,7 @@ def _receipt() -> dict[str, object]:
                 "checkpoint_round_trip": True,
                 "cublas_workspace_configured": True,
                 "cudnn_benchmark_disabled": True,
+                "canonical_environment": True,
                 "deterministic_algorithms": True,
                 "deterministic_fallback_absent": True,
                 "finite_gradients": True,
@@ -495,6 +593,132 @@ def test_cli_reports_missing_training_backend_without_traceback(
     assert exit_code == 2
     assert captured.err.strip() == "SciPy is required"
     assert "Traceback" not in captured.err
+
+
+@pytest.mark.parametrize(
+    ("location", "field", "value", "expected"),
+    [
+        ("observed", "python", "3.12.12", "python"),
+        ("observed", "uv", "0.11.18", "uv"),
+        ("selected", "selected_index", 1, "cuda:0"),
+        ("selected", "selected_uuid", "22222222-2222-2222-2222-222222222222", "UUID"),
+    ],
+)
+def test_live_environment_evidence_rejects_runtime_or_device_drift(
+    location: str, field: str, value: object, expected: str
+) -> None:
+    parent = _parent_environment()
+    evidence = _environment_evidence()
+    if location == "observed":
+        evidence["observed"][field] = value
+    else:
+        evidence["selected_cuda"][field] = value
+
+    with pytest.raises(FeasibilityError, match=expected):
+        validate_live_environment_evidence(parent, evidence)
+
+
+def test_feasibility_receipt_rejects_rehashed_environment_drift(
+    tmp_path: Path,
+) -> None:
+    receipt = _receipt()
+    normative = receipt["normative"]
+    normative["environment"]["observed"]["torch"] = "2.12.1+cu126"
+    normative["environment_sha256"] = canonical_json_sha256(
+        normative["environment"]
+    )
+
+    with pytest.raises(ReceiptValidationError, match="live torch"):
+        atomic_write_receipt(tmp_path / "feasibility.json", receipt)
+
+
+def test_feasibility_receipt_rejects_consistently_rehashed_parent_bindings(
+    tmp_path: Path,
+) -> None:
+    receipt = _receipt()
+    normative = receipt["normative"]
+    for name in (
+        "model_sha256",
+        "config_sha256",
+        "source_sha256",
+        "processor_sha256",
+        "fixture_sha256",
+        "model_contract_receipt_sha256",
+        "parent_environment_sha256",
+    ):
+        normative[name] = "0" * 64
+    normative["environment"]["parent_environment_sha256"] = "0" * 64
+    normative["environment_sha256"] = canonical_json_sha256(
+        normative["environment"]
+    )
+
+    with pytest.raises(ReceiptValidationError, match="parent model-contract"):
+        atomic_write_receipt(tmp_path / "feasibility.json", receipt)
+
+
+def test_feasibility_receipt_rejects_invented_fail_cause(tmp_path: Path) -> None:
+    receipt = _receipt()
+    normative = receipt["normative"]
+    normative["invariants"]["canonical_environment"] = False
+    normative["status"] = "FAIL"
+    normative["errors"] = ["canonical_environment"]
+
+    with pytest.raises(ReceiptValidationError, match="canonical_environment"):
+        atomic_write_receipt(tmp_path / "feasibility.json", receipt)
+
+
+def test_feasibility_receipt_rejects_rehashed_failed_parent(
+    tmp_path: Path,
+) -> None:
+    receipt = _receipt()
+    normative = receipt["normative"]
+    parent = normative["parent_model_contract"]
+    parent["normative"]["status"] = "FAIL"
+    parent["normative"]["errors"] = ["invented parent failure"]
+    parent["metadata"]["receipt_content_sha256"] = _receipt_content_sha256(
+        parent
+    )
+    normative["model_contract_receipt_sha256"] = _stored_receipt_sha256(
+        parent
+    )
+
+    with pytest.raises(ReceiptValidationError, match="parent model-contract.*PASS"):
+        atomic_write_receipt(tmp_path / "feasibility.json", receipt)
+
+
+def test_cli_requires_fresh_output_path_before_execution(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    output = tmp_path / "feasibility.json"
+    output.write_text("older receipt", encoding="utf-8")
+    paths = (tmp_path / "model.json", tmp_path / "checkpoints", output)
+    called = False
+
+    def unexpected_execute(*args: object) -> dict[str, object]:
+        nonlocal called
+        called = True
+        return _receipt()
+
+    monkeypatch.setattr(feasibility_probe, "resolve_cli_paths", lambda *args: paths)
+    monkeypatch.setattr(feasibility_probe, "_execute_probe", unexpected_execute)
+
+    exit_code = feasibility_probe.main(
+        [
+            "--model-contract",
+            str(paths[0]),
+            "--checkpoint-root",
+            str(paths[1]),
+            "--output",
+            str(paths[2]),
+        ]
+    )
+
+    assert exit_code == 2
+    assert called is False
+    assert output.read_text(encoding="utf-8") == "older receipt"
+    assert "fresh output" in capsys.readouterr().err
 
 
 def test_schema_rejects_missing_resume_or_rng_digest(tmp_path: Path) -> None:

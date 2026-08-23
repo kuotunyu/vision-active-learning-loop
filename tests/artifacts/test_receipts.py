@@ -61,8 +61,7 @@ MODEL_CONTRACT_INVARIANTS = (
     "torch_inference_mode",
     "torch_selected_gpu_is_canonical",
 )
-@pytest.fixture
-def valid_receipt() -> dict[str, object]:
+def build_valid_model_contract_receipt() -> dict[str, object]:
     document: dict[str, object] = {
         "receipt_type": "model-contract",
         "schema_version": 1,
@@ -122,6 +121,7 @@ def valid_receipt() -> dict[str, object]:
             "environment": {
                 "schema_version": 1,
                 "python": "3.12.11",
+                "uv": "0.8.15",
                 "torch": "2.12.0+cu126",
                 "torchvision": "0.27.0+cu126",
                 "transformers": "5.15.0",
@@ -180,6 +180,11 @@ def valid_receipt() -> dict[str, object]:
     ):
         normative[digest_name] = canonical_json_sha256(normative[evidence_name])
     return document
+
+
+@pytest.fixture
+def valid_receipt() -> dict[str, object]:
+    return build_valid_model_contract_receipt()
 
 
 def test_invalid_update_preserves_existing_valid_receipt(
@@ -656,6 +661,18 @@ def test_normative_divergence_changes_normative_digest(
     other["normative"]["errors"] = ["logits_shape"]
 
     assert normative_receipt_sha256(valid_receipt) != normative_receipt_sha256(other)
+
+
+def test_model_contract_rejects_rehashed_noncanonical_uv_environment(
+    tmp_path: Path, valid_receipt: dict[str, object]
+) -> None:
+    normative = valid_receipt["normative"]
+    environment = normative["environment"]
+    environment["uv"] = "0.11.18"
+    normative["environment_sha256"] = canonical_json_sha256(environment)
+
+    with pytest.raises(ReceiptValidationError, match="canonical_environment"):
+        atomic_write_receipt(tmp_path / "receipt.json", valid_receipt)
 
 
 def test_schema_forbids_receipt_declared_volatile_fields(

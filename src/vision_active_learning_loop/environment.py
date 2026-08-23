@@ -7,15 +7,19 @@ import importlib.metadata
 import json
 import os
 import platform
+import re
 import subprocess
 import sys
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 import yaml
 
+from .artifacts.digests import canonical_json_sha256
+from .artifacts.receipts import atomic_write_receipt
 from .cli_manifest import command
 
 
@@ -31,6 +35,7 @@ class EnvironmentBoundaryError(ValueError):
 @dataclass(frozen=True)
 class EnvironmentContract:
     python: str
+    uv: str
     torch: str
     torchvision: str
     transformers: str
@@ -64,6 +69,7 @@ class EnvironmentContract:
                 raise ValueError(f"{name} must be a YAML boolean")
         return cls(
             python=str(document["python"]),
+            uv=str(document["uv"]),
             torch=str(document["torch"]),
             torchvision=str(document["torchvision"]),
             transformers=str(document["transformers"]),
@@ -78,6 +84,26 @@ class EnvironmentContract:
             gpu_name=str(document["gpu_name"]),
         )
 
+    def as_dict(self) -> dict[str, object]:
+        """Return the stable normative contract embedded in environment receipts."""
+        return {
+            "schema_version": 1,
+            "python": self.python,
+            "uv": self.uv,
+            "torch": self.torch,
+            "torchvision": self.torchvision,
+            "transformers": self.transformers,
+            "pycocotools": self.pycocotools,
+            "cuda_runtime": self.cuda_runtime,
+            "canonical_os": self.canonical_os,
+            "requires_wsl": self.requires_wsl,
+            "gpu_name": self.gpu_name,
+            "container_image_digest": self.container_image_digest,
+            "tf32": self.tf32,
+            "deterministic_algorithms": self.deterministic_algorithms,
+            "bf16_supported": self.bf16_supported,
+        }
+
     def validate(self, observed: Mapping[str, object]) -> list[str]:
         errors: list[str] = []
         if observed.get("os") != self.canonical_os or (
@@ -86,6 +112,7 @@ class EnvironmentContract:
             errors.append("canonical execution requires WSL2/OCI")
         expected = {
             "python": self.python,
+            "uv": self.uv,
             "torch": self.torch,
             "torchvision": self.torchvision,
             "transformers": self.transformers,
@@ -104,11 +131,94 @@ class EnvironmentContract:
         return errors
 
 
+def environment_invariants(
+    contract: EnvironmentContract, observed: Mapping[str, object]
+) -> dict[str, bool]:
+    """Derive every environment gate boolean directly from observations."""
+    gpu_uuid = observed.get("gpu_uuid")
+    driver = observed.get("driver")
+    runtime_image_digest = observed.get("runtime_image_digest")
+    return {
+        "approved_base_image": (
+            observed.get("container_image_digest")
+            == contract.container_image_digest
+        ),
+        "bf16_supported": observed.get("bf16_supported") is contract.bf16_supported,
+        "canonical_gpu": (
+            observed.get("gpu_name") == contract.gpu_name
+            and _normalized_gpu_uuid(gpu_uuid) is not None
+            and isinstance(driver, str)
+            and bool(driver)
+        ),
+        "canonical_os_wsl": (
+            observed.get("os") == contract.canonical_os
+            and (not contract.requires_wsl or observed.get("wsl") is True)
+        ),
+        "data_root_unset": observed.get("data_root_unset") is True,
+        "deterministic_algorithms": (
+            observed.get("deterministic_algorithms")
+            is contract.deterministic_algorithms
+        ),
+        "exact_cuda_runtime": observed.get("cuda_runtime") == contract.cuda_runtime,
+        "exact_pycocotools": observed.get("pycocotools") == contract.pycocotools,
+        "exact_python": observed.get("python") == contract.python,
+        "exact_torch": observed.get("torch") == contract.torch,
+        "exact_torchvision": observed.get("torchvision") == contract.torchvision,
+        "exact_transformers": (
+            observed.get("transformers") == contract.transformers
+        ),
+        "exact_uv": observed.get("uv") == contract.uv,
+        "runtime_image_recorded": (
+            isinstance(runtime_image_digest, str)
+            and re.fullmatch(r"sha256:[0-9a-f]{64}", runtime_image_digest)
+            is not None
+        ),
+        "tf32_disabled": observed.get("tf32") is contract.tf32,
+    }
+
+
+def _normalized_gpu_uuid(value: object) -> str | None:
+    if not isinstance(value, str):
+        return None
+    match = re.fullmatch(
+        r"GPU-([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-"
+        r"[0-9a-fA-F]{4}-[0-9a-fA-F]{12})",
+        value,
+    )
+    return match.group(1).lower() if match is not None else None
+
+
+def environment_errors(
+    contract: EnvironmentContract, observed: Mapping[str, object]
+) -> list[str]:
+    """Derive the exact deterministic error inventory for an observation."""
+    errors = contract.validate(observed)
+    if observed.get("data_root_unset") is not True:
+        errors.append("VAL_DATA_ROOT must remain unset for Wave 0")
+    for name, passed in environment_invariants(contract, observed).items():
+        if passed is not True and not any(name in error for error in errors):
+            errors.append(name)
+    return errors
+
+
 def _installed_version(distribution: str) -> str | None:
     try:
         return importlib.metadata.version(distribution)
     except importlib.metadata.PackageNotFoundError:
         return None
+
+
+def _uv_version() -> str | None:
+    try:
+        result = subprocess.run(
+            ["uv", "--version"], check=True, capture_output=True, text=True
+        )
+    except (FileNotFoundError, subprocess.CalledProcessError):
+        return None
+    fields = result.stdout.strip().split()
+    if len(fields) < 2 or fields[0] != "uv":
+        return None
+    return fields[1]
 
 
 def _wsl() -> bool:
@@ -168,6 +278,7 @@ def observe_environment(config: Mapping[str, Any]) -> dict[str, object]:
     return {
         "schema_version": config.get("schema_version", 1),
         "python": platform.python_version(),
+        "uv": _uv_version(),
         "torch": _installed_version("torch"),
         "torchvision": _installed_version("torchvision"),
         "transformers": _installed_version("transformers"),
@@ -234,16 +345,25 @@ def check(argv: Sequence[str] | None = None) -> int:
         raise ValueError("environment contract must be a YAML mapping")
     contract = EnvironmentContract.from_yaml(arguments.config)
     _configure_torch_runtime(contract)
-    receipt = observe_environment(document)
-    errors = contract.validate(receipt)
-    if "VAL_DATA_ROOT" in os.environ:
-        errors.append("VAL_DATA_ROOT must remain unset for Wave 0")
-    receipt["status"] = "FAIL" if errors else "PASS"
-    receipt["errors"] = errors
-    output.parent.mkdir(parents=True, exist_ok=True)
-    output.write_text(
-        json.dumps(receipt, indent=2, sort_keys=True) + "\n", encoding="utf-8"
-    )
+    observed = observe_environment(document)
+    observed["data_root_unset"] = "VAL_DATA_ROOT" not in os.environ
+    errors = environment_errors(contract, observed)
+    invariants = environment_invariants(contract, observed)
+    contract_document = contract.as_dict()
+    receipt = {
+        "receipt_type": "environment",
+        "schema_version": 1,
+        "normative": {
+            "contract": contract_document,
+            "contract_sha256": canonical_json_sha256(contract_document),
+            "observed": dict(observed),
+            "invariants": dict(sorted(invariants.items())),
+            "status": "FAIL" if errors else "PASS",
+            "errors": errors,
+        },
+        "metadata": {"timestamp": datetime.now(UTC).isoformat()},
+    }
+    atomic_write_receipt(output, receipt)
     return 2 if errors else 0
 
 

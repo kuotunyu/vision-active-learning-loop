@@ -6,7 +6,11 @@ from pathlib import Path
 import pytest
 import yaml
 
-from vision_active_learning_loop.artifacts.digests import sha256_file
+import vision_active_learning_loop.artifacts.receipts as receipt_module
+from vision_active_learning_loop.artifacts.digests import (
+    canonical_json_sha256,
+    sha256_file,
+)
 from vision_active_learning_loop.artifacts.receipts import (
     ReceiptValidationError,
     atomic_write_receipt,
@@ -74,6 +78,20 @@ METADATA_IDENTITY = {
 @pytest.fixture
 def specs():
     return load_pinned_asset_specs(CONFIG_PATH)
+
+
+@pytest.fixture(autouse=True)
+def _bind_minimal_test_documents(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep synthetic unit receipts small while exercising exact hash binding."""
+    empty_hash = canonical_json_sha256({})
+    monkeypatch.setattr(
+        receipt_module,
+        "_APPROVED_MODEL_DOCUMENT_HASHES",
+        {
+            name: {"config": empty_hash, "processor": empty_hash}
+            for name in ("rtdetr", "dinov2")
+        },
+    )
 
 
 def _snapshot_root(tmp_path: Path, repo_id: str, revision: str) -> Path:
@@ -456,6 +474,85 @@ def test_model_asset_schema_resolves_nested_file_reference(
     ]
 
     with pytest.raises(ReceiptValidationError, match="sha256"):
+        atomic_write_receipt(tmp_path / "receipt.json", receipt)
+
+
+@pytest.mark.parametrize(
+    ("mutate", "expected_error"),
+    [
+        (
+            lambda receipt: receipt["normative"]["models"]["rtdetr"]["files"][
+                "model.safetensors"
+            ].update({"size": 1, "sha256": "0" * 64}),
+            "rtdetr files do not match the compiled approved pins",
+        ),
+        (
+            lambda receipt: receipt["normative"]["transformers"]["files"][
+                "models/rt_detr/modeling_rt_detr.py"
+            ].update({"size": 1, "sha256": "0" * 64}),
+            "Transformers source files do not match the compiled approved pins",
+        ),
+        (
+            lambda receipt: receipt["normative"]["models"]["rtdetr"][
+                "huggingface_metadata"
+            ]["files"]["model.safetensors"].update({"etag": "0" * 64}),
+            "rtdetr model.safetensors metadata identity differs from its pin",
+        ),
+    ],
+)
+def test_model_asset_pass_receipt_rejects_self_consistent_forged_evidence(
+    specs, tmp_path: Path, mutate, expected_error: str
+) -> None:
+    """A rehashed PASS must still bind exact payload/source/HF identities."""
+    receipt = _valid_model_asset_receipt(specs)
+    mutate(receipt)
+
+    with pytest.raises(ReceiptValidationError, match=expected_error):
+        atomic_write_receipt(tmp_path / "receipt.json", receipt)
+
+
+def test_model_asset_pass_receipt_binds_license_and_metadata_inventory(
+    specs, tmp_path: Path
+) -> None:
+    receipt = _valid_model_asset_receipt(specs)
+    rtdetr = receipt["normative"]["models"]["rtdetr"]
+    rtdetr["license_evidence"]["sha256"] = "0" * 64
+
+    with pytest.raises(ReceiptValidationError, match="license evidence"):
+        atomic_write_receipt(tmp_path / "receipt.json", receipt)
+
+    receipt = _valid_model_asset_receipt(specs)
+    metadata = receipt["normative"]["models"]["rtdetr"][
+        "huggingface_metadata"
+    ]
+    metadata["inventory"][
+        ".cache/huggingface/download/model.safetensors.metadata"
+    ]["sha256"] = "0" * 64
+
+    with pytest.raises(ReceiptValidationError, match="metadata inventory"):
+        atomic_write_receipt(tmp_path / "receipt.json", receipt)
+
+
+@pytest.mark.parametrize("document_name", ["config", "processor"])
+def test_model_asset_pass_receipt_binds_parsed_payload_documents(
+    specs, tmp_path: Path, document_name: str
+) -> None:
+    receipt = _valid_model_asset_receipt(specs)
+    receipt["normative"]["models"]["dinov2"][document_name]["forged"] = True
+
+    with pytest.raises(ReceiptValidationError, match=document_name):
+        atomic_write_receipt(tmp_path / "receipt.json", receipt)
+
+
+def test_complete_model_asset_evidence_cannot_be_rehashed_as_fail(
+    specs, tmp_path: Path
+) -> None:
+    receipt = _valid_model_asset_receipt(specs)
+    receipt["normative"]["status"] = "FAIL"
+    receipt["normative"]["invariants"]["all_assets_verified"] = False
+    receipt["normative"]["errors"] = ["invented failure"]
+
+    with pytest.raises(ReceiptValidationError, match="FAIL contradicts"):
         atomic_write_receipt(tmp_path / "receipt.json", receipt)
 
 

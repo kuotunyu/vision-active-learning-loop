@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import errno
+import hashlib
 import json
 import math
 import os
@@ -20,9 +21,29 @@ class ReceiptValidationError(ValueError):
 
 _SCHEMA_ROOT = Path(__file__).resolve().parents[3] / "schemas"
 _ALLOWED_SCHEMAS = {
+    ("environment", 1): _SCHEMA_ROOT / "environment-receipt.schema.json",
     ("model-contract", 1): _SCHEMA_ROOT / "model-contract-receipt.schema.json",
     ("feasibility", 1): _SCHEMA_ROOT / "feasibility-receipt.schema.json",
     ("model-assets", 1): _SCHEMA_ROOT / "model-asset-receipt.schema.json",
+}
+_APPROVED_ENVIRONMENT_CONTRACT = {
+    "schema_version": 1,
+    "python": "3.12.11",
+    "uv": "0.8.15",
+    "torch": "2.12.0+cu126",
+    "torchvision": "0.27.0+cu126",
+    "transformers": "5.15.0",
+    "pycocotools": "2.0.10",
+    "cuda_runtime": "12.6",
+    "canonical_os": "Linux",
+    "requires_wsl": True,
+    "gpu_name": "NVIDIA GeForce RTX 4090",
+    "container_image_digest": (
+        "sha256:8aef630a54bc5c5146ae5ce68e6af5caa3df0fb690bb91544175c91f307e4356"
+    ),
+    "tf32": False,
+    "deterministic_algorithms": True,
+    "bf16_supported": True,
 }
 _APPROVED_MODEL_CONTRACT_ASSET_HASHES = {
     "model_sha256": "fe87a5a30f5daf298d10794c7682a63b6107986f97d6a770ba948d89e4340093",
@@ -53,6 +74,16 @@ _APPROVED_RTDETR_SOURCE_FILES = {
         "sha256": "fc13ccc6ba1e57862e4c129c9e74bb97f091012186c1104974b92d5ec7b4019c",
     },
 }
+_APPROVED_MODEL_DOCUMENT_HASHES = {
+    "rtdetr": {
+        "config": "59cc37a4cc7abe1096b62ab401ef7252e00a0378c83ddc612a0f148e2a3374c0",
+        "processor": "2ca7c13652ff0e272ee5153f8bebe5b1058a1706344d76d8376c099f3a3bd8c5",
+    },
+    "dinov2": {
+        "config": "d971c7bfef11cd2ae681bdec253ad8ef811e3e9794d7d202f2dc8137ed312f7e",
+        "processor": "0f6addc5987e9ab323986e0e3ad4ef3aeea735e6839c6df97dc9397e8df50669",
+    },
+}
 def validate_receipt(receipt: Mapping[str, object], schema_path: Path) -> None:
     """Validate a stored receipt against its allowlisted receipt type and schema."""
     _validate_receipt(receipt, schema_path=schema_path, require_content_hash=True)
@@ -65,6 +96,11 @@ def normative_receipt_sha256(receipt: Mapping[str, object]) -> str:
     if not isinstance(normative, Mapping):  # Guarded above; retained for type safety.
         raise ReceiptValidationError("normative must be an object")
     return canonical_json_sha256(dict(normative))
+
+
+def _stored_receipt_sha256(receipt: Mapping[str, object]) -> str:
+    """Hash the exact canonical bytes used by atomic receipt publication."""
+    return hashlib.sha256(_canonical_storage_bytes(receipt)).hexdigest()
 
 
 def atomic_write_receipt(path: Path, receipt: Mapping[str, object]) -> str:
@@ -122,10 +158,14 @@ def _validate_receipt(
     normative = receipt.get("normative")
     if not isinstance(normative, Mapping):
         raise ReceiptValidationError("normative must be an object")
-    if receipt.get("receipt_type") == "model-contract":
+    if receipt.get("receipt_type") == "environment":
+        _validate_environment_consistency(normative)
+    elif receipt.get("receipt_type") == "model-contract":
         _validate_model_contract_consistency(normative)
     elif receipt.get("receipt_type") == "feasibility":
         _validate_feasibility_consistency(normative)
+    elif receipt.get("receipt_type") == "model-assets":
+        _validate_model_assets_consistency(normative)
     invariants = normative.get("invariants")
     if not isinstance(invariants, Mapping):
         raise ReceiptValidationError("invariants must be an object")
@@ -146,6 +186,188 @@ def _validate_receipt(
             raise ReceiptValidationError("receipt content hash is required")
         if actual != _receipt_content_sha256(receipt):
             raise ReceiptValidationError("receipt content hash mismatch")
+
+
+def _validate_environment_consistency(normative: Mapping[str, object]) -> None:
+    """Reject environment receipts whose claims disagree with exact observations."""
+    contract_document = normative.get("contract")
+    observed = normative.get("observed")
+    invariants = normative.get("invariants")
+    if not all(
+        isinstance(value, Mapping)
+        for value in (contract_document, observed, invariants)
+    ):
+        raise ReceiptValidationError("environment evidence must be objects")
+    assert isinstance(contract_document, Mapping)
+    assert isinstance(observed, Mapping)
+    assert isinstance(invariants, Mapping)
+    if dict(contract_document) != _APPROVED_ENVIRONMENT_CONTRACT:
+        raise ReceiptValidationError(
+            "environment contract does not match the compiled approved contract"
+        )
+    if normative.get("contract_sha256") != canonical_json_sha256(
+        dict(contract_document)
+    ):
+        raise ReceiptValidationError("environment contract digest mismatch")
+
+    from ..environment import (
+        EnvironmentContract,
+        environment_errors,
+        environment_invariants,
+    )
+
+    contract = EnvironmentContract(
+        python=str(contract_document["python"]),
+        uv=str(contract_document["uv"]),
+        torch=str(contract_document["torch"]),
+        torchvision=str(contract_document["torchvision"]),
+        transformers=str(contract_document["transformers"]),
+        cuda_runtime=str(contract_document["cuda_runtime"]),
+        pycocotools=str(contract_document["pycocotools"]),
+        container_image_digest=str(contract_document["container_image_digest"]),
+        tf32=bool(contract_document["tf32"]),
+        deterministic_algorithms=bool(
+            contract_document["deterministic_algorithms"]
+        ),
+        bf16_supported=bool(contract_document["bf16_supported"]),
+        canonical_os=str(contract_document["canonical_os"]),
+        requires_wsl=bool(contract_document["requires_wsl"]),
+        gpu_name=str(contract_document["gpu_name"]),
+    )
+    expected_invariants = environment_invariants(contract, observed)
+    for name, expected in expected_invariants.items():
+        if invariants.get(name) is not expected:
+            raise ReceiptValidationError(
+                f"{name} contradicts embedded environment evidence"
+            )
+    if set(invariants) != set(expected_invariants):
+        raise ReceiptValidationError("environment invariant inventory mismatch")
+    expected_status = (
+        "PASS" if all(expected_invariants.values()) else "FAIL"
+    )
+    if normative.get("status") != expected_status:
+        raise ReceiptValidationError(
+            "environment status contradicts embedded observations"
+        )
+    if normative.get("errors") != environment_errors(contract, observed):
+        raise ReceiptValidationError(
+            "environment errors contradict embedded observations"
+        )
+
+
+def _validate_model_assets_consistency(normative: Mapping[str, object]) -> None:
+    """Bind model-asset status to the completeness of exact embedded evidence."""
+    if normative.get("status") == "PASS":
+        _validate_model_assets_pass_evidence(normative)
+        return
+    try:
+        _validate_model_assets_pass_evidence(normative)
+    except ReceiptValidationError:
+        return
+    raise ReceiptValidationError(
+        "model-assets FAIL contradicts complete verified evidence"
+    )
+
+
+def _validate_model_assets_pass_evidence(
+    normative: Mapping[str, object]
+) -> None:
+    """Bind complete model-assets evidence to compiled payload/source/HF identities."""
+
+    # Local import avoids a module cycle: the asset verifier publishes through
+    # this receipt module, while its loader independently checks tracked pins
+    # against compiled constants before returning them.
+    from ..models.assets import load_pinned_asset_specs
+
+    specs = load_pinned_asset_specs(
+        _SCHEMA_ROOT.parent / "configs" / "models" / "pinned-models.yaml"
+    )
+    models = normative.get("models")
+    transformers = normative.get("transformers")
+    if not isinstance(models, Mapping) or not isinstance(transformers, Mapping):
+        raise ReceiptValidationError("model-assets evidence must be objects")
+
+    source_files = transformers.get("files")
+    expected_source_files = {
+        name: {"size": item.size, "sha256": item.sha256}
+        for name, item in sorted(specs["rtdetr"].source_files.items())
+    }
+    if transformers.get("version") != "5.15.0" or source_files != expected_source_files:
+        raise ReceiptValidationError(
+            "Transformers source files do not match the compiled approved pins"
+        )
+
+    for name, spec in sorted(specs.items()):
+        model = models.get(name)
+        if not isinstance(model, Mapping):
+            raise ReceiptValidationError(f"{name} model evidence must be an object")
+        expected_files = {
+            filename: {"size": item.size, "sha256": item.sha256}
+            for filename, item in sorted(spec.files.items())
+        }
+        if model.get("files") != expected_files:
+            raise ReceiptValidationError(
+                f"{name} files do not match the compiled approved pins"
+            )
+        expected_license = {
+            "path": "README.md",
+            **expected_files["README.md"],
+        }
+        if model.get("license_evidence") != expected_license:
+            raise ReceiptValidationError(
+                f"{name} license evidence does not match README.md"
+            )
+        expected_document_hashes = _APPROVED_MODEL_DOCUMENT_HASHES[name]
+        for document_name in ("config", "processor"):
+            document = model.get(document_name)
+            if not isinstance(document, Mapping) or canonical_json_sha256(
+                dict(document)
+            ) != expected_document_hashes[document_name]:
+                raise ReceiptValidationError(
+                    f"{name} {document_name} differs from the approved payload"
+                )
+
+        huggingface = model.get("huggingface_metadata")
+        if not isinstance(huggingface, Mapping):
+            raise ReceiptValidationError(
+                f"{name} Hugging Face metadata must be an object"
+            )
+        metadata_files = huggingface.get("files")
+        inventory = huggingface.get("inventory")
+        if (
+            huggingface.get("commit_hash") != spec.revision
+            or not isinstance(metadata_files, Mapping)
+            or not isinstance(inventory, Mapping)
+        ):
+            raise ReceiptValidationError(
+                f"{name} Hugging Face metadata does not match its revision"
+            )
+        for filename, expected in sorted(spec.files.items()):
+            observation = metadata_files.get(filename)
+            if not isinstance(observation, Mapping):
+                raise ReceiptValidationError(
+                    f"{name} {filename} metadata evidence must be an object"
+                )
+            metadata_path = f".cache/huggingface/download/{filename}.metadata"
+            identity = (
+                observation.get("metadata_path") == metadata_path
+                and observation.get("commit_hash") == spec.revision
+                and observation.get("etag") == expected.etag
+                and observation.get("blob_id") == expected.blob_id
+            )
+            if not identity:
+                raise ReceiptValidationError(
+                    f"{name} {filename} metadata identity differs from its pin"
+                )
+            inventory_observation = inventory.get(metadata_path)
+            expected_inventory = {
+                "size": observation.get("size"),
+                "sha256": observation.get("sha256"),
+            }
+            if inventory_observation != expected_inventory:
+                raise ReceiptValidationError(
+                    f"{name} {filename} metadata inventory is inconsistent"
+                )
 
 
 def _validate_model_contract_consistency(normative: Mapping[str, object]) -> None:
@@ -195,6 +417,7 @@ def _validate_model_contract_consistency(normative: Mapping[str, object]) -> Non
     canonical_environment = {
         "schema_version": 1,
         "python": "3.12.11",
+        "uv": "0.8.15",
         "torch": "2.12.0+cu126",
         "torchvision": "0.27.0+cu126",
         "transformers": "5.15.0",
@@ -327,6 +550,8 @@ def _validate_feasibility_consistency(normative: Mapping[str, object]) -> None:
     step = normative.get("step")
     checkpoint = normative.get("checkpoint")
     synthetic_labels = normative.get("synthetic_labels")
+    environment = normative.get("environment")
+    parent_model_contract = normative.get("parent_model_contract")
     invariants = normative.get("invariants")
     state_digests = normative.get("state_digests")
     comparison = normative.get("comparison")
@@ -341,6 +566,8 @@ def _validate_feasibility_consistency(normative: Mapping[str, object]) -> None:
             step,
             checkpoint,
             synthetic_labels,
+            environment,
+            parent_model_contract,
             invariants,
             state_digests,
             comparison,
@@ -355,9 +582,140 @@ def _validate_feasibility_consistency(normative: Mapping[str, object]) -> None:
     assert isinstance(step, Mapping)
     assert isinstance(checkpoint, Mapping)
     assert isinstance(synthetic_labels, Mapping)
+    assert isinstance(environment, Mapping)
+    assert isinstance(parent_model_contract, Mapping)
     assert isinstance(invariants, Mapping)
     assert isinstance(state_digests, Mapping)
     assert isinstance(comparison, Mapping)
+
+    _validate_receipt(
+        parent_model_contract,
+        schema_path=_ALLOWED_SCHEMAS[("model-contract", 1)],
+        require_content_hash=True,
+    )
+    parent_normative = parent_model_contract.get("normative")
+    if not isinstance(parent_normative, Mapping):
+        raise ReceiptValidationError("parent model-contract normative is missing")
+    parent_invariants = parent_normative.get("invariants")
+    if (
+        parent_normative.get("status") != "PASS"
+        or parent_normative.get("errors") != []
+        or not isinstance(parent_invariants, Mapping)
+        or not parent_invariants
+        or any(value is not True for value in parent_invariants.values())
+    ):
+        raise ReceiptValidationError(
+            "parent model-contract must be a complete PASS"
+        )
+    if normative.get("model_contract_receipt_sha256") != _stored_receipt_sha256(
+        parent_model_contract
+    ):
+        raise ReceiptValidationError("parent model-contract receipt digest mismatch")
+    for name in (
+        "model_sha256",
+        "config_sha256",
+        "source_sha256",
+        "processor_sha256",
+        "fixture_sha256",
+    ):
+        if normative.get(name) != parent_normative.get(name):
+            raise ReceiptValidationError(
+                f"{name} differs from the parent model-contract receipt"
+            )
+    parent_environment = parent_normative.get("environment")
+    if not isinstance(parent_environment, Mapping):
+        raise ReceiptValidationError("parent model-contract environment is missing")
+    expected_parent_environment_sha256 = canonical_json_sha256(
+        dict(parent_environment)
+    )
+
+    observed_environment = environment.get("observed")
+    selected_cuda = environment.get("selected_cuda")
+    if not isinstance(observed_environment, Mapping) or not isinstance(
+        selected_cuda, Mapping
+    ):
+        raise ReceiptValidationError("feasibility environment evidence is incomplete")
+    if normative.get("environment_sha256") != canonical_json_sha256(
+        dict(environment)
+    ):
+        raise ReceiptValidationError("feasibility environment digest mismatch")
+    if (
+        normative.get("parent_environment_sha256")
+        != expected_parent_environment_sha256
+        or environment.get("parent_environment_sha256")
+        != expected_parent_environment_sha256
+    ):
+        raise ReceiptValidationError(
+            "parent model-contract environment digest mismatch"
+        )
+    for field in (
+        "schema_version",
+        "python",
+        "uv",
+        "torch",
+        "torchvision",
+        "transformers",
+        "pycocotools",
+        "cuda_runtime",
+        "gpu_name",
+        "gpu_uuid",
+        "driver",
+        "os",
+        "wsl",
+        "container_image_digest",
+        "runtime_image_digest",
+        "tf32",
+        "deterministic_algorithms",
+        "bf16_supported",
+    ):
+        if observed_environment.get(field) != parent_environment.get(field):
+            raise ReceiptValidationError(
+                f"live {field} differs from the parent model-contract environment"
+            )
+    if normative.get("probe_sha256") != _training_probe_sha256():
+        raise ReceiptValidationError(
+            "training probe differs from the receipt source hash"
+        )
+
+    from ..environment import EnvironmentContract, environment_invariants
+
+    contract = EnvironmentContract(
+        python=str(_APPROVED_ENVIRONMENT_CONTRACT["python"]),
+        uv=str(_APPROVED_ENVIRONMENT_CONTRACT["uv"]),
+        torch=str(_APPROVED_ENVIRONMENT_CONTRACT["torch"]),
+        torchvision=str(_APPROVED_ENVIRONMENT_CONTRACT["torchvision"]),
+        transformers=str(_APPROVED_ENVIRONMENT_CONTRACT["transformers"]),
+        cuda_runtime=str(_APPROVED_ENVIRONMENT_CONTRACT["cuda_runtime"]),
+        pycocotools=str(_APPROVED_ENVIRONMENT_CONTRACT["pycocotools"]),
+        container_image_digest=str(
+            _APPROVED_ENVIRONMENT_CONTRACT["container_image_digest"]
+        ),
+        tf32=bool(_APPROVED_ENVIRONMENT_CONTRACT["tf32"]),
+        deterministic_algorithms=bool(
+            _APPROVED_ENVIRONMENT_CONTRACT["deterministic_algorithms"]
+        ),
+        bf16_supported=bool(_APPROVED_ENVIRONMENT_CONTRACT["bf16_supported"]),
+        canonical_os=str(_APPROVED_ENVIRONMENT_CONTRACT["canonical_os"]),
+        requires_wsl=bool(_APPROVED_ENVIRONMENT_CONTRACT["requires_wsl"]),
+        gpu_name=str(_APPROVED_ENVIRONMENT_CONTRACT["gpu_name"]),
+    )
+    live_environment_invariants = environment_invariants(
+        contract, observed_environment
+    )
+    selected_uuid = _normalized_gpu_uuid(selected_cuda.get("selected_uuid"))
+    observed_uuid = _normalized_gpu_uuid(observed_environment.get("gpu_uuid"))
+    canonical_environment = (
+        all(live_environment_invariants.values())
+        and selected_cuda.get("cuda_available") is True
+        and type(selected_cuda.get("device_count")) is int
+        and selected_cuda.get("device_count", 0) >= 1
+        and selected_cuda.get("selected_index") == 0
+        and selected_cuda.get("selected_device") == "cuda:0"
+        and selected_cuda.get("selected_name")
+        == _APPROVED_ENVIRONMENT_CONTRACT["gpu_name"]
+        and selected_uuid is not None
+        and selected_uuid == observed_uuid
+    )
 
     ordered_losses = normative.get("ordered_losses")
     if not isinstance(ordered_losses, list):
@@ -432,6 +790,8 @@ def _validate_feasibility_consistency(normative: Mapping[str, object]) -> None:
         "cublas_workspace_configured": runtime.get("cublas_workspace_config")
         == ":4096:8",
         "cudnn_benchmark_disabled": runtime.get("cudnn_benchmark") is False,
+        "canonical_environment": canonical_environment
+        and runtime.get("device") == selected_cuda.get("selected_device"),
         "deterministic_algorithms": runtime.get("deterministic_algorithms") is True
         and runtime.get("deterministic_debug_mode") == 2,
         "deterministic_fallback_absent": runtime.get(
@@ -478,11 +838,27 @@ def _validate_feasibility_consistency(normative: Mapping[str, object]) -> None:
                 "gradient_clip_0_1 contradicts embedded feasibility evidence"
             )
         raise ReceiptValidationError("training recipe differs from the approved smoke")
-    for invariant_name, evidence_passed in expected_evidence.items():
-        if invariants.get(invariant_name) is True and evidence_passed is not True:
+    if set(invariants) != set(expected_evidence):
+        raise ReceiptValidationError(
+            "feasibility invariant inventory mismatch"
+        )
+    for name, expected in expected_evidence.items():
+        if invariants.get(name) is not expected:
             raise ReceiptValidationError(
-                f"{invariant_name} contradicts embedded feasibility evidence"
+                f"{name} contradicts embedded feasibility evidence"
             )
+    expected_errors = sorted(
+        name for name, passed in expected_evidence.items() if passed is not True
+    )
+    expected_status = "PASS" if not expected_errors else "FAIL"
+    if normative.get("status") != expected_status:
+        raise ReceiptValidationError(
+            "feasibility status contradicts embedded evidence"
+        )
+    if normative.get("errors") != expected_errors:
+        raise ReceiptValidationError(
+            "feasibility errors contradict embedded evidence"
+        )
 
 
 def _normalized_gpu_uuid(value: object) -> str | None:
@@ -495,6 +871,29 @@ def _normalized_gpu_uuid(value: object) -> str | None:
     ) is None:
         return None
     return normalized
+
+
+def _training_probe_sha256() -> str:
+    project_root = _SCHEMA_ROOT.parent
+    source_files = (
+        project_root
+        / "src"
+        / "vision_active_learning_loop"
+        / "probes"
+        / "training_feasibility.py",
+        project_root
+        / "src"
+        / "vision_active_learning_loop"
+        / "training"
+        / "checkpoint_io.py",
+    )
+    observations = {
+        path.relative_to(project_root).as_posix(): hashlib.sha256(
+            path.read_text(encoding="utf-8").encode("utf-8")
+        ).hexdigest()
+        for path in source_files
+    }
+    return canonical_json_sha256(observations)
 
 
 def _is_prefixed_sha256(value: object) -> bool:
