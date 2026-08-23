@@ -50,6 +50,7 @@ def _observation(**changes: object) -> StepObservation:
         "bf16_autocast_enabled": True,
         "deterministic_fallback_detected": False,
         "device": "cuda:0",
+        "live_model_state_digest_after": "7" * 64,
         "trainable_parameter_count": 342,
         "parameter_digest_before": "0" * 64,
         "parameter_digest_after": "1" * 64,
@@ -125,6 +126,7 @@ def _receipt() -> dict[str, object]:
             "checkpoint": {
                 "file_sha256": HASH,
                 "verified_file_sha256": HASH,
+                "live_model_state_sha256_after_step": observation.live_model_state_digest_after,
                 "state_sha256_before_save": HASH,
                 "state_sha256_after_load": HASH,
                 "state_digests_before_save": dict(observation.state_digests),
@@ -249,6 +251,27 @@ def test_buffer_only_state_change_cannot_prove_parameter_update() -> None:
         )
 
 
+def test_omitted_cpu_checkpoint_model_state_is_rejected(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Catch a checkpoint capture silently omitting live post-step model state."""
+    model = torch.nn.Linear(2, 1)
+    original_copy = feasibility_probe._state_to_cpu
+
+    def omit_bias(value: object) -> object:
+        copied = original_copy(value)
+        if isinstance(copied, dict) and set(copied) == {"weight", "bias"}:
+            copied.pop("bias")
+        return copied
+
+    monkeypatch.setattr(feasibility_probe, "_state_to_cpu", omit_bias)
+
+    with pytest.raises(
+        FeasibilityError, match="CPU checkpoint model state mismatch"
+    ):
+        feasibility_probe._capture_checkpoint_model_state(model)
+
+
 @pytest.mark.parametrize(
     ("changes", "expected"),
     [
@@ -348,6 +371,12 @@ def test_feasibility_receipt_is_schema_valid_and_content_addressed(
         (
             lambda n: n["checkpoint"]["state_digests_after_load"].update(
                 {"optimizer": "b" * 64}
+            ),
+            "checkpoint_round_trip",
+        ),
+        (
+            lambda n: n["checkpoint"].update(
+                {"live_model_state_sha256_after_step": "b" * 64}
             ),
             "checkpoint_round_trip",
         ),

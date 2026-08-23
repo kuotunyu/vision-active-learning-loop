@@ -102,6 +102,7 @@ class StepObservation:
     bf16_autocast_enabled: bool
     deterministic_fallback_detected: bool
     device: str
+    live_model_state_digest_after: str
     trainable_parameter_count: int
     parameter_digest_before: str
     parameter_digest_after: str
@@ -180,6 +181,26 @@ def trainable_parameter_sha256(model: torch.nn.Module) -> str:
     if not named_parameters:
         raise FeasibilityError("model has no trainable parameters")
     return structured_state_sha256(named_parameters)
+
+
+def _verify_cpu_checkpoint_model_state(
+    live_model_digest: str, checkpoint_model_digest: str
+) -> None:
+    if checkpoint_model_digest != live_model_digest:
+        raise FeasibilityError("CPU checkpoint model state mismatch")
+
+
+def _capture_checkpoint_model_state(
+    model: torch.nn.Module,
+) -> tuple[Mapping[str, Any], str]:
+    live_model_digest = structured_state_sha256(model.state_dict())
+    checkpoint_model_state = _state_to_cpu(model.state_dict())
+    if not isinstance(checkpoint_model_state, Mapping):
+        raise FeasibilityError("CPU checkpoint model state mismatch")
+    _verify_cpu_checkpoint_model_state(
+        live_model_digest, structured_state_sha256(checkpoint_model_state)
+    )
+    return checkpoint_model_state, live_model_digest
 
 
 def run_one_step_smoke(
@@ -276,8 +297,11 @@ def run_one_step_smoke(
     gpu_seconds = float(start_event.elapsed_time(end_event)) / 1000.0
     loss_value = float(loss.detach().float().cpu())
     parameter_digest_after = trainable_parameter_sha256(model)
+    checkpoint_model_state, live_model_state_digest_after = (
+        _capture_checkpoint_model_state(model)
+    )
     state = CheckpointState(
-        model_state=_state_to_cpu(model.state_dict()),
+        model_state=checkpoint_model_state,
         optimizer_state=_state_to_cpu(optimizer.state_dict()),
         scheduler_state=_state_to_cpu(scheduler.state_dict()),
         scaler_state=None,
@@ -288,8 +312,6 @@ def run_one_step_smoke(
         input_digests={str(name): str(value) for name, value in input_digests.items()},
     )
     digests = checkpoint_state_digests(state)
-    if digests["model"] != structured_state_sha256(state.model_state):
-        raise FeasibilityError("CPU checkpoint model state mismatch")
     observation = StepObservation(
         ordered_losses=(loss_value,),
         finite_loss=finite_loss,
@@ -310,6 +332,7 @@ def run_one_step_smoke(
         bf16_autocast_enabled=autocast_observed,
         deterministic_fallback_detected=fallback_detected,
         device=str(device),
+        live_model_state_digest_after=live_model_state_digest_after,
         trainable_parameter_count=len(parameters),
         parameter_digest_before=parameter_digest_before,
         parameter_digest_after=parameter_digest_after,
@@ -531,6 +554,10 @@ def _build_receipt(
         == expected_state_sha256
         and checkpoint_evidence.get("state_sha256_after_load")
         == expected_state_sha256
+        and checkpoint_evidence.get("live_model_state_sha256_after_step")
+        == observation.live_model_state_digest_after
+        and checkpoint_evidence.get("live_model_state_sha256_after_step")
+        == observation.state_digests.get("model")
         and checkpoint_evidence.get("state_digests_before_save")
         == observation.state_digests
         and checkpoint_evidence.get("state_digests_after_load")
@@ -712,6 +739,7 @@ def _execute_probe(
         checkpoint_evidence = {
             "file_sha256": checkpoint_digest,
             "verified_file_sha256": sha256_file(checkpoint_target),
+            "live_model_state_sha256_after_step": observation.live_model_state_digest_after,
             "state_sha256_before_save": state_sha256_before_save,
             "state_sha256_after_load": state_sha256_after_load,
             "state_digests_before_save": state_digests_before_save,

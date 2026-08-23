@@ -137,6 +137,7 @@
           "required": [
             "file_sha256",
             "verified_file_sha256",
+            "live_model_state_sha256_after_step",
             "state_sha256_before_save",
             "state_sha256_after_load",
             "state_digests_before_save",
@@ -147,6 +148,7 @@
           "properties": {
             "file_sha256": {"$ref": "#/$defs/sha256"},
             "verified_file_sha256": {"$ref": "#/$defs/sha256"},
+            "live_model_state_sha256_after_step": {"$ref": "#/$defs/sha256"},
             "state_sha256_before_save": {"$ref": "#/$defs/sha256"},
             "state_sha256_after_load": {"$ref": "#/$defs/sha256"},
             "state_digests_before_save": {"$ref": "#/$defs/state_digests"},

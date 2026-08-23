@@ -425,6 +425,8 @@ def _validate_feasibility_consistency(normative: Mapping[str, object]) -> None:
         == normative.get("checkpoint_state_sha256")
         and checkpoint.get("state_sha256_after_load")
         == normative.get("checkpoint_state_sha256")
+        and checkpoint.get("live_model_state_sha256_after_step")
+        == state_digests.get("model")
         and checkpoint.get("state_digests_before_save") == state_digests
         and checkpoint.get("state_digests_after_load") == state_digests,
         "cublas_workspace_configured": runtime.get("cublas_workspace_config")
