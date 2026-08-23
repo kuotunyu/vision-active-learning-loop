@@ -11,6 +11,7 @@ import torch
 from torch import nn
 from transformers.models.rt_detr.modeling_rt_detr import RTDetrForObjectDetection
 
+import vision_active_learning_loop.probes.model_contract as model_contract_probe
 from vision_active_learning_loop.artifacts.receipts import (
     atomic_write_receipt,
     validate_receipt,
@@ -31,6 +32,7 @@ from vision_active_learning_loop.models.rtdetr_contract import (
 from vision_active_learning_loop.probes.model_contract import (
     ModelContractInputError,
     ModelContractReceipt,
+    ProcessorContractObservation,
     REQUIRED_MODEL_CONTRACT_INVARIANTS,
     _processor_document,
     _receipt_hashes,
@@ -50,10 +52,12 @@ FIXTURE_MANIFEST = (
 )
 
 
-def _outputs(*, queries: int = 300, labels: int = 4):
+def _outputs(*, queries: int = 300, labels: int = 4, decoder_layers: int = 3):
     logits = torch.linspace(-2, 2, 2 * queries * labels).reshape(2, queries, labels)
-    intermediate = torch.linspace(0, 1, 2 * 3 * queries * 4).reshape(
-        2, 3, queries, 4
+    intermediate = torch.linspace(
+        0, 1, 2 * decoder_layers * queries * 4
+    ).reshape(
+        2, decoder_layers, queries, 4
     )
     return SimpleNamespace(
         logits=logits,
@@ -62,16 +66,18 @@ def _outputs(*, queries: int = 300, labels: int = 4):
     )
 
 
-def _model(*, queries: int = 300, labels: int = 4):
+def _model(*, queries: int = 300, labels: int = 4, decoder_layers: int = 3):
     return SimpleNamespace(
         config=SimpleNamespace(
             num_queries=queries,
             num_labels=labels,
-            decoder_layers=3,
+            decoder_layers=decoder_layers,
         ),
         model=SimpleNamespace(
             decoder=SimpleNamespace(
-                class_embed=nn.ModuleList([nn.Linear(8, labels) for _ in range(3)])
+                class_embed=nn.ModuleList(
+                    [nn.Linear(8, labels) for _ in range(decoder_layers)]
+                )
             )
         ),
     )
@@ -108,6 +114,48 @@ def test_extract_raw_contract_rejects_unobservable_intermediate_boxes() -> None:
     outputs.intermediate_reference_points = None
 
     with pytest.raises(ContractUnavailable, match="intermediate_reference_points"):
+        extract_raw_contract(outputs)
+
+
+@pytest.mark.parametrize(
+    ("field", "tensor", "expected"),
+    [
+        ("logits", torch.zeros(2, 300), "logits.*rank 3"),
+        ("pred_boxes", torch.zeros(2, 300), "pred_boxes.*rank 3"),
+        (
+            "intermediate_reference_points",
+            torch.zeros(2, 3),
+            "intermediate_reference_points.*rank 4",
+        ),
+        (
+            "intermediate_reference_points",
+            torch.zeros(1, 3, 300, 4),
+            "batch and query dimensions",
+        ),
+        ("pred_boxes", torch.zeros(2, 300, 5), "last dimension 4"),
+        (
+            "intermediate_reference_points",
+            torch.zeros(2, 3, 300, 5),
+            "last dimension 4",
+        ),
+    ],
+    ids=[
+        "logits-rank",
+        "final-boxes-rank",
+        "intermediate-rank",
+        "intermediate-batch-mismatch",
+        "final-box-width",
+        "intermediate-box-width",
+    ],
+)
+def test_extract_raw_contract_rejects_malformed_tensor_shapes(
+    field: str, tensor: torch.Tensor, expected: str
+) -> None:
+    """Catch malformed output ranks or axes leaking an indexing exception."""
+    outputs = _outputs()
+    setattr(outputs, field, tensor)
+
+    with pytest.raises(ContractUnavailable, match=expected):
         extract_raw_contract(outputs)
 
 
@@ -154,6 +202,18 @@ def test_observed_rtdetr_contract() -> None:
     ]
     assert receipt.invariants["native_fifth_logit_absent"] is True
     assert receipt.status == "PASS"
+
+
+def test_four_decoder_layers_fail_the_exact_effective_contract() -> None:
+    """Catch accepting a shape-consistent decoder-depth drift from the pinned model."""
+    raw = extract_raw_contract(_outputs(decoder_layers=4))
+
+    observation = evaluate_raw_contract(
+        _model(decoder_layers=4), raw, foreground_scores(raw), _approved_source()
+    )
+
+    assert observation.status == "FAIL"
+    assert observation.invariants["config_decoder_layers_3"] is False
 
 
 @pytest.mark.parametrize(
@@ -332,7 +392,7 @@ def _receipt(*, processor_passed: bool = True) -> ModelContractReceipt:
         "processor_sha256": canonical_json_sha256(processor),
         "processor_file_sha256": "ffb4b9461a1dad746be8f0f9c8330ed7743a1ba5fba4f75c232cd281b3d4c64a",
         "fixture_sha256": "4e5eddbb21426c00932c34af331ae3e0ef3d30eb9010da7310b7319e91ec6d0f",
-        "probe_sha256": "8" * 64,
+        "probe_sha256": "640d7aceb71aa67db5d16709e1cc0db8de78735407ca47c0b1ed43dd0624cec4",
         "environment_sha256": canonical_json_sha256(environment),
     }
     return ModelContractReceipt(
@@ -506,6 +566,18 @@ def test_fixture_digest_is_canonical_across_line_endings(
     assert lf_hash == crlf_hash == canonical_json_sha256(manifest)
 
 
+def test_probe_source_digest_is_canonical_across_line_endings(tmp_path: Path) -> None:
+    """Catch checkout EOL conversion changing the approved implementation identity."""
+    lf = tmp_path / "probe-lf.py"
+    crlf = tmp_path / "probe-crlf.py"
+    lf.write_bytes(b"def probe():\n    return 1\n")
+    crlf.write_bytes(b"def probe():\r\n    return 1\r\n")
+
+    assert model_contract_probe._canonical_source_sha256(
+        lf
+    ) == model_contract_probe._canonical_source_sha256(crlf)
+
+
 def test_cpu_execution_device_observation_fails_closed(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -639,6 +711,153 @@ def test_unobservable_raw_shapes_can_be_published_only_as_fail(
     stored = json.loads(output.read_text(encoding="utf-8"))
     assert stored["normative"]["status"] == "FAIL"
     assert stored["normative"]["observed_shapes"]["logits"] == []
+
+
+def test_probe_publishes_complete_fail_receipt_for_malformed_intermediate_shape(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Catch an IndexError escaping instead of producing fail-closed evidence."""
+    source_files = dict(_receipt().source_files)
+    asset_model = {
+        "repo_id": "PekingU/rtdetr_r18vd",
+        "revision": "cc5b50f32f0100caaa3bd275343e2fb17762c73d",
+        "config": {"num_queries": 300, "decoder_layers": 3},
+        "files": {
+            "model.safetensors": {
+                "sha256": "fe87a5a30f5daf298d10794c7682a63b6107986f97d6a770ba948d89e4340093"
+            },
+            "config.json": {
+                "sha256": "0be0da088d7c323ebc32e7b564ffb7c072fd0c6197e0aba67a38d3eaf304e0e2"
+            },
+            "preprocessor_config.json": {
+                "sha256": "ffb4b9461a1dad746be8f0f9c8330ed7743a1ba5fba4f75c232cd281b3d4c64a"
+            },
+        },
+    }
+    asset_receipt = {
+        "normative": {
+            "status": "PASS",
+            "models": {"rtdetr": asset_model},
+            "transformers": {"version": "5.15.0", "files": source_files},
+        }
+    }
+    spec = SimpleNamespace(
+        repo_id="PekingU/rtdetr_r18vd",
+        revision="cc5b50f32f0100caaa3bd275343e2fb17762c73d",
+        transformers_version="5.15.0",
+    )
+
+    class TransferToken:
+        def to(self, device):
+            return self
+
+    class MalformedModel(nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.config = SimpleNamespace(
+                num_queries=300,
+                num_labels=80,
+                decoder_layers=3,
+                id2label={},
+                label2id={},
+            )
+            self.model = nn.Module()
+            self.model.decoder = nn.Module()
+            self.model.decoder.class_embed = nn.ModuleList(
+                [nn.Linear(8, 80) for _ in range(3)]
+            )
+
+        @classmethod
+        def from_pretrained(cls, *args, **kwargs):
+            return cls()
+
+        def to(self, device):
+            return self
+
+        def forward(self, **kwargs):
+            return SimpleNamespace(
+                logits=torch.zeros(2, 300, 4),
+                pred_boxes=torch.zeros(2, 300, 4),
+                intermediate_reference_points=torch.zeros(2, 3),
+            )
+
+    processor_invariants = {
+        name: True
+        for name in (
+            "aspect_preserving_size",
+            "bilinear_resize",
+            "bottom_right_padding_is_zero",
+            "expected_valid_mask_rectangles",
+            "labels_absent",
+            "normalization_disabled",
+            "padding_enabled",
+            "pixel_mask_shape",
+            "pixel_values_shape",
+            "rescale_one_over_255",
+            "rescale_without_normalization_observed",
+        )
+    }
+    environment = dict(_receipt().environment)
+    environment.pop("torch_execution")
+    monkeypatch.setattr(model_contract_probe, "validate_receipt", lambda *args: None)
+    monkeypatch.setattr(model_contract_probe, "_artifact_root", lambda: tmp_path)
+    monkeypatch.setattr(model_contract_probe, "_snapshot_root", lambda *args: tmp_path)
+    monkeypatch.setattr(
+        model_contract_probe,
+        "verify_snapshot",
+        lambda *args: SimpleNamespace(as_dict=lambda: asset_model),
+    )
+    monkeypatch.setattr(
+        model_contract_probe, "verify_transformers_source", lambda *args: {}
+    )
+    monkeypatch.setattr(
+        model_contract_probe, "_source_document", lambda observations: source_files
+    )
+    monkeypatch.setattr(
+        model_contract_probe, "_load_fixture_images", lambda path: ({}, [])
+    )
+    monkeypatch.setattr(model_contract_probe, "build_contract_processor", object)
+    monkeypatch.setattr(
+        model_contract_probe,
+        "prepare_contract_batch",
+        lambda processor, images: {
+            "pixel_values": TransferToken(),
+            "pixel_mask": TransferToken(),
+        },
+    )
+    monkeypatch.setattr(
+        model_contract_probe,
+        "observe_processor_contract",
+        lambda processor, batch: ProcessorContractObservation(
+            shapes={
+                "pixel_values": [2, 3, 640, 640],
+                "pixel_mask": [2, 640, 640],
+            },
+            invariants=processor_invariants,
+        ),
+    )
+    monkeypatch.setattr(
+        model_contract_probe, "_runtime_environment", lambda: (environment, [])
+    )
+    monkeypatch.setattr(
+        model_contract_probe,
+        "inspect_rtdetr_source_contract",
+        lambda path: _approved_source(),
+    )
+    monkeypatch.setattr(model_contract_probe, "RTDetrForObjectDetection", MalformedModel)
+    monkeypatch.setattr(torch.cuda, "current_device", lambda: 0)
+
+    receipt = run_model_contract_probe(spec, asset_receipt, FIXTURE_MANIFEST)
+    output = tmp_path / "model-contract.json"
+    atomic_write_receipt(output, receipt.as_dict())
+
+    stored = json.loads(output.read_text(encoding="utf-8"))
+    assert stored["normative"]["status"] == "FAIL"
+    assert stored["normative"]["observed_shapes"]["logits"] == []
+    assert any(
+        "intermediate_reference_points" in error
+        for error in stored["normative"]["errors"]
+    )
 
 
 def test_cli_manifest_discovers_model_contract_probe() -> None:

@@ -25,6 +25,7 @@ MODEL_CONTRACT_INVARIANTS = (
     "bilinear_resize",
     "bottom_right_padding_is_zero",
     "canonical_environment",
+    "config_decoder_layers_3",
     "config_num_labels_4",
     "config_num_queries_300",
     "decoder_class_heads_four_channels",
@@ -73,7 +74,7 @@ def valid_receipt() -> dict[str, object]:
             "processor_sha256": HASH,
             "processor_file_sha256": "ffb4b9461a1dad746be8f0f9c8330ed7743a1ba5fba4f75c232cd281b3d4c64a",
             "fixture_sha256": "4e5eddbb21426c00932c34af331ae3e0ef3d30eb9010da7310b7319e91ec6d0f",
-            "probe_sha256": HASH,
+            "probe_sha256": "640d7aceb71aa67db5d16709e1cc0db8de78735407ca47c0b1ed43dd0624cec4",
             "environment_sha256": HASH,
             "model": {
                 "repository": "PekingU/rtdetr_r18vd",
@@ -344,6 +345,36 @@ def test_model_contract_rejects_unapproved_asset_pin(
     normative[field] = "b" * 64
 
     with pytest.raises(ReceiptValidationError, match="approved pin|must equal"):
+        atomic_write_receipt(tmp_path / "receipt.json", valid_receipt)
+
+
+def test_model_contract_rejects_unapproved_probe_implementation(
+    tmp_path: Path, valid_receipt: dict[str, object]
+) -> None:
+    """Catch rehashing an arbitrary probe implementation into an otherwise valid PASS."""
+    normative = valid_receipt["normative"]
+    assert isinstance(normative, dict)
+    normative["probe_sha256"] = "0" * 64
+
+    with pytest.raises(ReceiptValidationError, match="probe_sha256.*approved pin|must equal"):
+        atomic_write_receipt(tmp_path / "receipt.json", valid_receipt)
+
+
+def test_model_contract_rejects_rehashed_decoder_depth_mutation(
+    tmp_path: Path, valid_receipt: dict[str, object]
+) -> None:
+    """Catch a self-consistent depth-four config and output shape replacing the pin."""
+    normative = valid_receipt["normative"]
+    assert isinstance(normative, dict)
+    config = normative["config"]
+    shapes = normative["observed_shapes"]
+    assert isinstance(config, dict)
+    assert isinstance(shapes, dict)
+    config["decoder_layers"] = 4
+    shapes["intermediate_reference_points"] = [2, 4, 300, 4]
+    normative["config_sha256"] = canonical_json_sha256(config)
+
+    with pytest.raises(ReceiptValidationError, match="config_decoder_layers_3"):
         atomic_write_receipt(tmp_path / "receipt.json", valid_receipt)
 
 

@@ -129,9 +129,31 @@ def extract_raw_contract(outputs: Any) -> RawDetectorOutput:
     logits = _required_tensor(outputs, "logits")
     final_boxes = _required_tensor(outputs, "pred_boxes")
     intermediate = _required_tensor(outputs, "intermediate_reference_points")
-    if intermediate.ndim < 2 or intermediate.shape[1] < 2:
+    expected_ranks = (
+        ("logits", logits, 3),
+        ("pred_boxes", final_boxes, 3),
+        ("intermediate_reference_points", intermediate, 4),
+    )
+    for name, tensor, expected_rank in expected_ranks:
+        if tensor.ndim != expected_rank:
+            raise ContractUnavailable(f"{name} must have rank {expected_rank}")
+    if intermediate.shape[1] < 2:
         raise ContractUnavailable(
             "intermediate_reference_points requires at least two decoder layers"
+        )
+    if final_boxes.shape[-1] != 4:
+        raise ContractUnavailable("pred_boxes must have last dimension 4")
+    if intermediate.shape[-1] != 4:
+        raise ContractUnavailable(
+            "intermediate_reference_points must have last dimension 4"
+        )
+    if not (
+        logits.shape[:2] == final_boxes.shape[:2]
+        and logits.shape[:2]
+        == (intermediate.shape[0], intermediate.shape[2])
+    ):
+        raise ContractUnavailable(
+            "raw outputs must share batch and query dimensions"
         )
     return RawDetectorOutput(
         logits=logits,
@@ -255,6 +277,7 @@ def evaluate_raw_contract(
     invariants = {
         "config_num_queries_300": config_num_queries == 300,
         "config_num_labels_4": config_num_labels == 4,
+        "config_decoder_layers_3": decoder_layers == 3,
         "decoder_class_heads_four_channels": (
             len(class_heads) == decoder_layers
             and all(getattr(head, "out_features", None) == 4 for head in class_heads)

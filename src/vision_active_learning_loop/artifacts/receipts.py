@@ -29,6 +29,7 @@ _APPROVED_MODEL_CONTRACT_ASSET_HASHES = {
     "config_file_sha256": "0be0da088d7c323ebc32e7b564ffb7c072fd0c6197e0aba67a38d3eaf304e0e2",
     "processor_file_sha256": "ffb4b9461a1dad746be8f0f9c8330ed7743a1ba5fba4f75c232cd281b3d4c64a",
     "fixture_sha256": "4e5eddbb21426c00932c34af331ae3e0ef3d30eb9010da7310b7319e91ec6d0f",
+    "probe_sha256": "640d7aceb71aa67db5d16709e1cc0db8de78735407ca47c0b1ed43dd0624cec4",
 }
 _APPROVED_RTDETR_SOURCE_FILES = {
     "models/rt_detr/configuration_rt_detr.py": {
@@ -211,6 +212,7 @@ def _validate_model_contract_consistency(normative: Mapping[str, object]) -> Non
     }
     logits_shape = shapes.get("logits")
     expected_evidence: dict[str, bool] = {
+        "config_decoder_layers_3": decoder_layers == 3,
         "config_num_queries_300": config.get("num_queries") == 300,
         "config_num_labels_4": config.get("num_labels") == 4,
         "decoder_layers_at_least_two": (

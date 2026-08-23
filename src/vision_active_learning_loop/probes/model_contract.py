@@ -19,7 +19,7 @@ import yaml
 from PIL import Image
 from transformers import RTDetrForObjectDetection, RTDetrImageProcessor
 
-from ..artifacts.digests import canonical_json_sha256, sha256_file
+from ..artifacts.digests import canonical_json_sha256
 from ..artifacts.receipts import atomic_write_receipt, validate_receipt
 from ..cli_manifest import command
 from ..environment import (
@@ -54,6 +54,7 @@ REQUIRED_MODEL_CONTRACT_INVARIANTS = (
     "bilinear_resize",
     "bottom_right_padding_is_zero",
     "canonical_environment",
+    "config_decoder_layers_3",
     "config_num_labels_4",
     "config_num_queries_300",
     "decoder_class_heads_four_channels",
@@ -462,6 +463,12 @@ def _unobserved_torch_execution() -> dict[str, object]:
     }
 
 
+def _canonical_source_sha256(path: Path) -> str:
+    """Hash UTF-8 source after universal-newline checkout normalization."""
+    normalized = Path(path).read_text(encoding="utf-8")
+    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+
+
 def _probe_hash() -> str:
     source_files = (
         Path(__file__).resolve(),
@@ -469,7 +476,9 @@ def _probe_hash() -> str:
         _project_root() / "scripts" / "generate_wave0_fixtures.py",
     )
     observations = {
-        str(path.relative_to(_project_root())).replace("\\", "/"): sha256_file(path)
+        str(path.relative_to(_project_root())).replace("\\", "/"): (
+            _canonical_source_sha256(path)
+        )
         for path in source_files
     }
     return canonical_json_sha256(observations)
