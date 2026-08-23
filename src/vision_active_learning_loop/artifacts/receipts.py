@@ -139,8 +139,28 @@ def _load_schema(path: Path) -> Mapping[str, object]:
 
 
 def _validate_schema(
-    value: object, schema: Mapping[str, object], location: str = "$"
+    value: object,
+    schema: Mapping[str, object],
+    location: str = "$",
+    root_schema: Mapping[str, object] | None = None,
 ) -> None:
+    if root_schema is None:
+        root_schema = schema
+    reference = schema.get("$ref")
+    if isinstance(reference, str):
+        resolved = _resolve_local_schema_reference(reference, root_schema)
+        _validate_schema(value, resolved, location, root_schema)
+        return
+    condition = schema.get("if")
+    if isinstance(condition, Mapping):
+        try:
+            _validate_schema(value, condition, location, root_schema)
+        except ReceiptValidationError:
+            selected = schema.get("else")
+        else:
+            selected = schema.get("then")
+        if isinstance(selected, Mapping):
+            _validate_schema(value, selected, location, root_schema)
     if "const" in schema and not _schema_values_equal(value, schema["const"]):
         raise ReceiptValidationError(f"{location} must equal {schema['const']!r}")
     enum = schema.get("enum")
@@ -169,11 +189,15 @@ def _validate_schema(
         for name, member in value.items():
             member_schema = properties.get(name)
             if isinstance(member_schema, Mapping):
-                _validate_schema(member, member_schema, f"{location}.{name}")
+                _validate_schema(
+                    member, member_schema, f"{location}.{name}", root_schema
+                )
             elif additional is False:
                 raise ReceiptValidationError(f"{location}.{name} is not permitted")
             elif isinstance(additional, Mapping):
-                _validate_schema(member, additional, f"{location}.{name}")
+                _validate_schema(
+                    member, additional, f"{location}.{name}", root_schema
+                )
     elif schema_type == "array":
         if not isinstance(value, list):
             raise ReceiptValidationError(f"{location} must be an array")
@@ -183,7 +207,9 @@ def _validate_schema(
         items = schema.get("items")
         if isinstance(items, Mapping):
             for index, member in enumerate(value):
-                _validate_schema(member, items, f"{location}[{index}]")
+                _validate_schema(
+                    member, items, f"{location}[{index}]", root_schema
+                )
     elif schema_type == "string":
         if not isinstance(value, str):
             raise ReceiptValidationError(f"{location} must be a string")
@@ -198,6 +224,22 @@ def _validate_schema(
             raise ReceiptValidationError(f"{location} must be a number")
     elif schema_type == "boolean" and type(value) is not bool:
         raise ReceiptValidationError(f"{location} must be a boolean")
+
+
+def _resolve_local_schema_reference(
+    reference: str, root_schema: Mapping[str, object]
+) -> Mapping[str, object]:
+    if not reference.startswith("#/"):
+        raise ReceiptValidationError("only local schema references are supported")
+    current: object = root_schema
+    for encoded_part in reference[2:].split("/"):
+        part = encoded_part.replace("~1", "/").replace("~0", "~")
+        if not isinstance(current, Mapping) or part not in current:
+            raise ReceiptValidationError(f"unresolved schema reference: {reference}")
+        current = current[part]
+    if not isinstance(current, Mapping):
+        raise ReceiptValidationError(f"schema reference is not an object: {reference}")
+    return current
 
 
 def _reject_non_finite(value: object, location: str = "$") -> None:

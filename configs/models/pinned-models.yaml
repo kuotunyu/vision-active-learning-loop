@@ -41,15 +41,23 @@ models:
       model.safetensors:
         size: 80904152
         sha256: fe87a5a30f5daf298d10794c7682a63b6107986f97d6a770ba948d89e4340093
+        etag: fe87a5a30f5daf298d10794c7682a63b6107986f97d6a770ba948d89e4340093
+        blob_id: 99878207a862ab963eafb175cd79c4364fa1db62
       config.json:
         size: 5307
         sha256: 0be0da088d7c323ebc32e7b564ffb7c072fd0c6197e0aba67a38d3eaf304e0e2
+        etag: 2bc5c87afa01965b4d6dd65053a0b087c013aee2
+        blob_id: 2bc5c87afa01965b4d6dd65053a0b087c013aee2
       preprocessor_config.json:
         size: 841
         sha256: ffb4b9461a1dad746be8f0f9c8330ed7743a1ba5fba4f75c232cd281b3d4c64a
+        etag: 0eaa5c051317a3725f47218ae30b6e654f0ece36
+        blob_id: 0eaa5c051317a3725f47218ae30b6e654f0ece36
       README.md:
         size: 9102
         sha256: 0d6d6065595011f4897e724f11d2b86494764eba68e3514cc6c70f0a851e539e
+        etag: 8911a08498e4b2a1118faa1d63b091c5b237b24d
+        blob_id: 8911a08498e4b2a1118faa1d63b091c5b237b24d
   dinov2:
     repo_id: facebook/dinov2-small
     revision: ed25f3a31f01632728cabb09d1542f84ab7b0056
@@ -59,12 +67,20 @@ models:
       model.safetensors:
         size: 88249960
         sha256: ae1e99fcefd534ed978cdeb8326f08030c96e28b7a81ffcbc98a857c84d14be1
+        etag: ae1e99fcefd534ed978cdeb8326f08030c96e28b7a81ffcbc98a857c84d14be1
+        blob_id: e13b8fec08e8dd9ac531165e7c8c0ec7d467952a
       config.json:
         size: 547
         sha256: 1809f83e3bdb1609a501a610ad4a742f4fd8ae44d72ca4aa0df52d1f2ac8628d
+        etag: 5664b325e6258d3960fad8c4c1cff958f3cc2272
+        blob_id: 5664b325e6258d3960fad8c4c1cff958f3cc2272
       preprocessor_config.json:
         size: 436
         sha256: 14e780d86fa1861f8751f868d7f45425b5feb55c38ca26f152ca5097ab30f828
+        etag: ff5b47c2edcd1d3556d63c01a65d93b58b9efce1
+        blob_id: ff5b47c2edcd1d3556d63c01a65d93b58b9efce1
       README.md:
         size: 3033
         sha256: 4c20dca454a8e5c670e8de5c7e6040f512aeca5438516f7623eedc4e3b00599c
+        etag: 6b3380957df44ed203ec1d5102e1245accbbbba9
+        blob_id: 6b3380957df44ed203ec1d5102e1245accbbbba9

@@ -11,10 +11,46 @@
       "type": "object",
       "additionalProperties": false,
       "required": ["models", "transformers", "invariants", "status", "errors"],
+      "if": {
+        "type": "object",
+        "required": ["status"],
+        "properties": {"status": {"const": "PASS"}}
+      },
+      "then": {
+        "type": "object",
+        "properties": {
+          "models": {
+            "type": "object",
+            "required": ["rtdetr", "dinov2"]
+          },
+          "transformers": {
+            "type": "object",
+            "properties": {
+              "files": {
+                "type": "object",
+                "required": [
+                  "models/bit/image_processing_bit.py",
+                  "models/dinov2/configuration_dinov2.py",
+                  "models/dinov2/modeling_dinov2.py",
+                  "models/rt_detr/configuration_rt_detr.py",
+                  "models/rt_detr/configuration_rt_detr_resnet.py",
+                  "models/rt_detr/image_processing_rt_detr.py",
+                  "models/rt_detr/modeling_rt_detr.py",
+                  "models/rt_detr/modeling_rt_detr_resnet.py"
+                ]
+              }
+            }
+          }
+        }
+      },
       "properties": {
         "models": {
           "type": "object",
-          "additionalProperties": {"$ref": "#/$defs/model"}
+          "additionalProperties": false,
+          "properties": {
+            "rtdetr": {"$ref": "#/$defs/rtdetr"},
+            "dinov2": {"$ref": "#/$defs/dinov2"}
+          }
         },
         "transformers": {
           "type": "object",
@@ -24,18 +60,29 @@
             "version": {"const": "5.15.0"},
             "files": {
               "type": "object",
-              "additionalProperties": {"$ref": "#/$defs/file"}
+              "additionalProperties": false,
+              "properties": {
+                "models/bit/image_processing_bit.py": {"$ref": "#/$defs/file"},
+                "models/dinov2/configuration_dinov2.py": {"$ref": "#/$defs/file"},
+                "models/dinov2/modeling_dinov2.py": {"$ref": "#/$defs/file"},
+                "models/rt_detr/configuration_rt_detr.py": {"$ref": "#/$defs/file"},
+                "models/rt_detr/configuration_rt_detr_resnet.py": {"$ref": "#/$defs/file"},
+                "models/rt_detr/image_processing_rt_detr.py": {"$ref": "#/$defs/file"},
+                "models/rt_detr/modeling_rt_detr.py": {"$ref": "#/$defs/file"},
+                "models/rt_detr/modeling_rt_detr_resnet.py": {"$ref": "#/$defs/file"}
+              }
             }
           }
         },
         "invariants": {
           "type": "object",
           "additionalProperties": false,
-          "required": ["all_assets_verified", "exact_revisions", "exact_file_inventory", "apache_2_0_licenses", "exact_transformers_source", "data_root_unset"],
+          "required": ["all_assets_verified", "exact_revisions", "exact_file_inventory", "exact_huggingface_metadata", "apache_2_0_licenses", "exact_transformers_source", "data_root_unset"],
           "properties": {
             "all_assets_verified": {"type": "boolean"},
             "exact_revisions": {"type": "boolean"},
             "exact_file_inventory": {"type": "boolean"},
+            "exact_huggingface_metadata": {"type": "boolean"},
             "apache_2_0_licenses": {"type": "boolean"},
             "exact_transformers_source": {"type": "boolean"},
             "data_root_unset": {"type": "boolean"}
@@ -75,17 +122,118 @@
         "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
       }
     },
-    "model": {
+    "metadataFile": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["name", "repo_id", "revision", "license", "license_evidence", "files", "config", "processor"],
+      "required": ["metadata_path", "commit_hash", "etag", "blob_id", "timestamp", "size", "sha256"],
       "properties": {
-        "name": {"enum": ["rtdetr", "dinov2"]},
-        "repo_id": {"enum": ["PekingU/rtdetr_r18vd", "facebook/dinov2-small"]},
-        "revision": {"enum": ["cc5b50f32f0100caaa3bd275343e2fb17762c73d", "ed25f3a31f01632728cabb09d1542f84ab7b0056"]},
+        "metadata_path": {"type": "string"},
+        "commit_hash": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+        "etag": {"type": "string", "pattern": "^[0-9a-f]{40,64}$"},
+        "blob_id": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+        "timestamp": {"type": "number"},
+        "size": {"type": "integer"},
+        "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+      }
+    },
+    "payloadFiles": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["README.md", "config.json", "model.safetensors", "preprocessor_config.json"],
+      "properties": {
+        "README.md": {"$ref": "#/$defs/file"},
+        "config.json": {"$ref": "#/$defs/file"},
+        "model.safetensors": {"$ref": "#/$defs/file"},
+        "preprocessor_config.json": {"$ref": "#/$defs/file"}
+      }
+    },
+    "metadataFiles": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["README.md", "config.json", "model.safetensors", "preprocessor_config.json"],
+      "properties": {
+        "README.md": {"$ref": "#/$defs/metadataFile"},
+        "config.json": {"$ref": "#/$defs/metadataFile"},
+        "model.safetensors": {"$ref": "#/$defs/metadataFile"},
+        "preprocessor_config.json": {"$ref": "#/$defs/metadataFile"}
+      }
+    },
+    "rtdetrMetadataInventory": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [".cache/huggingface/.gitignore", ".cache/huggingface/CACHEDIR.TAG", ".cache/huggingface/download/README.md.metadata", ".cache/huggingface/download/config.json.metadata", ".cache/huggingface/download/model.safetensors.metadata", ".cache/huggingface/download/preprocessor_config.json.metadata", ".cache/huggingface/trees/cc5b50f32f0100caaa3bd275343e2fb17762c73d.json"],
+      "properties": {
+        ".cache/huggingface/.gitignore": {"$ref": "#/$defs/file"},
+        ".cache/huggingface/CACHEDIR.TAG": {"$ref": "#/$defs/file"},
+        ".cache/huggingface/download/README.md.metadata": {"$ref": "#/$defs/file"},
+        ".cache/huggingface/download/config.json.metadata": {"$ref": "#/$defs/file"},
+        ".cache/huggingface/download/model.safetensors.metadata": {"$ref": "#/$defs/file"},
+        ".cache/huggingface/download/preprocessor_config.json.metadata": {"$ref": "#/$defs/file"},
+        ".cache/huggingface/trees/cc5b50f32f0100caaa3bd275343e2fb17762c73d.json": {"$ref": "#/$defs/file"}
+      }
+    },
+    "dinov2MetadataInventory": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [".cache/huggingface/.gitignore", ".cache/huggingface/CACHEDIR.TAG", ".cache/huggingface/download/README.md.metadata", ".cache/huggingface/download/config.json.metadata", ".cache/huggingface/download/model.safetensors.metadata", ".cache/huggingface/download/preprocessor_config.json.metadata", ".cache/huggingface/trees/ed25f3a31f01632728cabb09d1542f84ab7b0056.json"],
+      "properties": {
+        ".cache/huggingface/.gitignore": {"$ref": "#/$defs/file"},
+        ".cache/huggingface/CACHEDIR.TAG": {"$ref": "#/$defs/file"},
+        ".cache/huggingface/download/README.md.metadata": {"$ref": "#/$defs/file"},
+        ".cache/huggingface/download/config.json.metadata": {"$ref": "#/$defs/file"},
+        ".cache/huggingface/download/model.safetensors.metadata": {"$ref": "#/$defs/file"},
+        ".cache/huggingface/download/preprocessor_config.json.metadata": {"$ref": "#/$defs/file"},
+        ".cache/huggingface/trees/ed25f3a31f01632728cabb09d1542f84ab7b0056.json": {"$ref": "#/$defs/file"}
+      }
+    },
+    "rtdetrMetadata": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["commit_hash", "files", "inventory"],
+      "properties": {
+        "commit_hash": {"const": "cc5b50f32f0100caaa3bd275343e2fb17762c73d"},
+        "files": {"$ref": "#/$defs/metadataFiles"},
+        "inventory": {"$ref": "#/$defs/rtdetrMetadataInventory"}
+      }
+    },
+    "dinov2Metadata": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["commit_hash", "files", "inventory"],
+      "properties": {
+        "commit_hash": {"const": "ed25f3a31f01632728cabb09d1542f84ab7b0056"},
+        "files": {"$ref": "#/$defs/metadataFiles"},
+        "inventory": {"$ref": "#/$defs/dinov2MetadataInventory"}
+      }
+    },
+    "rtdetr": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "repo_id", "revision", "license", "license_evidence", "files", "huggingface_metadata", "config", "processor"],
+      "properties": {
+        "name": {"const": "rtdetr"},
+        "repo_id": {"const": "PekingU/rtdetr_r18vd"},
+        "revision": {"const": "cc5b50f32f0100caaa3bd275343e2fb17762c73d"},
         "license": {"const": "apache-2.0"},
         "license_evidence": {"$ref": "#/$defs/licenseEvidence"},
-        "files": {"type": "object", "additionalProperties": {"$ref": "#/$defs/file"}},
+        "files": {"$ref": "#/$defs/payloadFiles"},
+        "huggingface_metadata": {"$ref": "#/$defs/rtdetrMetadata"},
+        "config": {"type": "object"},
+        "processor": {"type": "object"}
+      }
+    },
+    "dinov2": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "repo_id", "revision", "license", "license_evidence", "files", "huggingface_metadata", "config", "processor"],
+      "properties": {
+        "name": {"const": "dinov2"},
+        "repo_id": {"const": "facebook/dinov2-small"},
+        "revision": {"const": "ed25f3a31f01632728cabb09d1542f84ab7b0056"},
+        "license": {"const": "apache-2.0"},
+        "license_evidence": {"$ref": "#/$defs/licenseEvidence"},
+        "files": {"$ref": "#/$defs/payloadFiles"},
+        "huggingface_metadata": {"$ref": "#/$defs/dinov2Metadata"},
         "config": {"type": "object"},
         "processor": {"type": "object"}
       }
