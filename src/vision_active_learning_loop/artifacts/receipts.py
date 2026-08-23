@@ -124,6 +124,8 @@ def _validate_receipt(
         raise ReceiptValidationError("normative must be an object")
     if receipt.get("receipt_type") == "model-contract":
         _validate_model_contract_consistency(normative)
+    elif receipt.get("receipt_type") == "feasibility":
+        _validate_feasibility_consistency(normative)
     invariants = normative.get("invariants")
     if not isinstance(invariants, Mapping):
         raise ReceiptValidationError("invariants must be an object")
@@ -312,6 +314,167 @@ def _validate_model_contract_consistency(normative: Mapping[str, object]) -> Non
         if invariants.get(invariant_name) is True and evidence_passed is not True:
             raise ReceiptValidationError(
                 f"{invariant_name} contradicts embedded model-contract evidence"
+            )
+
+
+def _validate_feasibility_consistency(normative: Mapping[str, object]) -> None:
+    """Reject feasibility claims that contradict their embedded observations."""
+    runtime = normative.get("runtime")
+    recipe = normative.get("recipe")
+    shapes = normative.get("observed_shapes")
+    vram = normative.get("vram")
+    timing = normative.get("timing")
+    step = normative.get("step")
+    checkpoint = normative.get("checkpoint")
+    synthetic_labels = normative.get("synthetic_labels")
+    invariants = normative.get("invariants")
+    state_digests = normative.get("state_digests")
+    comparison = normative.get("comparison")
+    if not all(
+        isinstance(value, Mapping)
+        for value in (
+            runtime,
+            recipe,
+            shapes,
+            vram,
+            timing,
+            step,
+            checkpoint,
+            synthetic_labels,
+            invariants,
+            state_digests,
+            comparison,
+        )
+    ):
+        raise ReceiptValidationError("feasibility evidence must be objects")
+    assert isinstance(runtime, Mapping)
+    assert isinstance(recipe, Mapping)
+    assert isinstance(shapes, Mapping)
+    assert isinstance(vram, Mapping)
+    assert isinstance(timing, Mapping)
+    assert isinstance(step, Mapping)
+    assert isinstance(checkpoint, Mapping)
+    assert isinstance(synthetic_labels, Mapping)
+    assert isinstance(invariants, Mapping)
+    assert isinstance(state_digests, Mapping)
+    assert isinstance(comparison, Mapping)
+
+    ordered_losses = normative.get("ordered_losses")
+    if not isinstance(ordered_losses, list):
+        raise ReceiptValidationError("ordered_losses must be an array")
+    expected_loss_hex = [value.hex() for value in ordered_losses if isinstance(value, float)]
+    if len(expected_loss_hex) != len(ordered_losses):
+        expected_loss_hex = [float(value).hex() for value in ordered_losses]
+    comparison_preimage = {
+        "ordered_loss_hex": expected_loss_hex,
+        "state_digests": dict(state_digests),
+    }
+    if comparison.get("ordered_loss_hex") != expected_loss_hex:
+        raise ReceiptValidationError("comparison ordered losses mismatch")
+    if comparison.get("state_digests") != state_digests:
+        raise ReceiptValidationError("comparison state digests mismatch")
+    if comparison.get("sha256") != canonical_json_sha256(comparison_preimage):
+        raise ReceiptValidationError("comparison digest mismatch")
+
+    peak_allocated = vram.get("peak_allocated_bytes")
+    peak_reserved = vram.get("peak_reserved_bytes")
+    limit = vram.get("allocated_limit_bytes")
+    if any(
+        type(value) is not int or value < 0
+        for value in (peak_allocated, peak_reserved, limit)
+    ):
+        raise ReceiptValidationError("VRAM observations must be non-negative integers")
+    assert isinstance(peak_allocated, int)
+    assert isinstance(peak_reserved, int)
+    assert isinstance(limit, int)
+    if (
+        invariants.get("peak_allocated_vram_within_22_gib") is True
+        and peak_allocated > limit
+    ):
+        raise ReceiptValidationError(
+            "peak_allocated_vram_within_22_gib contradicts embedded feasibility evidence"
+        )
+    if peak_reserved < peak_allocated:
+        raise ReceiptValidationError("reserved VRAM must cover allocated VRAM")
+    for name, value in timing.items():
+        if type(value) not in (int, float) or value < 0:
+            raise ReceiptValidationError(f"timing {name} must be non-negative")
+
+    expected_evidence = {
+        "parameter_changed": step.get("parameter_digest_before")
+        != step.get("parameter_digest_after")
+        and step.get("parameter_digest_after") == state_digests.get("model"),
+        "adamw_update": step.get("parameter_digest_before")
+        != step.get("parameter_digest_after")
+        and step.get("parameter_digest_after") == state_digests.get("model"),
+        "batch_size_two": shapes.get("pixel_values") == [2, 3, 640, 640]
+        and shapes.get("pixel_mask") == [2, 640, 640],
+        "bf16_autocast": runtime.get("bf16_autocast_enabled") is True,
+        "bf16_supported": runtime.get("bf16_supported") is True,
+        "checkpoint_content_verified": checkpoint.get("file_sha256")
+        == normative.get("checkpoint_sha256")
+        and checkpoint.get("verified_file_sha256")
+        == normative.get("checkpoint_sha256")
+        and checkpoint.get("input_digests_verified") is True,
+        "checkpoint_round_trip": checkpoint.get("state_sha256_before_save")
+        == normative.get("checkpoint_state_sha256")
+        and checkpoint.get("state_sha256_after_load")
+        == normative.get("checkpoint_state_sha256")
+        and checkpoint.get("state_digests_before_save") == state_digests
+        and checkpoint.get("state_digests_after_load") == state_digests,
+        "cublas_workspace_configured": runtime.get("cublas_workspace_config")
+        == ":4096:8",
+        "cudnn_benchmark_disabled": runtime.get("cudnn_benchmark") is False,
+        "deterministic_algorithms": runtime.get("deterministic_algorithms") is True
+        and runtime.get("deterministic_debug_mode") == 2,
+        "deterministic_fallback_absent": runtime.get(
+            "deterministic_fallback_detected"
+        )
+        is False,
+        "finite_gradients": step.get("finite_gradients") is True,
+        "finite_loss": step.get("finite_loss") is True
+        and bool(ordered_losses)
+        and all(type(value) in (int, float) and math.isfinite(value) for value in ordered_losses)
+        and step.get("loss_hex") == float(ordered_losses[0]).hex(),
+        "gradient_clip_0_1": recipe.get("gradient_clip_norm") == 0.1,
+        "peak_allocated_vram_within_22_gib": peak_allocated <= limit
+        and limit == 22 * 1024**3,
+        "resume_state_verified": normative.get("resume_verified") is True
+        and checkpoint.get("state_digests_after_restore") == state_digests,
+        "seed_17": runtime.get("seed") == 17 and recipe.get("seed") == 17,
+        "synthetic_labels_only": recipe.get("fixture_set")
+        == "wave0-rtdetr-contract"
+        and dict(synthetic_labels)
+        == {
+            "item_ids": ["wide-gradient", "tall-checker"],
+            "class_labels": [[0], [3]],
+            "boxes_per_image": [1, 1],
+            "source": "tracked-synthetic-fixture-geometry-v1",
+        },
+        "tf32_disabled": runtime.get("tf32") is False
+        and runtime.get("cuda_matmul_allow_tf32") is False
+        and runtime.get("cudnn_allow_tf32") is False,
+    }
+    exact_recipe = {
+        "seed": 17,
+        "batch_size": 2,
+        "optimizer": "AdamW",
+        "detector_learning_rate": 1e-4,
+        "backbone_learning_rate": 1e-5,
+        "weight_decay": 1e-4,
+        "gradient_clip_norm": 0.1,
+        "fixture_set": "wave0-rtdetr-contract",
+    }
+    if dict(recipe) != exact_recipe:
+        if recipe.get("gradient_clip_norm") != 0.1:
+            raise ReceiptValidationError(
+                "gradient_clip_0_1 contradicts embedded feasibility evidence"
+            )
+        raise ReceiptValidationError("training recipe differs from the approved smoke")
+    for invariant_name, evidence_passed in expected_evidence.items():
+        if invariants.get(invariant_name) is True and evidence_passed is not True:
+            raise ReceiptValidationError(
+                f"{invariant_name} contradicts embedded feasibility evidence"
             )
 
 
