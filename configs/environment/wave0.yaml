@@ -1,0 +1,13 @@
+schema_version: 1
+python: 3.12.11
+torch: 2.12.0+cu126
+torchvision: 0.27.0+cu126
+transformers: 5.15.0
+cuda_runtime: "12.6"
+canonical_os: Linux
+requires_wsl: true
+gpu_name: NVIDIA GeForce RTX 4090
+container_image:
+  requested: nvidia/cuda:12.6.3-cudnn-runtime-ubuntu24.04
+  digest: sha256:8aef630a54bc5c5146ae5ce68e6af5caa3df0fb690bb91544175c91f307e4356
+  linux_amd64_digest: sha256:23debbe74125dc84df96df79cff42079b3b15265c27140714fd27b5aa718faa4
