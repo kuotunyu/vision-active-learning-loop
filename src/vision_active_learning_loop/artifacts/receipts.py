@@ -24,6 +24,34 @@ _ALLOWED_SCHEMAS = {
     ("feasibility", 1): _SCHEMA_ROOT / "feasibility-receipt.schema.json",
     ("model-assets", 1): _SCHEMA_ROOT / "model-asset-receipt.schema.json",
 }
+_APPROVED_MODEL_CONTRACT_ASSET_HASHES = {
+    "model_sha256": "fe87a5a30f5daf298d10794c7682a63b6107986f97d6a770ba948d89e4340093",
+    "config_file_sha256": "0be0da088d7c323ebc32e7b564ffb7c072fd0c6197e0aba67a38d3eaf304e0e2",
+    "processor_file_sha256": "ffb4b9461a1dad746be8f0f9c8330ed7743a1ba5fba4f75c232cd281b3d4c64a",
+    "fixture_sha256": "4e5eddbb21426c00932c34af331ae3e0ef3d30eb9010da7310b7319e91ec6d0f",
+}
+_APPROVED_RTDETR_SOURCE_FILES = {
+    "models/rt_detr/configuration_rt_detr.py": {
+        "size": 9028,
+        "sha256": "22c1b65c1385d35534658cbf1e91afa7174737134cb6a14ffdaffcd7b7a161a6",
+    },
+    "models/rt_detr/configuration_rt_detr_resnet.py": {
+        "size": 3538,
+        "sha256": "52a9a3ca8dd648f04bcb5f61b30ab927ca3f15187748736f7714f48af1f1ae73",
+    },
+    "models/rt_detr/image_processing_rt_detr.py": {
+        "size": 24476,
+        "sha256": "47ae2f0ca25a2763f4f42b27e8a2760bcbb0c2ef07d0f1e97aa779f9219fc558",
+    },
+    "models/rt_detr/modeling_rt_detr.py": {
+        "size": 86564,
+        "sha256": "fce24c79c8599e52f3648f549502879e9b396cc86f593c3a07baf10c002cead3",
+    },
+    "models/rt_detr/modeling_rt_detr_resnet.py": {
+        "size": 15986,
+        "sha256": "fc13ccc6ba1e57862e4c129c9e74bb97f091012186c1104974b92d5ec7b4019c",
+    },
+}
 def validate_receipt(receipt: Mapping[str, object], schema_path: Path) -> None:
     """Validate a stored receipt against its allowlisted receipt type and schema."""
     _validate_receipt(receipt, schema_path=schema_path, require_content_hash=True)
@@ -93,6 +121,8 @@ def _validate_receipt(
     normative = receipt.get("normative")
     if not isinstance(normative, Mapping):
         raise ReceiptValidationError("normative must be an object")
+    if receipt.get("receipt_type") == "model-contract":
+        _validate_model_contract_consistency(normative)
     invariants = normative.get("invariants")
     if not isinstance(invariants, Mapping):
         raise ReceiptValidationError("invariants must be an object")
@@ -113,6 +143,190 @@ def _validate_receipt(
             raise ReceiptValidationError("receipt content hash is required")
         if actual != _receipt_content_sha256(receipt):
             raise ReceiptValidationError("receipt content hash mismatch")
+
+
+def _validate_model_contract_consistency(normative: Mapping[str, object]) -> None:
+    """Reject embedded model-contract evidence that contradicts its digests/proofs."""
+    digest_documents = {
+        "config_sha256": "config",
+        "processor_sha256": "processor",
+        "source_sha256": "source_files",
+        "environment_sha256": "environment",
+    }
+    for digest_name, document_name in digest_documents.items():
+        document = normative.get(document_name)
+        if not isinstance(document, Mapping):
+            raise ReceiptValidationError(f"{document_name} must be an object")
+        expected = canonical_json_sha256(dict(document))
+        if normative.get(digest_name) != expected:
+            raise ReceiptValidationError(
+                f"{digest_name} does not match embedded {document_name}"
+            )
+    for digest_name, expected in _APPROVED_MODEL_CONTRACT_ASSET_HASHES.items():
+        if normative.get(digest_name) != expected:
+            raise ReceiptValidationError(
+                f"{digest_name} does not match the compiled approved pin"
+            )
+    if normative.get("source_files") != _APPROVED_RTDETR_SOURCE_FILES:
+        raise ReceiptValidationError(
+            "source_files do not match the compiled approved source observations"
+        )
+
+    config = normative.get("config")
+    shapes = normative.get("observed_shapes")
+    processor = normative.get("processor")
+    environment = normative.get("environment")
+    invariants = normative.get("invariants")
+    if not all(
+        isinstance(value, Mapping)
+        for value in (config, shapes, processor, environment, invariants)
+    ):
+        raise ReceiptValidationError("model-contract evidence must be objects")
+    assert isinstance(config, Mapping)
+    assert isinstance(shapes, Mapping)
+    assert isinstance(processor, Mapping)
+    assert isinstance(environment, Mapping)
+    assert isinstance(invariants, Mapping)
+
+    decoder_layers = config.get("decoder_layers")
+    canonical_environment = {
+        "schema_version": 1,
+        "python": "3.12.11",
+        "torch": "2.12.0+cu126",
+        "torchvision": "0.27.0+cu126",
+        "transformers": "5.15.0",
+        "pycocotools": "2.0.10",
+        "cuda_runtime": "12.6",
+        "gpu_name": "NVIDIA GeForce RTX 4090",
+        "os": "Linux",
+        "wsl": True,
+        "container_image_digest": (
+            "sha256:8aef630a54bc5c5146ae5ce68e6af5caa3df0fb690bb91544175c91f307e4356"
+        ),
+        "tf32": False,
+        "deterministic_algorithms": True,
+        "bf16_supported": True,
+        "status": "PASS",
+        "errors": [],
+    }
+    logits_shape = shapes.get("logits")
+    expected_evidence: dict[str, bool] = {
+        "config_num_queries_300": config.get("num_queries") == 300,
+        "config_num_labels_4": config.get("num_labels") == 4,
+        "decoder_layers_at_least_two": (
+            type(decoder_layers) is int and decoder_layers >= 2
+        ),
+        "logits_shape": shapes.get("logits") == [2, 300, 4],
+        "pred_boxes_shape": shapes.get("pred_boxes") == [2, 300, 4],
+        "intermediate_reference_points_shape": shapes.get(
+            "intermediate_reference_points"
+        )
+        == [2, decoder_layers, 300, 4],
+        "native_fifth_logit_absent": (
+            isinstance(logits_shape, list)
+            and len(logits_shape) == 3
+            and logits_shape[-1] == 4
+        ),
+        "pixel_values_shape": shapes.get("pixel_values") == [2, 3, 640, 640],
+        "pixel_mask_shape": shapes.get("pixel_mask") == [2, 640, 640],
+        "aspect_preserving_size": processor.get("size")
+        == {"max_height": 640, "max_width": 640},
+        "bilinear_resize": processor.get("resample") == 2,
+        "padding_enabled": (
+            processor.get("do_pad") is True
+            and processor.get("pad_size") == {"height": 640, "width": 640}
+        ),
+        "rescale_one_over_255": (
+            processor.get("do_rescale") is True
+            and processor.get("rescale_factor") == 1 / 255
+        ),
+        "normalization_disabled": processor.get("do_normalize") is False,
+        "canonical_environment": (
+            all(
+                environment.get(name) == expected
+                for name, expected in canonical_environment.items()
+            )
+            and isinstance(environment.get("gpu_uuid"), str)
+            and str(environment["gpu_uuid"]).startswith("GPU-")
+            and isinstance(environment.get("driver"), str)
+            and bool(environment.get("driver"))
+            and _is_prefixed_sha256(environment.get("runtime_image_digest"))
+        ),
+    }
+    torch_execution = environment.get("torch_execution")
+    if isinstance(torch_execution, Mapping):
+        selected_device = torch_execution.get("selected_device")
+        selected_index = torch_execution.get("selected_index")
+        device_count = torch_execution.get("device_count")
+        selected_name = torch_execution.get("selected_name")
+        torch_uuid = torch_execution.get("torch_selected_gpu_uuid")
+        nvidia_name = torch_execution.get("nvidia_smi_gpu_name")
+        nvidia_uuid = torch_execution.get("nvidia_smi_gpu_uuid")
+        identity_matches = (
+            type(selected_index) is int
+            and type(device_count) is int
+            and 0 <= selected_index < device_count
+            and selected_device == f"cuda:{selected_index}"
+            and selected_name == environment.get("gpu_name")
+            and selected_name == nvidia_name
+            and _normalized_gpu_uuid(torch_uuid)
+            == _normalized_gpu_uuid(environment.get("gpu_uuid"))
+            == _normalized_gpu_uuid(nvidia_uuid)
+            and _normalized_gpu_uuid(torch_uuid) is not None
+        )
+        expected_evidence.update(
+            {
+                "torch_cuda_available": (
+                    torch_execution.get("cuda_available") is True
+                    and type(torch_execution.get("device_count")) is int
+                    and torch_execution["device_count"] > 0
+                ),
+                "torch_selected_gpu_is_canonical": identity_matches,
+                "model_on_selected_cuda_device": (
+                    selected_device is not None
+                    and torch_execution.get("model_device") == selected_device
+                ),
+                "inputs_on_selected_cuda_device": (
+                    selected_device is not None
+                    and torch_execution.get("pixel_values_device") == selected_device
+                    and torch_execution.get("pixel_mask_device") == selected_device
+                ),
+                "outputs_on_selected_cuda_device": (
+                    selected_device is not None
+                    and all(
+                        torch_execution.get(name) == selected_device
+                        for name in (
+                            "logits_device",
+                            "final_boxes_device",
+                            "penultimate_boxes_device",
+                            "intermediate_boxes_device",
+                        )
+                    )
+                ),
+            }
+        )
+
+    for invariant_name, evidence_passed in expected_evidence.items():
+        if invariants.get(invariant_name) is True and evidence_passed is not True:
+            raise ReceiptValidationError(
+                f"{invariant_name} contradicts embedded model-contract evidence"
+            )
+
+
+def _normalized_gpu_uuid(value: object) -> str | None:
+    if not isinstance(value, str) or not value:
+        return None
+    normalized = value.removeprefix("GPU-").lower()
+    if re.fullmatch(
+        r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}",
+        normalized,
+    ) is None:
+        return None
+    return normalized
+
+
+def _is_prefixed_sha256(value: object) -> bool:
+    return isinstance(value, str) and re.fullmatch(r"sha256:[0-9a-f]{64}", value) is not None
 
 
 def _expected_schema_path(receipt: Mapping[str, object]) -> Path:

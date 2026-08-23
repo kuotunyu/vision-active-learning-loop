@@ -1,0 +1,22 @@
+{
+  "schema_version": 1,
+  "fixture_set": "wave0-rtdetr-contract",
+  "images": [
+    {
+      "id": "wide-gradient",
+      "filename": "wide-gradient.ppm",
+      "width": 640,
+      "height": 320,
+      "pattern": "wide-gradient",
+      "pixel_sha256": "a7b20631fd0feb3b4184594da83d95065f57f98d4a9d326a4c9231cc7efc9572"
+    },
+    {
+      "id": "tall-checker",
+      "filename": "tall-checker.ppm",
+      "width": 320,
+      "height": 640,
+      "pattern": "tall-checker",
+      "pixel_sha256": "cae50465750c24ab2f0d6932bc1d04a22eacaac276e544ad4363cc83bc135851"
+    }
+  ]
+}
