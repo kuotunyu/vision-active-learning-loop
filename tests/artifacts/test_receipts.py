@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import copy
+import errno
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -40,20 +42,22 @@ def valid_receipt() -> dict[str, object]:
     }
 
 
-def test_pass_receipt_requires_every_invariant(
+def test_invalid_update_preserves_existing_valid_receipt(
     tmp_path: Path, valid_receipt: dict[str, object]
 ) -> None:
+    output = tmp_path / "receipt.json"
+    atomic_write_receipt(output, valid_receipt)
+    original = output.read_bytes()
     normative = valid_receipt["normative"]
     assert isinstance(normative, dict)
     invariants = normative["invariants"]
     assert isinstance(invariants, dict)
     del invariants["logits_shape"]
 
-    output = tmp_path / "receipt.json"
     with pytest.raises(ReceiptValidationError):
         atomic_write_receipt(output, valid_receipt)
 
-    assert not output.exists()
+    assert output.read_bytes() == original
     assert not (tmp_path / "receipt.json.partial").exists()
 
 
@@ -111,13 +115,14 @@ def test_receipt_hash_mismatch_is_rejected_without_final_receipt(
     assert not output.exists()
 
 
-def test_write_failure_removes_partial_and_final_receipt(
+def test_rename_failure_preserves_existing_valid_receipt(
     tmp_path: Path,
     valid_receipt: dict[str, object],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     output = tmp_path / "receipt.json"
-    output.write_text("stale receipt", encoding="utf-8")
+    atomic_write_receipt(output, valid_receipt)
+    original = output.read_bytes()
 
     def fail_rename(source: Path, destination: Path) -> None:
         raise OSError("injected rename failure")
@@ -126,8 +131,85 @@ def test_write_failure_removes_partial_and_final_receipt(
     with pytest.raises(OSError, match="injected rename failure"):
         atomic_write_receipt(output, valid_receipt)
 
-    assert not output.exists()
+    assert output.read_bytes() == original
     assert not (tmp_path / "receipt.json.partial").exists()
+
+
+def test_atomic_write_fsyncs_file_and_parent_before_and_after_replace(
+    tmp_path: Path,
+    valid_receipt: dict[str, object],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events: list[str] = []
+    parent_descriptor = 999
+    original_replace = receipts.os.replace
+
+    def record_open(directory: Path, flags: int) -> int:
+        assert directory == tmp_path
+        assert flags == os.O_RDONLY
+        events.append("parent-open")
+        return parent_descriptor
+
+    def record_fsync(descriptor: int) -> None:
+        events.append("parent-fsync" if descriptor == parent_descriptor else "file-fsync")
+
+    def record_close(descriptor: int) -> None:
+        assert descriptor == parent_descriptor
+        events.append("parent-close")
+
+    def record_replace(source: Path, destination: Path) -> None:
+        events.append("replace")
+        original_replace(source, destination)
+
+    monkeypatch.setattr(receipts.os, "open", record_open)
+    monkeypatch.setattr(receipts.os, "fsync", record_fsync)
+    monkeypatch.setattr(receipts.os, "close", record_close)
+    monkeypatch.setattr(receipts.os, "replace", record_replace)
+
+    atomic_write_receipt(tmp_path / "receipt.json", valid_receipt)
+
+    assert events == [
+        "file-fsync",
+        "parent-open",
+        "parent-fsync",
+        "parent-close",
+        "replace",
+        "parent-open",
+        "parent-fsync",
+        "parent-close",
+    ]
+
+
+def test_parent_fsync_propagates_supported_platform_storage_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    descriptor = 999
+
+    monkeypatch.setattr(receipts.os, "open", lambda directory, flags: descriptor)
+    monkeypatch.setattr(
+        receipts.os,
+        "fsync",
+        lambda received: (_ for _ in ()).throw(OSError(errno.EIO, "storage failure")),
+    )
+    monkeypatch.setattr(receipts.os, "close", lambda received: None)
+
+    with pytest.raises(OSError, match="storage failure"):
+        receipts._fsync_parent(tmp_path)
+
+
+def test_windows_directory_handle_access_denied_is_tolerated(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    access_denied = PermissionError(errno.EACCES, "directory handles unsupported")
+    access_denied.winerror = 5  # type: ignore[attr-defined]
+    monkeypatch.setattr(
+        receipts.os,
+        "open",
+        lambda directory, flags: (_ for _ in ()).throw(access_denied),
+    )
+    monkeypatch.setattr(receipts.os, "name", "nt")
+
+    receipts._fsync_parent(tmp_path)
 
 
 def test_validate_receipt_rejects_truncated_non_finite_and_unknown_receipts(
@@ -153,6 +235,15 @@ def test_validate_receipt_rejects_truncated_non_finite_and_unknown_receipts(
 
     with pytest.raises(ReceiptValidationError, match="allowlisted"):
         validate_receipt(stored, _schema_path("feasibility-receipt.schema.json"))
+
+
+def test_boolean_schema_version_is_rejected(
+    tmp_path: Path, valid_receipt: dict[str, object]
+) -> None:
+    valid_receipt["schema_version"] = True
+
+    with pytest.raises(ReceiptValidationError, match="unknown"):
+        atomic_write_receipt(tmp_path / "receipt.json", valid_receipt)
 
 
 def test_volatile_only_differences_do_not_change_normative_digest(

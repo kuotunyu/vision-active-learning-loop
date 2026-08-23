@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import errno
 import json
 import math
 import os
@@ -71,7 +72,6 @@ def atomic_write_receipt(path: Path, receipt: Mapping[str, object]) -> str:
         return digest
     except Exception:
         _unlink_if_present(partial)
-        _unlink_if_present(target)
         raise
 
 
@@ -118,6 +118,8 @@ def _validate_receipt(
 def _expected_schema_path(receipt: Mapping[str, object]) -> Path:
     receipt_type = receipt.get("receipt_type")
     schema_version = receipt.get("schema_version")
+    if not isinstance(receipt_type, str) or type(schema_version) is not int:
+        raise ReceiptValidationError("unknown receipt type or schema version")
     key = (receipt_type, schema_version)
     if key not in _ALLOWED_SCHEMAS:
         raise ReceiptValidationError("unknown receipt type or schema version")
@@ -139,10 +141,12 @@ def _load_schema(path: Path) -> Mapping[str, object]:
 def _validate_schema(
     value: object, schema: Mapping[str, object], location: str = "$"
 ) -> None:
-    if "const" in schema and value != schema["const"]:
+    if "const" in schema and not _schema_values_equal(value, schema["const"]):
         raise ReceiptValidationError(f"{location} must equal {schema['const']!r}")
     enum = schema.get("enum")
-    if isinstance(enum, list) and value not in enum:
+    if isinstance(enum, list) and not any(
+        _schema_values_equal(value, candidate) for candidate in enum
+    ):
         raise ReceiptValidationError(f"{location} has an unsupported value")
     schema_type = schema.get("type")
     if schema_type == "object":
@@ -207,6 +211,11 @@ def _reject_non_finite(value: object, location: str = "$") -> None:
             _reject_non_finite(member, f"{location}[{index}]")
 
 
+def _schema_values_equal(value: object, expected: object) -> bool:
+    """Compare schema constants without Python's bool-is-int coercion."""
+    return type(value) is type(expected) and value == expected
+
+
 def _receipt_content_sha256(receipt: Mapping[str, object]) -> str:
     preimage = copy.deepcopy(dict(receipt))
     metadata = preimage.get("metadata")
@@ -240,12 +249,20 @@ def _fsync_parent(directory: Path) -> None:
     """Durably flush the directory entry where the platform permits it."""
     try:
         descriptor = os.open(directory, os.O_RDONLY)
-    except OSError:
-        return
+    except OSError as error:
+        if _windows_directory_open_is_unsupported(error):
+            return
+        raise
     try:
         os.fsync(descriptor)
-    except OSError:
-        # Windows does not provide fsync for directory handles.
-        pass
     finally:
         os.close(descriptor)
+
+
+def _windows_directory_open_is_unsupported(error: OSError) -> bool:
+    """Recognize the Windows directory-open limitation before fsync can run."""
+    return (
+        os.name == "nt"
+        and type(error) is PermissionError
+        and error.errno == errno.EACCES
+    )
