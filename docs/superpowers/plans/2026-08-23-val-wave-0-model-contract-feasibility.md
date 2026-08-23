@@ -17,6 +17,8 @@
 - Canonical evidence requires RTX 4090, TF32 disabled, deterministic algorithms enabled, and BF16 feasibility.
 - Any normative invariant failure produces `FAIL`, prevents Wave 1, and requires owner/design review. Do not substitute a model, package, query contract, or preprocessing rule.
 - Network access is allowlisted to official Python/package, NVIDIA container, and pinned Hugging Face model endpoints.
+- Every runtime output resolves below the environment-provided logical root `VAL_ARTIFACT_ROOT`: receipts under `wave0/receipts/`, model cache under `wave0/model_cache/`, temporary checkpoints under `wave0/checkpoints/`, and clean attempts under `wave0/clean-runs/`. Tracked configuration must not contain a machine-specific absolute path.
+- `VAL_DATA_ROOT` must remain unset and must not be created, searched, or mounted in Wave 0.
 
 ---
 
@@ -98,7 +100,7 @@ Expected: lock check exits 0; compatibility and lazy-manifest tests pass, includ
 
 - [ ] **Step 5: Produce environment-boundary evidence**
 
-Run: `uv run python -m vision_active_learning_loop.environment check --config configs/environment/wave0.yaml --output artifacts/wave0/environment-receipt.json`
+Run: `uv run python -m vision_active_learning_loop.environment check --config configs/environment/wave0.yaml --output "$VAL_ARTIFACT_ROOT/wave0/receipts/environment-receipt.json"`
 
 Expected: on canonical WSL2/OCI, JSON status is `PASS`; on native Windows canonical mode, command exits 2 and status is `FAIL` without creating a success marker.
 
@@ -214,7 +216,7 @@ Allow only the two repository/revision pairs. Fetch with revision pinning and no
 
 - [ ] **Step 4: Run offline verification**
 
-Run: `HF_HUB_OFFLINE=1 uv run val assets verify --config configs/models/pinned-models.yaml --cache-root "$VAL_ARTIFACT_ROOT/wave0/model_cache" --output artifacts/wave0/model-assets.json`
+Run: `HF_HUB_OFFLINE=1 uv run val assets verify --config configs/models/pinned-models.yaml --cache-root "$VAL_ARTIFACT_ROOT/wave0/model_cache" --output "$VAL_ARTIFACT_ROOT/wave0/receipts/model-assets.json"`
 
 Expected: status `PASS`, exact revisions/weight hashes, both approved license checks true, and no RDD path referenced.
 
@@ -293,7 +295,7 @@ Verify `final_boxes` is exactly layer `-1`, penultimate is layer `-2`, source AS
 
 - [ ] **Step 4: Run the probe on the canonical GPU**
 
-Run: `uv run val probe model-contract --assets artifacts/wave0/model-assets.json --fixtures fixtures/synthetic/wave0/fixture-manifest.json --output artifacts/wave0/model-contract-receipt.json`
+Run: `uv run val probe model-contract --assets "$VAL_ARTIFACT_ROOT/wave0/receipts/model-assets.json" --fixtures fixtures/synthetic/wave0/fixture-manifest.json --output "$VAL_ARTIFACT_ROOT/wave0/receipts/model-contract-receipt.json"`
 
 Expected: exit 0 and `PASS`; all normative boolean fields true; receipt includes model/config/weights/Transformers source/processor/fixture/probe/environment hashes and observed shapes.
 
@@ -327,7 +329,7 @@ Expected: tests pass, including injected fifth-logit, 299-query, permuted-interm
 - Produces: `run_one_step_smoke(model, batch, seed: int) -> StepObservation`
 - Produces: `save_checkpoint_atomic(state: CheckpointState, target: Path) -> str`
 - Produces: `load_checkpoint_verified(target: Path, expected_digest: str) -> CheckpointState`
-- CLI: `val probe training-feasibility --model-contract <receipt> --output <receipt>`
+- CLI: `val probe training-feasibility --model-contract <receipt> --checkpoint-root <external-path> --output <receipt>`
 
 - [ ] **Step 1: Write failing determinism and checkpoint tests**
 
@@ -354,7 +356,7 @@ Use seed 17, deterministic algorithms, cuDNN benchmark off, TF32 off, batch size
 
 - [ ] **Step 4: Run twice from the same initial state**
 
-Run: `uv run val probe training-feasibility --model-contract artifacts/wave0/model-contract-receipt.json --output artifacts/wave0/feasibility-a.json && uv run val probe training-feasibility --model-contract artifacts/wave0/model-contract-receipt.json --output artifacts/wave0/feasibility-b.json`
+Run: `uv run val probe training-feasibility --model-contract "$VAL_ARTIFACT_ROOT/wave0/receipts/model-contract-receipt.json" --checkpoint-root "$VAL_ARTIFACT_ROOT/wave0/checkpoints/feasibility-a" --output "$VAL_ARTIFACT_ROOT/wave0/receipts/feasibility-a.json" && uv run val probe training-feasibility --model-contract "$VAL_ARTIFACT_ROOT/wave0/receipts/model-contract-receipt.json" --checkpoint-root "$VAL_ARTIFACT_ROOT/wave0/checkpoints/feasibility-b" --output "$VAL_ARTIFACT_ROOT/wave0/receipts/feasibility-b.json"`
 
 Expected: both `PASS`, peak allocated VRAM <=22 GiB, finite forward/backward/update, identical ordered state digests and loss within the receipt’s exact canonical comparison rule.
 
@@ -406,7 +408,7 @@ Expected: missing gate module.
 
 - [ ] **Step 3: Implement clean-run scripts and aggregate validation**
 
-Each script creates a new temporary uv cache, empty model cache target, and new container from the pinned digest; it runs Tasks 1–5 without RDD mounts, records download/cache/disk bytes and total runtime, then emits receipts. The gate checks exact parent digests, two independent clean-run results, disk/runtime observations, no path under `VAL_DATA_ROOT`, and all statuses `PASS`.
+Each script creates a new temporary uv cache, empty model cache target, and new container from the pinned digest; it runs Tasks 1–5 without RDD mounts, records download/cache/disk bytes and total runtime, then emits receipts below `$VAL_ARTIFACT_ROOT/wave0/clean-runs/<run-id>/<attempt-id>/`. The script never overwrites an existing attempt. The gate checks exact parent digests, two independent clean-run results, disk/runtime observations, that `VAL_DATA_ROOT` is absent, and all statuses `PASS`; its final receipt is `$VAL_ARTIFACT_ROOT/wave0/receipts/wave0-gate-receipt.json`.
 
 - [ ] **Step 4: Execute the clean reproduction**
 
