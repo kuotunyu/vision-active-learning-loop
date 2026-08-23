@@ -1,11 +1,15 @@
 # Vision Active Learning Loop — Formal Design Specification
 
-**Status:** Conditionally approved scope; review invariants resolved in this revision, awaiting owner final approval
+**Status:** Approved for implementation planning
+**Milestone:** M0 Complete
+**Owner approval date:** 2026-08-23
+**Approved commit baseline:** `8b456800077d45fa9a6bb0dcd4ecb70c0edc89c6`
 **Date:** 2026-08-23
 **Repository:** `vision-active-learning-loop`
 **Target roles:** Computer Vision Engineer, Machine Learning Engineer, AI Engineer
 **Design choice:** Modified Option B — multi-country object-detection active learning
-**Implementation status:** No implementation, dataset, dependency, or remote repository is part of this design-stage commit.
+**Runtime gate:** Wave 0 must verify every executable model-contract invariant; any failure stops execution and returns the protocol to design review.
+**Implementation status:** Approval records the design/planning baseline only. It does not mean that a dataset or model was downloaded, a dependency was installed, a GPU experiment was executed, or a publication/remote repository was created.
 
 ## 1. Executive decision
 
