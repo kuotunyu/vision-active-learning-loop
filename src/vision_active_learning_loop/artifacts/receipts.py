@@ -22,6 +22,7 @@ _SCHEMA_ROOT = Path(__file__).resolve().parents[3] / "schemas"
 _ALLOWED_SCHEMAS = {
     ("model-contract", 1): _SCHEMA_ROOT / "model-contract-receipt.schema.json",
     ("feasibility", 1): _SCHEMA_ROOT / "feasibility-receipt.schema.json",
+    ("model-assets", 1): _SCHEMA_ROOT / "model-asset-receipt.schema.json",
 }
 def validate_receipt(receipt: Mapping[str, object], schema_path: Path) -> None:
     """Validate a stored receipt against its allowlisted receipt type and schema."""

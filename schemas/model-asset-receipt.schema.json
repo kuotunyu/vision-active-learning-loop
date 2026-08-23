@@ -1,0 +1,94 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "model-asset-receipt.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["receipt_type", "schema_version", "normative", "metadata"],
+  "properties": {
+    "receipt_type": {"const": "model-assets"},
+    "schema_version": {"const": 1},
+    "normative": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["models", "transformers", "invariants", "status", "errors"],
+      "properties": {
+        "models": {
+          "type": "object",
+          "additionalProperties": {"$ref": "#/$defs/model"}
+        },
+        "transformers": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["version", "files"],
+          "properties": {
+            "version": {"const": "5.15.0"},
+            "files": {
+              "type": "object",
+              "additionalProperties": {"$ref": "#/$defs/file"}
+            }
+          }
+        },
+        "invariants": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["all_assets_verified", "exact_revisions", "exact_file_inventory", "apache_2_0_licenses", "exact_transformers_source", "data_root_unset"],
+          "properties": {
+            "all_assets_verified": {"type": "boolean"},
+            "exact_revisions": {"type": "boolean"},
+            "exact_file_inventory": {"type": "boolean"},
+            "apache_2_0_licenses": {"type": "boolean"},
+            "exact_transformers_source": {"type": "boolean"},
+            "data_root_unset": {"type": "boolean"}
+          }
+        },
+        "status": {"enum": ["PASS", "FAIL"]},
+        "errors": {"type": "array", "items": {"type": "string"}}
+      }
+    },
+    "metadata": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["timestamp"],
+      "properties": {
+        "timestamp": {"type": "string"},
+        "receipt_content_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+      }
+    }
+  },
+  "$defs": {
+    "file": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["size", "sha256"],
+      "properties": {
+        "size": {"type": "integer"},
+        "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+      }
+    },
+    "licenseEvidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "size", "sha256"],
+      "properties": {
+        "path": {"const": "README.md"},
+        "size": {"type": "integer"},
+        "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+      }
+    },
+    "model": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "repo_id", "revision", "license", "license_evidence", "files", "config", "processor"],
+      "properties": {
+        "name": {"enum": ["rtdetr", "dinov2"]},
+        "repo_id": {"enum": ["PekingU/rtdetr_r18vd", "facebook/dinov2-small"]},
+        "revision": {"enum": ["cc5b50f32f0100caaa3bd275343e2fb17762c73d", "ed25f3a31f01632728cabb09d1542f84ab7b0056"]},
+        "license": {"const": "apache-2.0"},
+        "license_evidence": {"$ref": "#/$defs/licenseEvidence"},
+        "files": {"type": "object", "additionalProperties": {"$ref": "#/$defs/file"}},
+        "config": {"type": "object"},
+        "processor": {"type": "object"}
+      }
+    }
+  }
+}
