@@ -11,8 +11,11 @@ Canonical execution uses the pinned Linux OCI image on the WSL2 GPU backend. Nat
 | pycocotools | 2.0.10 | PyPI release |
 | CUDA base | `nvidia/cuda:12.6.3-cudnn-runtime-ubuntu24.04` | Digest-pinned Linux image |
 | GPU | NVIDIA GeForce RTX 4090 | WSL2 GPU passthrough |
+| Runtime policy | TF32 disabled; deterministic algorithms enabled; BF16 supported | Exact receipt gate |
 
-Set `VAL_ARTIFACT_ROOT` to the approved external artifact root. Receipts and all other generated output belong below `$VAL_ARTIFACT_ROOT/wave0`; generated evidence, caches, images, and machine observations must never enter Git. `VAL_DATA_ROOT` is intentionally outside this wave and must remain unset.
+Set `VAL_ARTIFACT_ROOT` to the approved existing absolute artifact root. Receipts and all other generated output must resolve below `$VAL_ARTIFACT_ROOT/wave0`; absolute, traversal, and symlink escapes are rejected before any output is written. Generated evidence, caches, images, and machine observations must never enter Git. `VAL_DATA_ROOT` is intentionally outside this wave: the check fails whenever that variable is set.
+
+`container_image_digest` means the observed immutable base manifest-list digest, not the locally built final image digest. The trusted launcher must provide that observation as `VAL_OBSERVED_BASE_IMAGE_DIGEST`; a missing observation fails, and the checker never copies the expected config value into the receipt. A launcher may separately provide the locally inspected final image identity as `VAL_RUNTIME_IMAGE_DIGEST`, which is recorded as `runtime_image_digest` without substituting for the approved base digest.
 
 The compatibility receipt is generated with:
 

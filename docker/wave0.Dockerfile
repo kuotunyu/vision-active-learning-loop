@@ -5,7 +5,6 @@ LABEL org.opencontainers.image.base.digest="sha256:8aef630a54bc5c5146ae5ce68e6af
 
 ARG PYTHON_VERSION=3.12.11
 ARG PYTHON_SHA256=7b8d59af8216044d2313de8120bfc2cc00a9bd2e542f15795e1d616c51faf3d6
-ENV VAL_CONTAINER_IMAGE_DIGEST="sha256:8aef630a54bc5c5146ae5ce68e6af5caa3df0fb690bb91544175c91f307e4356"
 ENV PATH="/opt/val/.venv/bin:/opt/python/bin:${PATH}"
 
 RUN test -n "${PYTHON_SHA256}" \

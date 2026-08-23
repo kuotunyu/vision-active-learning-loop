@@ -10,13 +10,22 @@ import platform
 import subprocess
 import sys
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, fields
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 import yaml
 
 from .cli_manifest import command
+
+
+APPROVED_BASE_IMAGE_DIGEST = (
+    "sha256:8aef630a54bc5c5146ae5ce68e6af5caa3df0fb690bb91544175c91f307e4356"
+)
+
+
+class EnvironmentBoundaryError(ValueError):
+    """Raised when receipt output crosses the approved artifact boundary."""
 
 
 @dataclass(frozen=True)
@@ -26,6 +35,11 @@ class EnvironmentContract:
     torchvision: str
     transformers: str
     cuda_runtime: str
+    pycocotools: str = "2.0.10"
+    container_image_digest: str = APPROVED_BASE_IMAGE_DIGEST
+    tf32: bool = False
+    deterministic_algorithms: bool = True
+    bf16_supported: bool = True
     canonical_os: str = "Linux"
     requires_wsl: bool = True
     gpu_name: str = "NVIDIA GeForce RTX 4090"
@@ -35,8 +49,34 @@ class EnvironmentContract:
         document = yaml.safe_load(path.read_text(encoding="utf-8"))
         if not isinstance(document, Mapping):
             raise ValueError("environment contract must be a YAML mapping")
-        values = {field.name: document[field.name] for field in fields(cls)}
-        return cls(**{key: str(value) if key != "requires_wsl" else bool(value) for key, value in values.items()})
+        image = document.get("container_image")
+        runtime = document.get("runtime")
+        if not isinstance(image, Mapping) or not isinstance(runtime, Mapping):
+            raise ValueError("environment contract requires image and runtime mappings")
+        boolean_values = {
+            "requires_wsl": document.get("requires_wsl"),
+            "tf32": runtime.get("tf32"),
+            "deterministic_algorithms": runtime.get("deterministic_algorithms"),
+            "bf16_supported": runtime.get("bf16_supported"),
+        }
+        for name, value in boolean_values.items():
+            if type(value) is not bool:
+                raise ValueError(f"{name} must be a YAML boolean")
+        return cls(
+            python=str(document["python"]),
+            torch=str(document["torch"]),
+            torchvision=str(document["torchvision"]),
+            transformers=str(document["transformers"]),
+            cuda_runtime=str(document["cuda_runtime"]),
+            pycocotools=str(document["pycocotools"]),
+            container_image_digest=str(image["digest"]),
+            tf32=boolean_values["tf32"],
+            deterministic_algorithms=boolean_values["deterministic_algorithms"],
+            bf16_supported=boolean_values["bf16_supported"],
+            canonical_os=str(document["canonical_os"]),
+            requires_wsl=boolean_values["requires_wsl"],
+            gpu_name=str(document["gpu_name"]),
+        )
 
     def validate(self, observed: Mapping[str, object]) -> list[str]:
         errors: list[str] = []
@@ -49,8 +89,13 @@ class EnvironmentContract:
             "torch": self.torch,
             "torchvision": self.torchvision,
             "transformers": self.transformers,
+            "pycocotools": self.pycocotools,
             "cuda_runtime": self.cuda_runtime,
             "gpu_name": self.gpu_name,
+            "container_image_digest": self.container_image_digest,
+            "tf32": self.tf32,
+            "deterministic_algorithms": self.deterministic_algorithms,
+            "bf16_supported": self.bf16_supported,
         }
         for name, value in expected.items():
             actual = observed.get(name)
@@ -84,53 +129,92 @@ def _gpu() -> tuple[str | None, str | None, str | None]:
         )
     except (FileNotFoundError, subprocess.CalledProcessError):
         return None, None, None
-    first_gpu = result.stdout.splitlines()[0]
-    name, uuid, driver = (part.strip() for part in first_gpu.split(",", maxsplit=2))
-    return name, uuid, driver
+    lines = result.stdout.splitlines()
+    if not lines:
+        return None, None, None
+    values = [part.strip() for part in lines[0].split(",")]
+    if len(values) != 3 or not all(values):
+        return None, None, None
+    return values[0], values[1], values[2]
 
 
-def _torch_settings() -> tuple[bool | None, bool | None]:
+def _torch_runtime() -> tuple[str | None, bool | None, bool | None, bool | None]:
     try:
         import torch
     except ImportError:
-        return None, None
+        return None, None, None, None
+    cuda_runtime = torch.version.cuda
     return (
+        str(cuda_runtime) if cuda_runtime is not None else None,
         bool(torch.backends.cuda.matmul.allow_tf32),
         bool(torch.are_deterministic_algorithms_enabled()),
+        bool(torch.cuda.is_bf16_supported()),
     )
+
+
+def _configure_torch_runtime(contract: EnvironmentContract) -> None:
+    try:
+        import torch
+    except ImportError:
+        return
+    torch.backends.cuda.matmul.allow_tf32 = contract.tf32
+    torch.backends.cudnn.allow_tf32 = contract.tf32
+    torch.use_deterministic_algorithms(contract.deterministic_algorithms)
 
 
 def observe_environment(config: Mapping[str, Any]) -> dict[str, object]:
-    torch_version = _installed_version("torch")
     gpu_name, gpu_uuid, driver = _gpu()
-    tf32, deterministic = _torch_settings()
-    configured_image = config.get("container_image", {})
-    image_digest = (
-        os.environ.get("VAL_CONTAINER_IMAGE_DIGEST")
-        or configured_image.get("digest")
-        if isinstance(configured_image, Mapping)
-        else None
-    )
-    cuda_runtime = None
-    if torch_version and "+cu" in torch_version:
-        cuda_digits = torch_version.rsplit("+cu", maxsplit=1)[1]
-        cuda_runtime = f"{cuda_digits[:-1]}.{cuda_digits[-1]}"
+    cuda_runtime, tf32, deterministic, bf16_supported = _torch_runtime()
     return {
         "schema_version": config.get("schema_version", 1),
         "python": platform.python_version(),
-        "torch": torch_version,
+        "torch": _installed_version("torch"),
         "torchvision": _installed_version("torchvision"),
         "transformers": _installed_version("transformers"),
+        "pycocotools": _installed_version("pycocotools"),
         "cuda_runtime": cuda_runtime,
         "gpu_name": gpu_name,
         "gpu_uuid": gpu_uuid,
         "driver": driver,
         "os": platform.system(),
         "wsl": _wsl(),
-        "container_image_digest": image_digest,
+        "container_image_digest": os.environ.get(
+            "VAL_OBSERVED_BASE_IMAGE_DIGEST"
+        ),
+        "runtime_image_digest": os.environ.get("VAL_RUNTIME_IMAGE_DIGEST"),
         "tf32": tf32,
         "deterministic_algorithms": deterministic,
+        "bf16_supported": bf16_supported,
     }
+
+
+def _resolve_receipt_output(output: Path) -> Path:
+    configured_root = os.environ.get("VAL_ARTIFACT_ROOT")
+    if configured_root is None:
+        raise EnvironmentBoundaryError("VAL_ARTIFACT_ROOT is required")
+    root_input = Path(configured_root).expanduser()
+    if not root_input.is_absolute():
+        raise EnvironmentBoundaryError("VAL_ARTIFACT_ROOT must be absolute")
+    try:
+        root = root_input.resolve(strict=True)
+    except (FileNotFoundError, OSError) as error:
+        raise EnvironmentBoundaryError(
+            "VAL_ARTIFACT_ROOT must resolve to an existing directory"
+        ) from error
+    if not root.is_dir():
+        raise EnvironmentBoundaryError("VAL_ARTIFACT_ROOT must be a directory")
+    wave_root = (root / "wave0").resolve(strict=False)
+    if not wave_root.is_relative_to(root):
+        raise EnvironmentBoundaryError(
+            "VAL_ARTIFACT_ROOT/wave0 must resolve beneath VAL_ARTIFACT_ROOT"
+        )
+    candidate = output if output.is_absolute() else wave_root / output
+    resolved = candidate.resolve(strict=False)
+    if not resolved.is_relative_to(wave_root) or resolved == wave_root:
+        raise EnvironmentBoundaryError(
+            "receipt output must resolve beneath VAL_ARTIFACT_ROOT/wave0"
+        )
+    return resolved
 
 
 @command("environment check")
@@ -140,16 +224,24 @@ def check(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--output", type=Path, required=True)
     arguments = parser.parse_args(argv)
 
+    try:
+        output = _resolve_receipt_output(arguments.output)
+    except EnvironmentBoundaryError as error:
+        print(error, file=sys.stderr)
+        return 2
     document = yaml.safe_load(arguments.config.read_text(encoding="utf-8"))
     if not isinstance(document, Mapping):
         raise ValueError("environment contract must be a YAML mapping")
     contract = EnvironmentContract.from_yaml(arguments.config)
+    _configure_torch_runtime(contract)
     receipt = observe_environment(document)
     errors = contract.validate(receipt)
+    if "VAL_DATA_ROOT" in os.environ:
+        errors.append("VAL_DATA_ROOT must remain unset for Wave 0")
     receipt["status"] = "FAIL" if errors else "PASS"
     receipt["errors"] = errors
-    arguments.output.parent.mkdir(parents=True, exist_ok=True)
-    arguments.output.write_text(
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(
         json.dumps(receipt, indent=2, sort_keys=True) + "\n", encoding="utf-8"
     )
     return 2 if errors else 0
@@ -158,7 +250,10 @@ def check(argv: Sequence[str] | None = None) -> int:
 def main(argv: Sequence[str] | None = None) -> int:
     arguments = list(sys.argv[1:] if argv is None else argv)
     if not arguments or arguments.pop(0) != "check":
-        print("usage: python -m vision_active_learning_loop.environment check ...", file=sys.stderr)
+        print(
+            "usage: python -m vision_active_learning_loop.environment check ...",
+            file=sys.stderr,
+        )
         return 2
     return check(arguments)
 
