@@ -68,7 +68,6 @@ def atomic_write_receipt(path: Path, receipt: Mapping[str, object]) -> str:
             os.fsync(output.fileno())
         _fsync_parent(target.parent)
         os.replace(partial, target)
-        _fsync_parent(target.parent)
         return digest
     except Exception:
         _unlink_if_present(partial)

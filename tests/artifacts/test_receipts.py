@@ -135,7 +135,7 @@ def test_rename_failure_preserves_existing_valid_receipt(
     assert not (tmp_path / "receipt.json.partial").exists()
 
 
-def test_atomic_write_fsyncs_file_and_parent_before_and_after_replace(
+def test_atomic_write_fsyncs_file_and_parent_before_replace(
     tmp_path: Path,
     valid_receipt: dict[str, object],
     monkeypatch: pytest.MonkeyPatch,
@@ -174,10 +174,40 @@ def test_atomic_write_fsyncs_file_and_parent_before_and_after_replace(
         "parent-fsync",
         "parent-close",
         "replace",
-        "parent-open",
-        "parent-fsync",
-        "parent-close",
     ]
+
+
+def test_atomic_write_has_no_fallible_operation_after_replace(
+    tmp_path: Path,
+    valid_receipt: dict[str, object],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    output = tmp_path / "receipt.json"
+    replaced = False
+    parent_descriptor = 999
+    original_replace = receipts.os.replace
+
+    def record_open(directory: Path, flags: int) -> int:
+        return parent_descriptor
+
+    def fail_if_after_replace(descriptor: int) -> None:
+        if replaced:
+            raise OSError("post-replace operation must not run")
+
+    def record_replace(source: Path, destination: Path) -> None:
+        nonlocal replaced
+        original_replace(source, destination)
+        replaced = True
+
+    monkeypatch.setattr(receipts.os, "open", record_open)
+    monkeypatch.setattr(receipts.os, "fsync", fail_if_after_replace)
+    monkeypatch.setattr(receipts.os, "close", lambda descriptor: None)
+    monkeypatch.setattr(receipts.os, "replace", record_replace)
+
+    atomic_write_receipt(output, valid_receipt)
+
+    assert replaced is True
+    assert output.exists()
 
 
 def test_parent_fsync_propagates_supported_platform_storage_failure(
