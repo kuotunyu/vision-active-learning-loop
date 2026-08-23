@@ -400,13 +400,18 @@ def _validate_feasibility_consistency(normative: Mapping[str, object]) -> None:
         if type(value) not in (int, float) or value < 0:
             raise ReceiptValidationError(f"timing {name} must be non-negative")
 
+    parameter_update_observed = (
+        step.get("parameter_digest_rule")
+        == "ordered-trainable-named-parameters-sha256-v1"
+        and type(step.get("trainable_parameter_count")) is int
+        and step.get("trainable_parameter_count", 0) > 0
+        and step.get("parameter_digest_before")
+        != step.get("parameter_digest_after")
+    )
     expected_evidence = {
-        "parameter_changed": step.get("parameter_digest_before")
-        != step.get("parameter_digest_after")
-        and step.get("parameter_digest_after") == state_digests.get("model"),
-        "adamw_update": step.get("parameter_digest_before")
-        != step.get("parameter_digest_after")
-        and step.get("parameter_digest_after") == state_digests.get("model"),
+        "parameter_changed": parameter_update_observed,
+        "adamw_update": parameter_update_observed
+        and recipe.get("optimizer") == "AdamW",
         "batch_size_two": shapes.get("pixel_values") == [2, 3, 640, 640]
         and shapes.get("pixel_mask") == [2, 640, 640],
         "bf16_autocast": runtime.get("bf16_autocast_enabled") is True,

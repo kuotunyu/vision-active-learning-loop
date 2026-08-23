@@ -119,12 +119,14 @@
         "step": {
           "type": "object",
           "additionalProperties": false,
-          "required": ["loss_hex", "gradient_norm", "finite_loss", "finite_gradients", "parameter_digest_before", "parameter_digest_after"],
+          "required": ["loss_hex", "gradient_norm", "finite_loss", "finite_gradients", "parameter_digest_rule", "trainable_parameter_count", "parameter_digest_before", "parameter_digest_after"],
           "properties": {
             "loss_hex": {"type": "string"},
             "gradient_norm": {"type": "number"},
             "finite_loss": {"type": "boolean"},
             "finite_gradients": {"type": "boolean"},
+            "parameter_digest_rule": {"const": "ordered-trainable-named-parameters-sha256-v1"},
+            "trainable_parameter_count": {"type": "integer"},
             "parameter_digest_before": {"$ref": "#/$defs/sha256"},
             "parameter_digest_after": {"$ref": "#/$defs/sha256"}
           }

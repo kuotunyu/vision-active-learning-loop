@@ -62,6 +62,7 @@ class FeasibilityError(ValueError):
 SEED = 17
 VRAM_LIMIT_BYTES = 22 * 1024**3
 _CUBLAS_WORKSPACE_CONFIG = ":4096:8"
+_PARAMETER_DIGEST_RULE = "ordered-trainable-named-parameters-sha256-v1"
 _FIXTURE_MANIFEST = (
     _project_root() / "fixtures" / "synthetic" / "wave0" / "fixture-manifest.json"
 )
@@ -101,8 +102,9 @@ class StepObservation:
     bf16_autocast_enabled: bool
     deterministic_fallback_detected: bool
     device: str
-    model_digest_before: str
-    model_digest_after: str
+    trainable_parameter_count: int
+    parameter_digest_before: str
+    parameter_digest_after: str
     state_digests: Mapping[str, str]
     checkpoint_state: CheckpointState | None
 
@@ -168,6 +170,18 @@ def build_scheduler(
     return torch.optim.lr_scheduler.LambdaLR(optimizer, _constant_lr)
 
 
+def trainable_parameter_sha256(model: torch.nn.Module) -> str:
+    """Hash ordered trainable parameter names and values, excluding model buffers."""
+    named_parameters = tuple(
+        (name, parameter.detach())
+        for name, parameter in model.named_parameters()
+        if parameter.requires_grad
+    )
+    if not named_parameters:
+        raise FeasibilityError("model has no trainable parameters")
+    return structured_state_sha256(named_parameters)
+
+
 def run_one_step_smoke(
     model: torch.nn.Module, batch: Mapping[str, Any], seed: int
 ) -> StepObservation:
@@ -219,7 +233,7 @@ def run_one_step_smoke(
     ).hexdigest()
     model.train()
     optimizer.zero_grad(set_to_none=True)
-    model_digest_before = structured_state_sha256(model.state_dict())
+    parameter_digest_before = trainable_parameter_sha256(model)
 
     torch.cuda.reset_peak_memory_stats(device)
     torch.cuda.synchronize(device)
@@ -261,7 +275,7 @@ def run_one_step_smoke(
     wall_seconds = time.perf_counter() - wall_start
     gpu_seconds = float(start_event.elapsed_time(end_event)) / 1000.0
     loss_value = float(loss.detach().float().cpu())
-    model_digest_after = structured_state_sha256(model.state_dict())
+    parameter_digest_after = trainable_parameter_sha256(model)
     state = CheckpointState(
         model_state=_state_to_cpu(model.state_dict()),
         optimizer_state=_state_to_cpu(optimizer.state_dict()),
@@ -274,13 +288,13 @@ def run_one_step_smoke(
         input_digests={str(name): str(value) for name, value in input_digests.items()},
     )
     digests = checkpoint_state_digests(state)
-    if digests["model"] != model_digest_after:
+    if digests["model"] != structured_state_sha256(state.model_state):
         raise FeasibilityError("CPU checkpoint model state mismatch")
     observation = StepObservation(
         ordered_losses=(loss_value,),
         finite_loss=finite_loss,
         finite_gradients=finite_gradients,
-        parameter_changed=model_digest_before != model_digest_after,
+        parameter_changed=parameter_digest_before != parameter_digest_after,
         gradient_norm=gradient_norm,
         peak_allocated_bytes=int(torch.cuda.max_memory_allocated(device)),
         peak_reserved_bytes=int(torch.cuda.max_memory_reserved(device)),
@@ -296,8 +310,9 @@ def run_one_step_smoke(
         bf16_autocast_enabled=autocast_observed,
         deterministic_fallback_detected=fallback_detected,
         device=str(device),
-        model_digest_before=model_digest_before,
-        model_digest_after=model_digest_after,
+        trainable_parameter_count=len(parameters),
+        parameter_digest_before=parameter_digest_before,
+        parameter_digest_after=parameter_digest_after,
         state_digests=digests,
         checkpoint_state=state,
     )
@@ -324,7 +339,10 @@ def evaluate_step_observation(observation: StepObservation) -> StepObservation:
         ),
         (not observation.bf16_supported, "BF16 is unsupported"),
         (not observation.bf16_autocast_enabled, "BF16 autocast was not observed"),
-        (not observation.parameter_changed, "parameter update was not observed"),
+        (
+            not _parameter_update_observed(observation),
+            "parameter update was not observed",
+        ),
         (
             observation.peak_allocated_bytes > VRAM_LIMIT_BYTES,
             "peak allocated VRAM exceeds 22 GiB",
@@ -334,6 +352,15 @@ def evaluate_step_observation(observation: StepObservation) -> StepObservation:
         if failed:
             raise FeasibilityError(message)
     return observation
+
+
+def _parameter_update_observed(observation: StepObservation) -> bool:
+    return (
+        observation.parameter_changed is True
+        and observation.trainable_parameter_count > 0
+        and observation.parameter_digest_before
+        != observation.parameter_digest_after
+    )
 
 
 def deterministic_comparison(observation: StepObservation) -> dict[str, object]:
@@ -515,7 +542,7 @@ def _build_receipt(
         == observation.state_digests
     )
     invariants = {
-        "adamw_update": observation.parameter_changed,
+        "adamw_update": _parameter_update_observed(observation),
         "batch_size_two": shapes.get("pixel_values", [0])[0] == 2,
         "bf16_autocast": observation.bf16_autocast_enabled,
         "bf16_supported": observation.bf16_supported,
@@ -529,7 +556,7 @@ def _build_receipt(
         "finite_gradients": observation.finite_gradients,
         "finite_loss": observation.finite_loss,
         "gradient_clip_0_1": recipe["gradient_clip_norm"] == 0.1,
-        "parameter_changed": observation.parameter_changed,
+        "parameter_changed": _parameter_update_observed(observation),
         "peak_allocated_vram_within_22_gib": observation.peak_allocated_bytes
         <= VRAM_LIMIT_BYTES,
         "resume_state_verified": resume_state_verified,
@@ -565,8 +592,10 @@ def _build_receipt(
             "gradient_norm": observation.gradient_norm,
             "finite_loss": observation.finite_loss,
             "finite_gradients": observation.finite_gradients,
-            "parameter_digest_before": observation.model_digest_before,
-            "parameter_digest_after": observation.model_digest_after,
+            "parameter_digest_rule": _PARAMETER_DIGEST_RULE,
+            "trainable_parameter_count": observation.trainable_parameter_count,
+            "parameter_digest_before": observation.parameter_digest_before,
+            "parameter_digest_after": observation.parameter_digest_after,
         },
         "checkpoint": dict(checkpoint_evidence),
         "synthetic_labels": dict(synthetic_labels),

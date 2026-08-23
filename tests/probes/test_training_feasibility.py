@@ -50,10 +50,11 @@ def _observation(**changes: object) -> StepObservation:
         "bf16_autocast_enabled": True,
         "deterministic_fallback_detected": False,
         "device": "cuda:0",
-        "model_digest_before": "0" * 64,
-        "model_digest_after": "1" * 64,
+        "trainable_parameter_count": 342,
+        "parameter_digest_before": "0" * 64,
+        "parameter_digest_after": "1" * 64,
         "state_digests": {
-            "model": "1" * 64,
+            "model": "7" * 64,
             "optimizer": "2" * 64,
             "scheduler": "3" * 64,
             "scaler": "4" * 64,
@@ -116,6 +117,8 @@ def _receipt() -> dict[str, object]:
                 "gradient_norm": 0.75,
                 "finite_loss": True,
                 "finite_gradients": True,
+                "parameter_digest_rule": "ordered-trainable-named-parameters-sha256-v1",
+                "trainable_parameter_count": 2,
                 "parameter_digest_before": "0" * 64,
                 "parameter_digest_after": "1" * 64,
             },
@@ -217,6 +220,35 @@ def test_deterministic_comparison_is_exact_and_excludes_timing() -> None:
     assert deterministic_comparison(first)["ordered_loss_hex"] == [float(3.25).hex()]
 
 
+def test_buffer_only_state_change_cannot_prove_parameter_update() -> None:
+    """Catch BatchNorm running buffers being mistaken for an AdamW parameter update."""
+    model = torch.nn.BatchNorm1d(2)
+    model.train()
+    parameter_digest_before = feasibility_probe.trainable_parameter_sha256(model)
+    full_state_digest_before = feasibility_probe.structured_state_sha256(
+        model.state_dict()
+    )
+
+    with torch.no_grad():
+        model(torch.tensor([[1.0, 2.0], [3.0, 6.0]]))
+
+    parameter_digest_after = feasibility_probe.trainable_parameter_sha256(model)
+    full_state_digest_after = feasibility_probe.structured_state_sha256(
+        model.state_dict()
+    )
+    assert full_state_digest_before != full_state_digest_after
+    assert parameter_digest_before == parameter_digest_after
+
+    with pytest.raises(FeasibilityError, match="parameter update"):
+        evaluate_step_observation(
+            _observation(
+                parameter_changed=full_state_digest_before != full_state_digest_after,
+                parameter_digest_before=parameter_digest_before,
+                parameter_digest_after=parameter_digest_after,
+            )
+        )
+
+
 @pytest.mark.parametrize(
     ("changes", "expected"),
     [
@@ -286,6 +318,16 @@ def test_feasibility_receipt_is_schema_valid_and_content_addressed(
                 {"parameter_digest_after": n["step"]["parameter_digest_before"]}
             ),
             "parameter_changed",
+        ),
+        (
+            lambda n: n["step"].update({"trainable_parameter_count": 0}),
+            "parameter_changed",
+        ),
+        (
+            lambda n: n["step"].update(
+                {"parameter_digest_rule": "full-model-state-sha256"}
+            ),
+            "parameter_digest_rule",
         ),
         (
             lambda n: n["step"].update({"finite_gradients": False}),
