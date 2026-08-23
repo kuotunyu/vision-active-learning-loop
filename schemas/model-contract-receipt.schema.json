@@ -1,0 +1,40 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "model-contract-receipt.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["receipt_type", "schema_version", "normative", "metadata"],
+  "properties": {
+    "receipt_type": {"const": "model-contract"},
+    "schema_version": {"const": 1},
+    "normative": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["model_sha256", "config_sha256", "source_sha256", "processor_sha256", "fixture_sha256", "probe_sha256", "environment_sha256", "observed_shapes", "invariants", "status", "errors"],
+      "properties": {
+        "model_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "config_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "source_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "processor_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "fixture_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "probe_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "environment_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "observed_shapes": {"type": "object", "minProperties": 1, "additionalProperties": {"type": "array", "minItems": 1, "items": {"type": "integer"}}},
+        "invariants": {"type": "object", "minProperties": 1, "required": ["logits_shape"], "additionalProperties": {"type": "boolean"}},
+        "status": {"enum": ["PASS", "FAIL"]},
+        "errors": {"type": "array", "items": {"type": "string"}}
+      }
+    },
+    "metadata": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "timestamp": {"type": "string"},
+        "run_id": {"type": "string"},
+        "temporary_directory": {"type": "string"},
+        "container_instance_id": {"type": "string"},
+        "receipt_content_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+      }
+    }
+  }
+}
