@@ -1,15 +1,17 @@
 # Vision Active Learning Loop — Formal Design Specification
 
-**Status:** Approved for implementation planning
-**Milestone:** M0 Complete
+**Status:** A2 design amendment committed for owner written-spec review; implementation planning is not yet authorized
+**Milestone:** M0 complete for the original design; A2 amendment pending owner written-spec review
 **Owner approval date:** 2026-08-23
 **Approved commit baseline:** `8b456800077d45fa9a6bb0dcd4ecb70c0edc89c6`
-**Date:** 2026-08-23
+**A2 amendment authorization date:** 2026-08-24
+**A2 amendment baseline:** `97d5789c0ca657f58e79f761a353f275e97a147b`
+**Original specification date:** 2026-08-23
 **Repository:** `vision-active-learning-loop`
 **Target roles:** Computer Vision Engineer, Machine Learning Engineer, AI Engineer
 **Design choice:** Modified Option B — multi-country object-detection active learning
 **Runtime gate:** Wave 0 must verify every executable model-contract invariant from a new run-scoped evidence chain. The environment, model-contract, and feasibility receipts must share a non-empty run identity and exact parent bindings; each runtime observation must independently report uv `0.8.15` and SciPy `1.18.0`. Historical or fixed-name evidence is never current by implication. Any failure stops execution and returns the protocol to design review.
-**Implementation status:** Approval records the design/planning baseline only. It does not mean that a dataset or model was downloaded, a dependency was installed, a GPU experiment was executed, or a publication/remote repository was created.
+**Implementation status:** Approval records the design baseline only. The A2 amendment authorizes this written specification change, not an implementation plan or implementation. It does not mean that a dataset or model was downloaded, a dependency was installed, a new GPU experiment was executed, or a publication/remote repository was created.
 
 ## 1. Executive decision
 
@@ -188,7 +190,7 @@ The `model.safetensors` artifact is 80,904,152 bytes with SHA-256:
 fe87a5a30f5daf298d10794c7682a63b6107986f97d6a770ba948d89e4340093
 ```
 
-The checkpoint and Transformers implementation are Apache-2.0 licensed. RT-DETR is selected because it exposes a fixed set of 300 decoder queries and raw class/box outputs, making the acquisition contract auditable without NMS or a score-threshold-dependent number of detections. The four-class prediction head is reset with a seed-deterministic initialization; it does not reuse COCO class-head rows.
+The checkpoint and Transformers implementation are Apache-2.0 licensed. RT-DETR is selected because it exposes a fixed set of 300 decoder queries and raw class/box outputs, making the acquisition contract auditable without NMS or a score-threshold-dependent number of detections. Every class-dependent detector component listed in Section 5.2 is reset with one seed-deterministic initialization stream; no replacement module reuses, copies, or selects COCO class-head rows.
 
 The interpretation is pinned to [Transformers 5.15.0 RT-DETR documentation](https://huggingface.co/docs/transformers/v5.15.0/en/model_doc/rt_detr). That implementation trains class outputs with focal-loss-style independent sigmoid probabilities. It does **not** provide a native mutually exclusive no-object softmax class. Section 7 therefore defines a derived and explicitly labeled background probability rather than claiming a model-native no-object logit.
 
@@ -196,24 +198,80 @@ The interpretation is pinned to [Transformers 5.15.0 RT-DETR documentation](http
 
 Generated documentation in Transformers 5.15.0 describes a no-object-inclusive output dimension, while the pinned focal-loss execution path uses independent foreground logits. Documentation is therefore not accepted as the executable contract. After the dependency/model lock but **before any RDD archive is processed, any embedding is computed, or any pilot/formal model runs**, a synthetic-input probe must execute the exact pinned checkpoint revision and Transformers 5.15.0 source.
 
-The probe resets the detector head to four labels using fixed `contract_probe_seed = 17` and performs label-free inference on a batch of two different-aspect-ratio synthetic RGB images. It is release-blocking and must verify all of these invariants:
+#### 5.2.1 A2 trigger and pinned-source finding
+
+The first Option A feasibility-A attempt, run ID `option-a-20260824T134408p0800-boundary-replay`, stopped with `WAVE0_NORMATIVE_FAIL` before publishing a feasibility receipt or checkpoint. Its exact labeled-forward error was:
+
+```text
+The size of tensor a (80) must match the size of tensor b (4) at non-singleton dimension 2
+```
+
+The failure record remains immutable at stored SHA-256 `ef6f55609f6a6db0281206c8e434c39fa3407399bc7c7f0db4312c5293677507` and content SHA-256 `0896d4edcfd281749dfd04215cb09ae518e74d39645ec61b08c5792607778122`. The preceding Option A environment and label-free model-contract receipts remain historical records of the narrower contracts they actually evaluated; they are neither overwritten nor reinterpreted as A2 evidence.
+
+The root cause is a class-dependent reset-contract omission, not an RTX 4090, RT-DETR-R18, SciPy, or dataset feasibility failure. The previous reset changed `model.model.decoder.class_embed`, `model.model.denoising_class_embed`, and the label mappings, but left `model.model.enc_score_head` at its pretrained 80-class width. The pinned official Transformers 5.15.0 source establishes the complete data flow:
+
+1. [`RTDetrModel` constructs `enc_score_head` from `config.num_labels`](https://github.com/huggingface/transformers/blob/v5.15.0/src/transformers/models/rt_detr/modeling_rt_detr.py#L1457-L1463).
+2. [That head produces `enc_outputs_class`, whose selected rows become `enc_topk_logits`](https://github.com/huggingface/transformers/blob/v5.15.0/src/transformers/models/rt_detr/modeling_rt_detr.py#L1677-L1694).
+3. [A labeled object-detection forward passes `enc_topk_logits` into the RT-DETR loss](https://github.com/huggingface/transformers/blob/v5.15.0/src/transformers/models/rt_detr/modeling_rt_detr.py#L1849-L1870).
+4. [With auxiliary loss enabled, the RT-DETR loss appends `enc_topk_logits` to the auxiliary outputs evaluated against the same labels](https://github.com/huggingface/transformers/blob/v5.15.0/src/transformers/loss/loss_rt_detr.py#L433-L467).
+5. [`RTDetrLoss` binds its class count to `config.num_labels` and creates the classification target at that width](https://github.com/huggingface/transformers/blob/v5.15.0/src/transformers/loss/loss_rt_detr.py#L147-L195), so the old 80-channel encoder tensor is incompatible with the frozen four-class target.
+
+The official Transformers 5.15.0 wheel source inspected for this amendment has `modeling_rt_detr.py` SHA-256 `fce24c79c8599e52f3648f549502879e9b396cc86f593c3a07baf10c002cead3` and `loss_rt_detr.py` SHA-256 `01c6fe0bdc5965ccf71e7eabfc98a3d05101300bc69dc1773ae3f58ebd7d02e6`. Both hashes, not generated documentation alone, are normative source inputs to the A2 receipt.
+
+#### 5.2.2 Complete four-class reset contract
+
+The detector, model revision, processor, 300 queries, dependency versions, and frozen RDD label order remain unchanged. Under one RNG scope seeded exactly once with `contract_probe_seed = 17`, every replacement is created and initialized in this exact RNG-consumption order, with no intervening random initialization or per-module reseeding:
+
+1. each `model.model.decoder.class_embed[index]`, in ascending `index` order;
+2. `model.model.denoising_class_embed`; and
+3. `model.model.enc_score_head`.
+
+Every replacement preserves the corresponding original module's device and dtype, as well as its input or embedding dimension and bias presence where applicable. It must satisfy all of the following:
+
+- every `model.model.decoder.class_embed[index]` is a newly initialized linear module with `out_features == 4`;
+- `model.model.denoising_class_embed` is a newly initialized embedding with `num_embeddings == 5` and `padding_idx == 4`;
+- `model.model.enc_score_head` is a newly initialized linear module with `out_features == 4`;
+- `model.config.num_labels == 4`;
+- `model.config.id2label == {0: "D00", 1: "D10", 2: "D20", 3: "D40"}`; and
+- `model.config.label2id == {"D00": 0, "D10": 1, "D20": 2, "D40": 3}`.
+
+No replacement may copy or select any row, bias, embedding, or other class-specific value from the pretrained 80-class COCO heads. Initialization follows the pinned RT-DETR convention: decoder and encoder classification weights use Xavier uniform initialization; their biases use `p = config.initializer_bias_prior_prob or 1 / (config.num_labels + 1)` and `-log((1 - p) / p)`; the denoising embedding uses Xavier uniform initialization and its padding row remains zero. The applicable pinned conventions are the official [decoder, encoder, and denoising initialization source](https://github.com/huggingface/transformers/blob/v5.15.0/src/transformers/models/rt_detr/modeling_rt_detr.py#L1003-L1062).
+
+#### 5.2.3 Label-free and labeled executable invariants
+
+The A2 probe uses only the original synthetic fixtures and synthetic four-class targets. It performs both a label-free forward and a labeled forward; no RDD bytes, annotations, label counts, or dataset paths are permitted. It is release-blocking and must verify all of these invariants:
 
 - `config.num_queries == 300`;
-- after head reset, `config.num_labels == 4` and every decoder class head has four output channels;
+- every structural and mapping invariant in Section 5.2.2 is true, including exact module paths, device, dtype, initialization order, and absence of reused COCO rows;
 - final `logits.shape == [2, 300, 4]` and `pred_boxes.shape == [2, 300, 4]`;
+- every layer in `intermediate_logits` has final dimension 4;
+- `enc_outputs_class` and `enc_topk_logits` each have final dimension 4;
+- every decoder, encoder, and denoising auxiliary classification tensor reachable by `RTDetrForObjectDetectionLoss` has final dimension 4;
+- no reachable classification tensor in the pinned labeled-loss data flow has final dimension 80 or any class width other than 4;
+- a labeled forward over valid synthetic four-class targets produces a finite scalar loss;
 - the acquisition accessor’s native foreground scores equal elementwise `sigmoid(logits)` for all four channels and never invoke the postprocessor’s non-focal softmax path; the only softmax permitted is the explicitly project-derived conditional `pi_qc` in Section 7.3, computed after preserving the independent sigmoid scores;
 - there is no fifth native logit and no tensor channel is misidentified as native no-object;
 - in `eval()` plus `torch.inference_mode()` with no labels, `intermediate_reference_points` is available with exact shape `[2, config.decoder_layers, 300, 4]`, where `config.decoder_layers >= 2`;
 - final boxes equal `intermediate_reference_points[:, -1, :, :]` exactly, and the localization term uses penultimate boxes `intermediate_reference_points[:, -2, :, :]`;
 - source-structure assertions against the pinned file verify that decoder layers are stacked on axis 1 without a query-axis gather, sort, or permutation, so query index `q` has the same correspondence at the penultimate and final layers;
 - the fixed processor is configured with bilinear aspect-preserving `size={"max_height": 640, "max_width": 640}`, `do_pad=true`, `pad_size={"height": 640, "width": 640}`, zero fill, `do_rescale=true`, `rescale_factor=1/255`, and `do_normalize=false`; its observed `pixel_values.shape == [2, 3, 640, 640]`, `pixel_mask.shape == [2, 640, 640]`, and mask extents match the expected resized regions; and
-- the model call contains no annotations, targets, or label-derived counts.
+- the label-free call contains no annotations, targets, or label-derived counts, while the labeled call receives only the registered synthetic targets.
 
 The expected intermediate tensor order follows the pinned [RT-DETR source](https://github.com/huggingface/transformers/blob/v5.15.0/src/transformers/models/rt_detr/modeling_rt_detr.py), where decoder outputs are stacked as `[batch, decoder_layer, query, coordinate]` and final boxes are the last layer. The sigmoid assertion follows the pinned [RT-DETR image processor source](https://github.com/huggingface/transformers/blob/v5.15.0/src/transformers/models/rt_detr/image_processing_rt_detr.py), not the contradictory generated output prose.
 
-The probe emits a schema-validated, machine-readable `model_contract_receipt` containing the model repository/revision, canonical config JSON SHA-256, safetensors SHA-256, Transformers package version and source-tree commit/hash, hashes of the RT-DETR model/config/processor source files, observed config values and tensor shapes, processor JSON and its SHA-256, synthetic-input fixture digest, probe source SHA-256, timestamp, canonical environment fingerprint, invariant-by-invariant booleans, and final `PASS`/`FAIL`. The receipt itself is content-addressed and becomes an input to every later manifest and run.
+The probe emits a schema-validated, machine-readable `model_contract_receipt` containing the model repository/revision, canonical config JSON SHA-256, safetensors SHA-256, Transformers package version and source-tree commit/hash, hashes of the RT-DETR model/config/processor/loss source files, observed module identities and tensor shapes from both paths, processor JSON and its SHA-256, synthetic-input and synthetic-target fixture digests, probe source SHA-256, timestamp, canonical environment fingerprint, invariant-by-invariant booleans, and final `PASS`/`FAIL`. The receipt itself is content-addressed and becomes an input to every later manifest and run.
 
-Any failed or unobservable invariant halts the protocol. The uncertainty formula, extractor, package, or checkpoint cannot be changed ad hoc; a different contract requires a new reviewed spec version, new probe, and new receipt.
+The existing BF16 backward, finite-gradient, parameter-update, peak-VRAM, checkpoint round-trip, and clean A/B deterministic replay gates remain mandatory and unchanged; the new finite labeled-forward invariant supplements rather than weakens them. Any failed or unobservable invariant halts the protocol. The detector, uncertainty formula, extractor, package, or checkpoint cannot be changed ad hoc; a different contract requires a new reviewed spec version, new probe, and new receipt.
+
+#### 5.2.4 No-clobber and evidence-preservation invariants
+
+Every subsequent A2 execution uses a new run ID and a new run-scoped evidence chain. Before any A2 feasibility-A, feasibility-B, or clean A/B replay process starts, both its exact checkpoint destination and its checkpoint root must not exist. Either pre-existing path is a fail-closed condition: it cannot be reused, cleaned, merged, or overwritten by the run.
+
+Receipt publication uses atomic no-clobber semantics. A separate existence check followed by an overwriting replace is insufficient because it permits a check-then-replace race. The destination-creating filesystem operation itself must fail atomically when the destination already exists; if the target filesystem cannot provide that guarantee, publication stops without changing the destination. Temporary publication artifacts remain run-unique and cannot make a failed receipt appear current.
+
+All earlier commits, OCI images, receipts, checkpoints, logs, failure records, and audit corrections remain immutable historical evidence. No prior `FAIL` can be rewritten as `PASS`, and no prior narrower `PASS` can satisfy A2 by implication. Current A2 evidence requires the fresh run ID, exact parent receipt bindings, the complete Section 5.2 receipt, and all unchanged downstream gates.
+
+Existing whole-tree Black and Ruff debt is outside the A2 correction boundary. A future A2 implementation may change only files required by these invariants and must run targeted formatting, lint, and tests over those touched files; broad formatting, unrelated cleanup, and refactoring are prohibited.
 
 ### 5.3 Frozen diversity encoder
 
@@ -833,6 +891,10 @@ Every figure/table identifies dataset role, arm, seed aggregation, budget unit, 
 - [x] RDD is conservatively treated as CC BY-SA 4.0 and pixels/annotations are not redistributed.
 - [x] Global source-plus-shift duplicate components, source splitting, one-time curator coverage audit, and oracle access rules do not depend on detector results.
 - [x] A release-blocking executable probe resolves the RT-DETR no-object/output-shape ambiguity before RDD processing.
+- [x] The A2 reset contract covers decoder heads, the denoising embedding, `enc_score_head`, and exact frozen RDD label mappings in one fixed seed-17 RNG order without reusing COCO rows.
+- [x] The A2 executable contract covers both label-free and labeled RT-DETR paths, including encoder/top-k and every decoder/encoder/denoising auxiliary classification tensor reachable by labeled loss.
+- [x] The recorded 80-vs-4 failure remains immutable evidence of the narrower Option A contract and cannot be reinterpreted as a pass.
+- [x] Checkpoint roots and destinations fail closed when pre-existing, and receipt publication requires atomic no-clobber semantics rather than check-then-replace.
 - [x] Formal source/shift evaluation stays embargoed until a complete 66-fit artifact seal exists; premature output invalidates the experiment ID.
 - [x] The 2% reference is one shared fit; `1 + 5×4 + 1 = 22` per seed and `22×3 = 66` primary fits.
 - [x] Entropy and margin cover background, conditional class ambiguity, localization instability, fixed top-20 aggregation, zero postprocessed detections, and deterministic ties.
@@ -850,4 +912,4 @@ Every figure/table identifies dataset role, arm, seed aggregation, budget unit, 
 
 The following cannot be changed as an implementation convenience: included countries, dataset roles, split ranges/salt, global group/dedup thresholds and exclusions, detector/encoder identity, executable model-contract invariants, uncertainty equations, hybrid factor, canonical distance quantization/order, formal seeds/budgets, evaluation embargo, calibration split/gates, 30-epoch recipe, primary metrics/AUBC, censoring/claim gates, component-aware pilot caps, and 66-fit definition.
 
-A required change must produce a written spec revision, explain the trigger, invalidate incompatible pilot/formal artifacts, and receive user approval before execution. After approval of this design, the next allowed deliverable is a separate implementation plan; no implementation should begin directly from this document.
+A required change must produce a written spec revision, explain the trigger, invalidate incompatible pilot/formal artifacts, and receive user approval before execution. This A2 amendment is committed only for owner written-spec review. Only after that written review explicitly approves the amended spec may the next deliverable be a separate implementation-plan update; no implementation should begin directly from this document.
