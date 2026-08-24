@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import inspect
 import json
+import math
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
@@ -11,13 +12,19 @@ import torch
 from torch import nn
 from transformers.models.rt_detr.modeling_rt_detr import RTDetrForObjectDetection
 
-import vision_active_learning_loop.probes.model_contract as model_contract_probe
 import vision_active_learning_loop.artifacts.receipts as receipt_module
+import vision_active_learning_loop.probes.model_contract as model_contract_probe
+from vision_active_learning_loop.artifacts.digests import canonical_json_sha256
 from vision_active_learning_loop.artifacts.receipts import (
+    ReceiptValidationError,
     atomic_write_receipt,
     validate_receipt,
 )
 from vision_active_learning_loop.cli_manifest import build_manifest
+from vision_active_learning_loop.environment import (
+    EnvironmentContract,
+    environment_invariants,
+)
 from vision_active_learning_loop.models.rtdetr_contract import (
     ContractUnavailable,
     ExecutionDeviceObservation,
@@ -31,22 +38,18 @@ from vision_active_learning_loop.models.rtdetr_contract import (
     reset_four_class_head,
 )
 from vision_active_learning_loop.probes.model_contract import (
+    REQUIRED_MODEL_CONTRACT_INVARIANTS,
     ModelContractInputError,
     ModelContractReceipt,
     ProcessorContractObservation,
-    REQUIRED_MODEL_CONTRACT_INVARIANTS,
     _processor_document,
     _receipt_hashes,
     _resolve_cli_paths,
-    main as probe_main,
     run_model_contract_probe,
 )
-from vision_active_learning_loop.artifacts.digests import canonical_json_sha256
-from vision_active_learning_loop.environment import (
-    EnvironmentContract,
-    environment_invariants,
+from vision_active_learning_loop.probes.model_contract import (
+    main as probe_main,
 )
-
 
 FIXTURE_MANIFEST = (
     Path(__file__).resolve().parents[2]
@@ -84,6 +87,132 @@ def _model(*, queries: int = 300, labels: int = 4, decoder_layers: int = 3):
             )
         ),
     )
+
+
+def _model_with_class_components(
+    *,
+    labels: int = 80,
+    decoder_layers: int = 3,
+    decoder_bias: bool = True,
+    encoder_bias: bool = True,
+    dtype: torch.dtype = torch.float32,
+) -> SimpleNamespace:
+    return SimpleNamespace(
+        config=SimpleNamespace(
+            num_queries=300,
+            num_labels=labels,
+            decoder_layers=decoder_layers,
+            initializer_bias_prior_prob=None,
+        ),
+        model=SimpleNamespace(
+            decoder=SimpleNamespace(
+                class_embed=nn.ModuleList(
+                    [
+                        nn.Linear(8, labels, bias=decoder_bias, dtype=dtype)
+                        for _ in range(decoder_layers)
+                    ]
+                )
+            ),
+            denoising_class_embed=nn.Embedding(
+                labels + 1,
+                16,
+                padding_idx=labels,
+                dtype=dtype,
+            ),
+            enc_score_head=nn.Linear(
+                256,
+                labels,
+                bias=encoder_bias,
+                dtype=dtype,
+            ),
+        ),
+    )
+
+
+def _reference_replacements_in_approved_order(
+    model: SimpleNamespace, seed: int
+) -> dict[str, torch.Tensor]:
+    """Build an independent oracle for the normative replacement RNG stream."""
+    old_heads = list(model.model.decoder.class_embed)
+    denoising = model.model.denoising_class_embed
+    encoder = model.model.enc_score_head
+    cuda_devices = sorted(
+        {
+            tensor.device.index
+            for tensor in [
+                *(head.weight for head in old_heads),
+                denoising.weight,
+                encoder.weight,
+            ]
+            if tensor.device.type == "cuda" and tensor.device.index is not None
+        }
+    )
+    expected: dict[str, torch.Tensor] = {}
+    with torch.random.fork_rng(devices=cuda_devices):
+        torch.manual_seed(seed)
+        if cuda_devices:
+            torch.cuda.manual_seed_all(seed)
+        prior_probability = model.config.initializer_bias_prior_prob or 1 / 5
+        for index, old_head in enumerate(old_heads):
+            replacement = nn.Linear(
+                old_head.in_features,
+                4,
+                bias=old_head.bias is not None,
+                device=old_head.weight.device,
+                dtype=old_head.weight.dtype,
+            )
+            nn.init.xavier_uniform_(replacement.weight)
+            if replacement.bias is not None:
+                nn.init.constant_(
+                    replacement.bias,
+                    -math.log((1 - prior_probability) / prior_probability),
+                )
+            expected[f"decoder.{index}.weight"] = replacement.weight.detach().clone()
+            if replacement.bias is not None:
+                expected[f"decoder.{index}.bias"] = replacement.bias.detach().clone()
+
+        replacement_embedding = nn.Embedding(
+            5,
+            denoising.embedding_dim,
+            padding_idx=4,
+            device=denoising.weight.device,
+            dtype=denoising.weight.dtype,
+        )
+        nn.init.xavier_uniform_(replacement_embedding.weight)
+        with torch.no_grad():
+            replacement_embedding.weight[4].zero_()
+        expected["denoising.weight"] = replacement_embedding.weight.detach().clone()
+
+        replacement_encoder = nn.Linear(
+            encoder.in_features,
+            4,
+            bias=encoder.bias is not None,
+            device=encoder.weight.device,
+            dtype=encoder.weight.dtype,
+        )
+        nn.init.xavier_uniform_(replacement_encoder.weight)
+        if replacement_encoder.bias is not None:
+            nn.init.constant_(
+                replacement_encoder.bias,
+                -math.log((1 - prior_probability) / prior_probability),
+            )
+        expected["encoder.weight"] = replacement_encoder.weight.detach().clone()
+        if replacement_encoder.bias is not None:
+            expected["encoder.bias"] = replacement_encoder.bias.detach().clone()
+    return expected
+
+
+def _replacement_tensors(model: SimpleNamespace) -> dict[str, torch.Tensor]:
+    tensors: dict[str, torch.Tensor] = {}
+    for index, head in enumerate(model.model.decoder.class_embed):
+        tensors[f"decoder.{index}.weight"] = head.weight.detach()
+        if head.bias is not None:
+            tensors[f"decoder.{index}.bias"] = head.bias.detach()
+    tensors["denoising.weight"] = model.model.denoising_class_embed.weight.detach()
+    tensors["encoder.weight"] = model.model.enc_score_head.weight.detach()
+    if model.model.enc_score_head.bias is not None:
+        tensors["encoder.bias"] = model.model.enc_score_head.bias.detach()
+    return tensors
 
 
 def _approved_source() -> SourceContractObservation:
@@ -164,8 +293,8 @@ def test_extract_raw_contract_rejects_malformed_tensor_shapes(
 
 def test_reset_four_class_head_is_seeded_and_reuses_no_coco_rows() -> None:
     """Catch retaining pretrained COCO head rows or nondeterministic reset weights."""
-    first = _model(labels=80)
-    second = _model(labels=80)
+    first = _model_with_class_components(labels=80)
+    second = _model_with_class_components(labels=80)
     for head in first.model.decoder.class_embed:
         nn.init.constant_(head.weight, 7.0)
     for head in second.model.decoder.class_embed:
@@ -182,6 +311,157 @@ def test_reset_four_class_head_is_seeded_and_reuses_no_coco_rows() -> None:
     ):
         assert torch.equal(first_head.weight, second_head.weight)
         assert not torch.all(first_head.weight == 7.0)
+
+
+def test_reset_replaces_encoder_score_head_with_four_classes() -> None:
+    """Catch retaining the pretrained COCO encoder classification head."""
+    model = _model_with_class_components(labels=80)
+    original = model.model.enc_score_head
+
+    reset_four_class_head(model, seed=17)
+
+    assert model.model.enc_score_head is not original
+    assert model.model.enc_score_head.out_features == 4
+
+
+@pytest.mark.parametrize(
+    ("decoder_bias", "encoder_bias"),
+    [(True, True), (False, False), (True, False), (False, True)],
+)
+def test_reset_preserves_structure_identity_and_exact_mapping(
+    decoder_bias: bool, encoder_bias: bool
+) -> None:
+    """Catch structural drift or retaining any pretrained class module."""
+    model = _model_with_class_components(
+        labels=80,
+        decoder_bias=decoder_bias,
+        encoder_bias=encoder_bias,
+        dtype=torch.float64,
+    )
+    old_heads = list(model.model.decoder.class_embed)
+    old_denoising = model.model.denoising_class_embed
+    old_encoder = model.model.enc_score_head
+
+    reset_four_class_head(model, seed=17)
+
+    new_heads = list(model.model.decoder.class_embed)
+    assert len(new_heads) == len(old_heads) == 3
+    assert all(new is not old for new, old in zip(new_heads, old_heads))
+    assert model.model.denoising_class_embed is not old_denoising
+    assert model.model.enc_score_head is not old_encoder
+    assert [head.in_features for head in new_heads] == [8, 8, 8]
+    assert [head.out_features for head in new_heads] == [4, 4, 4]
+    assert [head.bias is not None for head in new_heads] == [decoder_bias] * 3
+    assert all(
+        head.weight.device == old.weight.device
+        for head, old in zip(new_heads, old_heads)
+    )
+    assert all(
+        head.weight.dtype == old.weight.dtype for head, old in zip(new_heads, old_heads)
+    )
+    assert model.model.denoising_class_embed.embedding_dim == 16
+    assert model.model.denoising_class_embed.num_embeddings == 5
+    assert model.model.denoising_class_embed.padding_idx == 4
+    assert (
+        model.model.denoising_class_embed.weight.device == old_denoising.weight.device
+    )
+    assert model.model.denoising_class_embed.weight.dtype == old_denoising.weight.dtype
+    assert model.model.enc_score_head.in_features == 256
+    assert model.model.enc_score_head.out_features == 4
+    assert (model.model.enc_score_head.bias is not None) is encoder_bias
+    assert model.model.enc_score_head.weight.device == old_encoder.weight.device
+    assert model.model.enc_score_head.weight.dtype == old_encoder.weight.dtype
+    assert model.config.num_labels == 4
+    assert model.config.id2label == {0: "D00", 1: "D10", 2: "D20", 3: "D40"}
+    assert model.config.label2id == {"D00": 0, "D10": 1, "D20": 2, "D40": 3}
+    assert torch.count_nonzero(model.model.denoising_class_embed.weight[4]) == 0
+
+
+def test_reset_sentinel_rows_are_not_reused() -> None:
+    """Catch copying or slicing any pretrained COCO classification tensor."""
+    model = _model_with_class_components(labels=80)
+    sentinels: list[float] = []
+    with torch.no_grad():
+        for index, head in enumerate(model.model.decoder.class_embed):
+            weight_sentinel = float(101 + index)
+            bias_sentinel = float(201 + index)
+            head.weight.fill_(weight_sentinel)
+            head.bias.fill_(bias_sentinel)
+            sentinels.extend((weight_sentinel, bias_sentinel))
+        model.model.denoising_class_embed.weight.fill_(301.0)
+        model.model.enc_score_head.weight.fill_(401.0)
+        model.model.enc_score_head.bias.fill_(402.0)
+        sentinels.extend((301.0, 401.0, 402.0))
+
+    reset_four_class_head(model, seed=17)
+
+    for tensor in _replacement_tensors(model).values():
+        assert all(not torch.any(tensor == sentinel) for sentinel in sentinels)
+
+
+def test_reset_rng_order_and_deterministic_replay() -> None:
+    """Catch reseeding, reordering, or dependence on old COCO tensor values."""
+    first = _model_with_class_components(labels=80)
+    second = _model_with_class_components(labels=80)
+    alternate_seed = _model_with_class_components(labels=80)
+    for model in (first, second, alternate_seed):
+        model.config.initializer_bias_prior_prob = 0.01
+    with torch.no_grad():
+        for tensor in _replacement_tensors(first).values():
+            tensor.fill_(7.0)
+        for tensor in _replacement_tensors(second).values():
+            tensor.fill_(-9.0)
+    expected = _reference_replacements_in_approved_order(first, seed=17)
+
+    reset_four_class_head(first, seed=17)
+    reset_four_class_head(second, seed=17)
+    reset_four_class_head(alternate_seed, seed=29)
+
+    first_tensors = _replacement_tensors(first)
+    second_tensors = _replacement_tensors(second)
+    alternate_tensors = _replacement_tensors(alternate_seed)
+    assert first_tensors.keys() == expected.keys()
+    for name, expected_tensor in expected.items():
+        assert torch.equal(first_tensors[name], expected_tensor)
+        assert torch.equal(second_tensors[name], expected_tensor)
+    assert any(
+        not torch.equal(first_tensors[name], alternate_tensors[name])
+        for name in first_tensors
+    )
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "missing_decoder_heads",
+        "wrong_decoder_head",
+        "missing_denoising",
+        "wrong_denoising",
+        "missing_encoder",
+        "wrong_encoder",
+    ],
+)
+def test_reset_required_class_component_unavailable(mutation: str) -> None:
+    """Catch silently accepting a missing or wrong-kind class component."""
+    model = _model_with_class_components(labels=80)
+    if mutation == "missing_decoder_heads":
+        model.model.decoder.class_embed = nn.ModuleList()
+    elif mutation == "wrong_decoder_head":
+        model.model.decoder.class_embed[1] = nn.Embedding(81, 8)
+    elif mutation == "missing_denoising":
+        del model.model.denoising_class_embed
+    elif mutation == "wrong_denoising":
+        model.model.denoising_class_embed = nn.Linear(16, 81)
+    elif mutation == "missing_encoder":
+        del model.model.enc_score_head
+    elif mutation == "wrong_encoder":
+        model.model.enc_score_head = nn.Embedding(81, 256)
+
+    with pytest.raises(ContractUnavailable):
+        reset_four_class_head(model, seed=17)
+    assert model.config.num_labels == 80
+    assert not hasattr(model.config, "id2label")
+    assert not hasattr(model.config, "label2id")
 
 
 def test_observed_rtdetr_contract() -> None:
@@ -510,7 +790,7 @@ def test_model_contract_schema_rejects_missing_normative_evidence(
     document = _receipt().as_dict()
     del document["normative"][field]
 
-    with pytest.raises(Exception):
+    with pytest.raises(ReceiptValidationError):
         atomic_write_receipt(tmp_path / "model-contract.json", document)
 
 
@@ -521,7 +801,7 @@ def test_model_contract_schema_requires_every_normative_invariant(
     document = _receipt().as_dict()
     del document["normative"]["invariants"]["source_stack_axis_one"]
 
-    with pytest.raises(Exception):
+    with pytest.raises(ReceiptValidationError):
         atomic_write_receipt(tmp_path / "model-contract.json", document)
 
 

@@ -13,7 +13,6 @@ from typing import Any
 import torch
 from torch import nn
 
-
 RDD_LABELS = ("D00", "D10", "D20", "D40")
 
 
@@ -55,30 +54,51 @@ def _normalized_gpu_uuid(value: str | None) -> str | None:
     if not isinstance(value, str) or not value:
         return None
     normalized = value.removeprefix("GPU-").lower()
-    if re.fullmatch(
-        r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}",
-        normalized,
-    ) is None:
+    if (
+        re.fullmatch(
+            r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}",
+            normalized,
+        )
+        is None
+    ):
         return None
     return normalized
 
 
 def reset_four_class_head(model: Any, seed: int = 17) -> None:
-    """Replace every decoder class head with a seeded four-class head."""
-    old_heads = list(model.model.decoder.class_embed)
-    if not old_heads:
+    """Replace every class-dependent module in one seeded RNG stream."""
+    decoder = getattr(getattr(model, "model", None), "decoder", None)
+    class_embed = getattr(decoder, "class_embed", None)
+    try:
+        old_heads = list(class_embed)
+    except TypeError as error:
+        raise ContractUnavailable("decoder class heads are unavailable") from error
+    if not old_heads or any(not isinstance(head, nn.Linear) for head in old_heads):
         raise ContractUnavailable("decoder class heads are unavailable")
+    denoising = getattr(model.model, "denoising_class_embed", None)
+    if not isinstance(denoising, nn.Embedding):
+        raise ContractUnavailable("denoising class embedding is unavailable")
+    encoder = getattr(model.model, "enc_score_head", None)
+    if not isinstance(encoder, nn.Linear):
+        raise ContractUnavailable("encoder score head is unavailable")
     cuda_devices = sorted(
         {
-            head.weight.device.index
-            for head in old_heads
-            if head.weight.device.type == "cuda" and head.weight.device.index is not None
+            tensor.device.index
+            for tensor in [
+                *(head.weight for head in old_heads),
+                denoising.weight,
+                encoder.weight,
+            ]
+            if tensor.device.type == "cuda" and tensor.device.index is not None
         }
     )
     with torch.random.fork_rng(devices=cuda_devices):
         torch.manual_seed(seed)
         if cuda_devices:
             torch.cuda.manual_seed_all(seed)
+        prior_probability = (
+            getattr(model.config, "initializer_bias_prior_prob", None) or 1 / 5
+        )
         new_heads = nn.ModuleList()
         for old_head in old_heads:
             head = nn.Linear(
@@ -90,27 +110,40 @@ def reset_four_class_head(model: Any, seed: int = 17) -> None:
             )
             nn.init.xavier_uniform_(head.weight)
             if head.bias is not None:
-                prior_probability = 1 / (len(RDD_LABELS) + 1)
                 nn.init.constant_(
                     head.bias,
                     -math.log((1 - prior_probability) / prior_probability),
                 )
             new_heads.append(head)
-        model.model.decoder.class_embed = new_heads
 
-        denoising = getattr(model.model, "denoising_class_embed", None)
-        if isinstance(denoising, nn.Embedding):
-            replacement = nn.Embedding(
-                len(RDD_LABELS) + 1,
-                denoising.embedding_dim,
-                padding_idx=len(RDD_LABELS),
-                device=denoising.weight.device,
-                dtype=denoising.weight.dtype,
+        replacement_embedding = nn.Embedding(
+            len(RDD_LABELS) + 1,
+            denoising.embedding_dim,
+            padding_idx=len(RDD_LABELS),
+            device=denoising.weight.device,
+            dtype=denoising.weight.dtype,
+        )
+        nn.init.xavier_uniform_(replacement_embedding.weight)
+        with torch.no_grad():
+            replacement_embedding.weight[replacement_embedding.padding_idx].zero_()
+
+        replacement_encoder = nn.Linear(
+            encoder.in_features,
+            len(RDD_LABELS),
+            bias=encoder.bias is not None,
+            device=encoder.weight.device,
+            dtype=encoder.weight.dtype,
+        )
+        nn.init.xavier_uniform_(replacement_encoder.weight)
+        if replacement_encoder.bias is not None:
+            nn.init.constant_(
+                replacement_encoder.bias,
+                -math.log((1 - prior_probability) / prior_probability),
             )
-            nn.init.xavier_uniform_(replacement.weight)
-            with torch.no_grad():
-                replacement.weight[replacement.padding_idx].zero_()
-            model.model.denoising_class_embed = replacement
+
+    model.model.decoder.class_embed = new_heads
+    model.model.denoising_class_embed = replacement_embedding
+    model.model.enc_score_head = replacement_encoder
 
     model.config.num_labels = len(RDD_LABELS)
     model.config.id2label = dict(enumerate(RDD_LABELS))
@@ -149,12 +182,9 @@ def extract_raw_contract(outputs: Any) -> RawDetectorOutput:
         )
     if not (
         logits.shape[:2] == final_boxes.shape[:2]
-        and logits.shape[:2]
-        == (intermediate.shape[0], intermediate.shape[2])
+        and logits.shape[:2] == (intermediate.shape[0], intermediate.shape[2])
     ):
-        raise ContractUnavailable(
-            "raw outputs must share batch and query dimensions"
-        )
+        raise ContractUnavailable("raw outputs must share batch and query dimensions")
     return RawDetectorOutput(
         logits=logits,
         final_boxes=final_boxes,
@@ -188,7 +218,9 @@ def observe_execution_device(
     if cuda_available and device_count > 0:
         selected_index = int(torch.cuda.current_device())
         selected_name = str(torch.cuda.get_device_name(selected_index))
-        raw_uuid = getattr(torch.cuda.get_device_properties(selected_index), "uuid", None)
+        raw_uuid = getattr(
+            torch.cuda.get_device_properties(selected_index), "uuid", None
+        )
         if isinstance(raw_uuid, bytes):
             selected_uuid = raw_uuid.decode("ascii")
         elif raw_uuid is not None:
@@ -196,8 +228,7 @@ def observe_execution_device(
         selected_device = str(torch.device("cuda", selected_index))
 
     parameter_devices = {
-        str(tensor.device)
-        for tensor in [*model.parameters(), *model.buffers()]
+        str(tensor.device) for tensor in [*model.parameters(), *model.buffers()]
     }
     model_device = (
         next(iter(parameter_devices)) if len(parameter_devices) == 1 else None
@@ -284,13 +315,10 @@ def evaluate_raw_contract(
         ),
         "logits_shape": shapes["logits"] == [2, 300, 4],
         "pred_boxes_shape": shapes["pred_boxes"] == [2, 300, 4],
-        "intermediate_reference_points_shape": shapes[
-            "intermediate_reference_points"
-        ]
+        "intermediate_reference_points_shape": shapes["intermediate_reference_points"]
         == [2, decoder_layers, 300, 4],
         "decoder_layers_at_least_two": decoder_layers >= 2,
-        "native_fifth_logit_absent": raw.logits.ndim == 3
-        and raw.logits.shape[-1] == 4,
+        "native_fifth_logit_absent": raw.logits.ndim == 3 and raw.logits.shape[-1] == 4,
         "final_boxes_are_last_layer": torch.equal(
             raw.final_boxes, raw.intermediate_boxes[:, -1, :, :]
         ),
@@ -303,10 +331,7 @@ def evaluate_raw_contract(
         ),
     }
     invariants.update(
-        {
-            name: value is True
-            for name, value in source.invariants.items()
-        }
+        {name: value is True for name, value in source.invariants.items()}
     )
     errors = tuple(name for name, passed in invariants.items() if not passed)
     return RawContractObservation(
@@ -320,7 +345,9 @@ def evaluate_raw_contract(
     )
 
 
-def _class_method(tree: ast.Module, class_name: str, method_name: str) -> ast.FunctionDef | None:
+def _class_method(
+    tree: ast.Module, class_name: str, method_name: str
+) -> ast.FunctionDef | None:
     for node in tree.body:
         if isinstance(node, ast.ClassDef) and node.name == class_name:
             for member in node.body:
@@ -358,7 +385,9 @@ def _assigns_stack_axis_one(method: ast.FunctionDef | None) -> bool:
         return False
     return any(
         isinstance(node, ast.Assign)
-        and any(_is_name(target, "intermediate_reference_points") for target in node.targets)
+        and any(
+            _is_name(target, "intermediate_reference_points") for target in node.targets
+        )
         and _is_stack_axis_one(node.value)
         for node in ast.walk(method)
     )
