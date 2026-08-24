@@ -4,6 +4,7 @@ from pathlib import Path
 import pytest
 
 import vision_active_learning_loop.environment as environment
+import vision_active_learning_loop.probes.model_contract as model_contract_probe
 from vision_active_learning_loop.artifacts import receipts
 from vision_active_learning_loop.artifacts.receipts import (
     ReceiptValidationError,
@@ -69,15 +70,21 @@ def _run_check(
     return exit_code, json.loads(output.read_text(encoding="utf-8"))
 
 
-def test_project_contract_rejects_wrong_docker_uv() -> None:
+def test_project_contract_rejects_wrong_docker_uv(tmp_path: Path) -> None:
+    dockerfile = tmp_path / "wave0.Dockerfile"
+    dockerfile.write_text(
+        (PROJECT_ROOT / "docker" / "wave0.Dockerfile")
+        .read_text(encoding="utf-8")
+        .replace("uv==0.8.15", "uv==0.11.18"),
+        encoding="utf-8",
+    )
     errors = environment.project_environment_input_errors(
         PROJECT_ROOT / "configs" / "environment" / "wave0.yaml",
         PROJECT_ROOT / "pyproject.toml",
-        PROJECT_ROOT / "docker" / "wave0.Dockerfile",
+        dockerfile,
     )
 
-    assert "Dockerfile must install uv==0.8.15 (observed 0.11.18)" not in errors
-    assert errors == []
+    assert errors == ["Dockerfile must install uv==0.8.15 (observed 0.11.18)"]
 
 
 def test_current_attempt_rejects_runtime_uv_drift(
@@ -96,34 +103,50 @@ def test_current_attempt_rejects_runtime_uv_drift(
     assert receipt["normative"]["invariants"]["exact_uv"] is False
 
 
-def test_project_contract_requires_declared_scipy() -> None:
+def test_project_contract_requires_declared_scipy(tmp_path: Path) -> None:
+    config = tmp_path / "wave0.yaml"
+    config.write_text(
+        (PROJECT_ROOT / "configs" / "environment" / "wave0.yaml")
+        .read_text(encoding="utf-8")
+        .replace("scipy: 1.18.0\n", ""),
+        encoding="utf-8",
+    )
+    pyproject = tmp_path / "pyproject.toml"
+    pyproject.write_text(
+        (PROJECT_ROOT / "pyproject.toml")
+        .read_text(encoding="utf-8")
+        .replace('    "scipy==1.18.0",\n', ""),
+        encoding="utf-8",
+    )
     errors = environment.project_environment_input_errors(
-        PROJECT_ROOT / "configs" / "environment" / "wave0.yaml",
-        PROJECT_ROOT / "pyproject.toml",
+        config,
+        pyproject,
         PROJECT_ROOT / "docker" / "wave0.Dockerfile",
     )
 
-    assert "environment config must declare scipy==1.18.0" not in errors
-    assert "project dependencies must declare scipy==1.18.0" not in errors
-    assert errors == []
+    assert errors == [
+        "environment config must declare scipy==1.18.0",
+        "project dependencies must declare scipy==1.18.0",
+    ]
 
 
-def test_current_attempt_fails_when_scipy_is_unimportable(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    canonical_observation: dict[str, object],
+@pytest.mark.parametrize(
+    "failure",
+    [ImportError("missing"), OSError("broken DLL"), RuntimeError("import hook failed")],
+)
+def test_runtime_scipy_version_requires_successful_import(
+    monkeypatch: pytest.MonkeyPatch, failure: Exception
 ) -> None:
-    exit_code, receipt = _run_check(
-        tmp_path,
-        monkeypatch,
-        canonical_observation | {"scipy": None},
+    def fail_import(name: str) -> object:
+        assert name == "scipy"
+        raise failure
+
+    monkeypatch.setattr(environment.importlib, "import_module", fail_import)
+    monkeypatch.setattr(
+        environment.importlib.metadata, "version", lambda name: "1.18.0"
     )
 
-    assert exit_code == 2
-    assert receipt["normative"]["invariants"]["exact_scipy"] is False
-    assert (
-        "scipy must be exactly 1.18.0 (observed None)" in receipt["normative"]["errors"]
-    )
+    assert environment._runtime_imported_version("scipy") is None
 
 
 def test_contract_rejects_runtime_scipy_drift(
@@ -143,21 +166,55 @@ def test_forged_receipt_cannot_copy_expected_scipy_into_observed(
     monkeypatch: pytest.MonkeyPatch,
     canonical_observation: dict[str, object],
 ) -> None:
-    exit_code, forged = _run_check(
-        tmp_path,
-        monkeypatch,
-        canonical_observation | {"scipy": None},
+    observe_environment = environment.observe_environment
+    exit_code, forged = _run_check(tmp_path, monkeypatch, canonical_observation)
+    assert exit_code == 0
+    validate_receipt(forged, SCHEMA)
+    monkeypatch.setattr(environment, "observe_environment", observe_environment)
+
+    def fail_scipy_import(name: str) -> object:
+        assert name == "scipy"
+        raise OSError("broken scipy extension")
+
+    versions = {
+        "scipy": "1.18.0",
+        "torch": "2.12.0+cu126",
+        "torchvision": "0.27.0+cu126",
+        "transformers": "5.15.0",
+        "pycocotools": "2.0.10",
+    }
+    monkeypatch.setattr(environment.importlib, "import_module", fail_scipy_import)
+    monkeypatch.setattr(
+        environment.importlib.metadata, "version", lambda name: versions[name]
     )
-    assert exit_code == 2
-    forged["normative"]["observed"]["scipy"] = "1.18.0"
-    forged["normative"]["status"] = "PASS"
-    forged["normative"]["errors"] = []
-    forged["metadata"]["receipt_content_sha256"] = receipts._receipt_content_sha256(
-        forged
+    monkeypatch.setattr(environment, "_uv_version", lambda: "0.8.15")
+    monkeypatch.setattr(
+        environment,
+        "_gpu",
+        lambda: (
+            "NVIDIA GeForce RTX 4090",
+            "GPU-7639cc81-2a55-164e-e5be-c5cd71752a63",
+            "591.86",
+        ),
+    )
+    monkeypatch.setattr(
+        environment,
+        "_torch_runtime",
+        lambda: ("12.6", False, True, True),
+    )
+    monkeypatch.setattr(environment, "_wsl", lambda: True)
+    monkeypatch.setattr(environment.platform, "system", lambda: "Linux")
+    monkeypatch.setenv("VAL_OBSERVED_BASE_IMAGE_DIGEST", BASE_IMAGE_DIGEST)
+    monkeypatch.setenv("VAL_RUNTIME_IMAGE_DIGEST", "sha256:" + "1" * 64)
+
+    live = environment.observe_environment()
+    live["data_root_unset"] = True
+    errors = model_contract_probe._environment_binding_errors(
+        forged["normative"]["observed"], live
     )
 
-    with pytest.raises(ReceiptValidationError, match="exact_scipy"):
-        validate_receipt(forged, SCHEMA)
+    assert live["scipy"] is None
+    assert errors == ["live scipy differs from parent environment receipt"]
 
 
 def test_environment_receipt_requires_exact_scipy_invariant(

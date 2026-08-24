@@ -209,6 +209,15 @@ def _installed_version(distribution: str) -> str | None:
         return None
 
 
+def _runtime_imported_version(distribution: str) -> str | None:
+    """Return installed metadata only when the runtime module imports cleanly."""
+    try:
+        importlib.import_module(distribution)
+        return importlib.metadata.version(distribution)
+    except Exception:
+        return None
+
+
 def _uv_version() -> str | None:
     try:
         result = subprocess.run(
@@ -281,7 +290,7 @@ def observe_environment() -> dict[str, object]:
         "schema_version": 1,
         "python": platform.python_version(),
         "uv": _uv_version(),
-        "scipy": _installed_version("scipy"),
+        "scipy": _runtime_imported_version("scipy"),
         "torch": _installed_version("torch"),
         "torchvision": _installed_version("torchvision"),
         "transformers": _installed_version("transformers"),

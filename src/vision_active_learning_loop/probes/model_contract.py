@@ -456,6 +456,17 @@ def _runtime_environment() -> tuple[dict[str, object], list[str]]:
     return environment, errors
 
 
+def _environment_binding_errors(
+    parent_environment: Mapping[str, object], live_environment: Mapping[str, object]
+) -> list[str]:
+    """Compare independently observed live fields with a validated parent."""
+    return [
+        f"live {field} differs from parent environment receipt"
+        for field, expected in parent_environment.items()
+        if live_environment.get(field) != expected
+    ]
+
+
 def _unobserved_torch_execution() -> dict[str, object]:
     return {
         "cuda_available": False,
@@ -666,11 +677,9 @@ def run_model_contract_probe(
     batch = prepare_contract_batch(processor, images)
     processor_observation = observe_processor_contract(processor, batch)
     environment, environment_errors = _runtime_environment()
-    for field, expected in parent_environment.items():
-        if environment.get(field) != expected:
-            environment_errors.append(
-                f"live {field} differs from parent environment receipt"
-            )
+    environment_errors.extend(
+        _environment_binding_errors(parent_environment, environment)
+    )
     environment = {
         **environment,
         "torch_execution": _unobserved_torch_execution(),
@@ -840,14 +849,13 @@ def _resolve_cli_paths(
         raise ModelContractInputError(
             "assets must be VAL_ARTIFACT_ROOT/wave0/receipts/model-assets.json"
         )
-    expected_environment = receipts_root / "environment-receipt.json"
     actual_environment = Path(environment).resolve(strict=True)
-    if actual_environment != expected_environment or _is_link_or_junction(
+    if actual_environment.parent != receipts_root or _is_link_or_junction(
         Path(environment)
     ):
         raise ModelContractInputError(
-            "environment must be VAL_ARTIFACT_ROOT/wave0/receipts/"
-            "environment-receipt.json"
+            "environment must be a non-link receipt directly below "
+            "VAL_ARTIFACT_ROOT/wave0/receipts"
         )
     expected_fixtures = (
         _project_root() / "fixtures" / "synthetic" / "wave0" / "fixture-manifest.json"

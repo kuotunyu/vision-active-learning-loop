@@ -100,11 +100,11 @@ Expected: lock check exits 0; compatibility and lazy-manifest tests pass, includ
 
 - [ ] **Step 5: Produce environment-boundary evidence**
 
-Run: `uv run python -m vision_active_learning_loop.environment check --config configs/environment/wave0.yaml --run-id <run-id> --output "$VAL_ARTIFACT_ROOT/wave0/receipts/environment-receipt.json"`
+Run: `uv run python -m vision_active_learning_loop.environment check --config configs/environment/wave0.yaml --run-id <run-id> --output "$VAL_ARTIFACT_ROOT/wave0/receipts/environment-<run-id>.json"`
 
 Expected: on canonical WSL2/OCI, JSON status is `PASS`; on native Windows canonical mode, command exits 2 and status is `FAIL` without creating a success marker.
 
-**Artifact/evidence produced:** `environment-receipt.json`, `uv.lock`, image digest, compatibility table, and native-Windows rejection test.
+**Artifact/evidence produced:** `environment-<run-id>.json`, `uv.lock`, image digest, compatibility table, and native-Windows rejection test.
 
 **Stop condition:** Any exact core wheel, CUDA, WSL2 GPU, or base-image digest cannot be validated.
 
@@ -295,7 +295,7 @@ Verify `final_boxes` is exactly layer `-1`, penultimate is layer `-2`, source AS
 
 - [ ] **Step 4: Run the probe on the canonical GPU**
 
-Run: `uv run val probe model-contract --assets "$VAL_ARTIFACT_ROOT/wave0/receipts/model-assets.json" --environment "$VAL_ARTIFACT_ROOT/wave0/receipts/environment-receipt.json" --fixtures fixtures/synthetic/wave0/fixture-manifest.json --run-id <run-id> --output "$VAL_ARTIFACT_ROOT/wave0/receipts/model-contract-receipt.json"`
+Run: `uv run val probe model-contract --assets "$VAL_ARTIFACT_ROOT/wave0/receipts/model-assets.json" --environment "$VAL_ARTIFACT_ROOT/wave0/receipts/environment-<run-id>.json" --fixtures fixtures/synthetic/wave0/fixture-manifest.json --run-id <run-id> --output "$VAL_ARTIFACT_ROOT/wave0/receipts/model-contract-<run-id>.json"`
 
 Expected: exit 0 and `PASS`; all normative boolean fields true; the parent environment receipt is schema/content-hash validated as PASS for the same run, live uv/SciPy and the full environment are independently re-observed, and the receipt embeds the parent identity/content hash plus model/config/weights/Transformers source/processor/fixture/probe/environment hashes and observed shapes.
 
@@ -356,7 +356,7 @@ Use seed 17, deterministic algorithms, cuDNN benchmark off, TF32 off, batch size
 
 - [ ] **Step 4: Run twice from the same initial state**
 
-Run: `uv run val probe training-feasibility --model-contract "$VAL_ARTIFACT_ROOT/wave0/receipts/model-contract-receipt.json" --checkpoint-root "$VAL_ARTIFACT_ROOT/wave0/checkpoints/feasibility-a" --run-id <run-id> --output "$VAL_ARTIFACT_ROOT/wave0/receipts/feasibility-a.json" && uv run val probe training-feasibility --model-contract "$VAL_ARTIFACT_ROOT/wave0/receipts/model-contract-receipt.json" --checkpoint-root "$VAL_ARTIFACT_ROOT/wave0/checkpoints/feasibility-b" --run-id <run-id> --output "$VAL_ARTIFACT_ROOT/wave0/receipts/feasibility-b.json"`
+Run: `uv run val probe training-feasibility --model-contract "$VAL_ARTIFACT_ROOT/wave0/receipts/model-contract-<run-id>.json" --checkpoint-root "$VAL_ARTIFACT_ROOT/wave0/checkpoints/feasibility-a" --run-id <run-id> --output "$VAL_ARTIFACT_ROOT/wave0/receipts/feasibility-a.json" && uv run val probe training-feasibility --model-contract "$VAL_ARTIFACT_ROOT/wave0/receipts/model-contract-<run-id>.json" --checkpoint-root "$VAL_ARTIFACT_ROOT/wave0/checkpoints/feasibility-b" --run-id <run-id> --output "$VAL_ARTIFACT_ROOT/wave0/receipts/feasibility-b.json"`
 
 Expected: both `PASS`, peak allocated VRAM <=22 GiB, finite forward/backward/update, identical ordered state digests and loss within the receipt’s exact canonical comparison rule.
 

@@ -51,7 +51,7 @@ _APPROVED_MODEL_CONTRACT_ASSET_HASHES = {
     "config_file_sha256": "0be0da088d7c323ebc32e7b564ffb7c072fd0c6197e0aba67a38d3eaf304e0e2",
     "processor_file_sha256": "ffb4b9461a1dad746be8f0f9c8330ed7743a1ba5fba4f75c232cd281b3d4c64a",
     "fixture_sha256": "4e5eddbb21426c00932c34af331ae3e0ef3d30eb9010da7310b7319e91ec6d0f",
-    "probe_sha256": "4b1eefa514dd94948101bf9b2c77edf9b37eec158ce0912375e8150e9d3d25e7",
+    "probe_sha256": "dd95659c64a60adb459ebecd75ba225281b359fb17d2847596f3705bc4ea43a8",
 }
 _APPROVED_RTDETR_SOURCE_FILES = {
     "models/rt_detr/configuration_rt_detr.py": {

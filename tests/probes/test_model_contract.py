@@ -398,7 +398,7 @@ def _receipt(*, processor_passed: bool = True) -> ModelContractReceipt:
         "processor_sha256": canonical_json_sha256(processor),
         "processor_file_sha256": "ffb4b9461a1dad746be8f0f9c8330ed7743a1ba5fba4f75c232cd281b3d4c64a",
         "fixture_sha256": "4e5eddbb21426c00932c34af331ae3e0ef3d30eb9010da7310b7319e91ec6d0f",
-        "probe_sha256": "4b1eefa514dd94948101bf9b2c77edf9b37eec158ce0912375e8150e9d3d25e7",
+        "probe_sha256": "dd95659c64a60adb459ebecd75ba225281b359fb17d2847596f3705bc4ea43a8",
         "environment_sha256": canonical_json_sha256(environment),
     }
     parent_observed = {
@@ -711,6 +711,34 @@ def test_probe_rejects_linked_wave0_parent(
             FIXTURE_MANIFEST,
             receipts_root / "model-contract-receipt.json",
         )
+
+
+def test_probe_accepts_explicit_run_scoped_environment_parent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    receipts_root = tmp_path / "wave0" / "receipts"
+    receipts_root.mkdir(parents=True)
+    assets = receipts_root / "model-assets.json"
+    assets.write_text("{}\n", encoding="utf-8")
+    environment_receipt = receipts_root / "environment-run-a.json"
+    environment_receipt.write_text("{}\n", encoding="utf-8")
+    output = receipts_root / "model-contract-run-a.json"
+    monkeypatch.setenv("VAL_ARTIFACT_ROOT", str(tmp_path))
+    monkeypatch.delenv("VAL_DATA_ROOT", raising=False)
+
+    resolved = _resolve_cli_paths(
+        assets,
+        environment_receipt,
+        FIXTURE_MANIFEST,
+        output,
+    )
+
+    assert resolved == (
+        assets.resolve(),
+        environment_receipt.resolve(),
+        FIXTURE_MANIFEST.resolve(),
+        output.resolve(),
+    )
 
 
 def test_failed_contract_receipt_has_no_wave0_pass_marker() -> None:

@@ -581,15 +581,15 @@ def resolve_cli_paths(
     wave_root = _required_child_directory(root, "wave0")
     receipts_root = _required_child_directory(wave_root, "receipts")
     checkpoints_root = _required_child_directory(wave_root, "checkpoints")
-    expected_model_contract = receipts_root / "model-contract-receipt.json"
     actual_model_contract = Path(model_contract).resolve(strict=True)
     actual_checkpoint_root = Path(checkpoint_root).resolve(strict=False)
     actual_output = Path(output).resolve(strict=False)
-    if actual_model_contract != expected_model_contract or _path_has_link(
+    if actual_model_contract.parent != receipts_root or _path_has_link(
         Path(model_contract), receipts_root
     ):
         raise FeasibilityError(
-            "model-contract must be the canonical Wave 0 PASS receipt"
+            "model-contract must be a non-link receipt directly below "
+            "VAL_ARTIFACT_ROOT/wave0/receipts"
         )
     if actual_checkpoint_root.parent != checkpoints_root or _path_has_link(
         Path(checkpoint_root), checkpoints_root

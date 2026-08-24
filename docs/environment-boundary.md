@@ -27,7 +27,7 @@ The compatibility receipt is generated with:
 python -m vision_active_learning_loop.environment check \
   --config configs/environment/wave0.yaml \
   --run-id <run-id> \
-  --output "$VAL_ARTIFACT_ROOT/wave0/receipts/environment-receipt.json"
+  --output "$VAL_ARTIFACT_ROOT/wave0/receipts/environment-<run-id>.json"
 ```
 
 The command exits 0 only when the canonical contract matches exactly. A mismatch writes a receipt with `status: FAIL` and exits 2.

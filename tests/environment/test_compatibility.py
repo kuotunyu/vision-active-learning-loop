@@ -371,7 +371,12 @@ def test_check_rejects_symlink_wave_root_escape(
     output = artifact_root / "wave0" / "escaped.json"
     monkeypatch.setenv("VAL_ARTIFACT_ROOT", str(artifact_root))
 
-    assert environment.check(["--config", str(config), "--output", str(output)]) == 2
+    assert (
+        environment.check(
+            ["--config", str(config), "--run-id", "test-run", "--output", str(output)]
+        )
+        == 2
+    )
     assert not (outside / "escaped.json").exists()
 
 

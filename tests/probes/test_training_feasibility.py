@@ -537,7 +537,7 @@ def test_cli_paths_reject_data_root_and_noncanonical_locations(
     checkpoints = wave / "checkpoints"
     receipts.mkdir(parents=True)
     checkpoints.mkdir()
-    model_contract = receipts / "model-contract-receipt.json"
+    model_contract = receipts / "model-contract-run-a.json"
     model_contract.write_text("{}", encoding="utf-8")
     monkeypatch.setenv("VAL_ARTIFACT_ROOT", str(tmp_path))
 
