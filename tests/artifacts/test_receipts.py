@@ -31,6 +31,7 @@ MODEL_CONTRACT_INVARIANTS = (
     "decoder_class_heads_four_channels",
     "decoder_layers_at_least_two",
     "expected_valid_mask_rectangles",
+    "exact_scipy",
     "final_boxes_are_last_layer",
     "foreground_scores_are_sigmoid",
     "four_class_head_reset_seed_17",
@@ -61,7 +62,71 @@ MODEL_CONTRACT_INVARIANTS = (
     "torch_inference_mode",
     "torch_selected_gpu_is_canonical",
 )
+
+
+def build_valid_environment_receipt(run_id: str = "run-a") -> dict[str, object]:
+    contract = dict(receipts._APPROVED_ENVIRONMENT_CONTRACT)
+    observed = {
+        "schema_version": 1,
+        "python": "3.12.11",
+        "uv": "0.8.15",
+        "scipy": "1.18.0",
+        "torch": "2.12.0+cu126",
+        "torchvision": "0.27.0+cu126",
+        "transformers": "5.15.0",
+        "pycocotools": "2.0.10",
+        "cuda_runtime": "12.6",
+        "gpu_name": "NVIDIA GeForce RTX 4090",
+        "gpu_uuid": "GPU-11111111-1111-1111-1111-111111111111",
+        "driver": "591.86",
+        "os": "Linux",
+        "wsl": True,
+        "container_image_digest": contract["container_image_digest"],
+        "runtime_image_digest": "sha256:7ba1dd9364de4bdfc60ee14c42f3441d736e46fcd41128992c3cd49c67059ae2",
+        "tf32": False,
+        "deterministic_algorithms": True,
+        "bf16_supported": True,
+        "data_root_unset": True,
+    }
+    invariants = {
+        "approved_base_image": True,
+        "bf16_supported": True,
+        "canonical_gpu": True,
+        "canonical_os_wsl": True,
+        "data_root_unset": True,
+        "deterministic_algorithms": True,
+        "exact_cuda_runtime": True,
+        "exact_pycocotools": True,
+        "exact_python": True,
+        "exact_scipy": True,
+        "exact_torch": True,
+        "exact_torchvision": True,
+        "exact_transformers": True,
+        "exact_uv": True,
+        "runtime_image_recorded": True,
+        "tf32_disabled": True,
+    }
+    document = {
+        "receipt_type": "environment",
+        "schema_version": 1,
+        "normative": {
+            "contract": contract,
+            "contract_sha256": canonical_json_sha256(contract),
+            "observed": observed,
+            "invariants": invariants,
+            "status": "PASS",
+            "errors": [],
+        },
+        "metadata": {"timestamp": "2026-08-23T00:00:00Z", "run_id": run_id},
+    }
+    document["metadata"]["receipt_content_sha256"] = receipts._receipt_content_sha256(
+        document
+    )
+    return document
+
+
 def build_valid_model_contract_receipt() -> dict[str, object]:
+    parent_environment = build_valid_environment_receipt()
     document: dict[str, object] = {
         "receipt_type": "model-contract",
         "schema_version": 1,
@@ -73,8 +138,15 @@ def build_valid_model_contract_receipt() -> dict[str, object]:
             "processor_sha256": HASH,
             "processor_file_sha256": "ffb4b9461a1dad746be8f0f9c8330ed7743a1ba5fba4f75c232cd281b3d4c64a",
             "fixture_sha256": "4e5eddbb21426c00932c34af331ae3e0ef3d30eb9010da7310b7319e91ec6d0f",
-            "probe_sha256": "640d7aceb71aa67db5d16709e1cc0db8de78735407ca47c0b1ed43dd0624cec4",
+            "probe_sha256": "4b1eefa514dd94948101bf9b2c77edf9b37eec158ce0912375e8150e9d3d25e7",
             "environment_sha256": HASH,
+            "environment_receipt_sha256": receipts._stored_receipt_sha256(
+                parent_environment
+            ),
+            "environment_receipt_content_sha256": parent_environment["metadata"][
+                "receipt_content_sha256"
+            ],
+            "parent_environment_receipt": parent_environment,
             "model": {
                 "repository": "PekingU/rtdetr_r18vd",
                 "revision": "cc5b50f32f0100caaa3bd275343e2fb17762c73d",
@@ -122,6 +194,7 @@ def build_valid_model_contract_receipt() -> dict[str, object]:
                 "schema_version": 1,
                 "python": "3.12.11",
                 "uv": "0.8.15",
+                "scipy": "1.18.0",
                 "torch": "2.12.0+cu126",
                 "torchvision": "0.27.0+cu126",
                 "transformers": "5.15.0",
@@ -137,6 +210,7 @@ def build_valid_model_contract_receipt() -> dict[str, object]:
                 "tf32": False,
                 "deterministic_algorithms": True,
                 "bf16_supported": True,
+                "data_root_unset": True,
                 "status": "PASS",
                 "errors": [],
                 "torch_execution": {
@@ -284,7 +358,7 @@ def test_invalid_pass_receipts_are_not_published(
                 ),
             ),
             "environment",
-            "canonical_environment",
+            "parent environment",
         ),
         (
             lambda normative: normative["environment"]["torch_execution"].update(
@@ -314,7 +388,7 @@ def test_invalid_pass_receipts_are_not_published(
                 ),
             ),
             "environment",
-            "torch_selected_gpu_is_canonical",
+            "parent environment",
         ),
     ],
 )
@@ -361,7 +435,9 @@ def test_model_contract_rejects_unapproved_probe_implementation(
     assert isinstance(normative, dict)
     normative["probe_sha256"] = "0" * 64
 
-    with pytest.raises(ReceiptValidationError, match="probe_sha256.*approved pin|must equal"):
+    with pytest.raises(
+        ReceiptValidationError, match="probe_sha256.*approved pin|must equal"
+    ):
         atomic_write_receipt(tmp_path / "receipt.json", valid_receipt)
 
 
@@ -410,6 +486,15 @@ def test_runtime_image_digest_is_recorded_not_pinned(
     assert isinstance(environment, dict)
     environment["runtime_image_digest"] = f"sha256:{'b' * 64}"
     normative["environment_sha256"] = canonical_json_sha256(environment)
+    parent = normative["parent_environment_receipt"]
+    parent["normative"]["observed"]["runtime_image_digest"] = f"sha256:{'b' * 64}"
+    parent["metadata"]["receipt_content_sha256"] = receipts._receipt_content_sha256(
+        parent
+    )
+    normative["environment_receipt_content_sha256"] = parent["metadata"][
+        "receipt_content_sha256"
+    ]
+    normative["environment_receipt_sha256"] = receipts._stored_receipt_sha256(parent)
 
     atomic_write_receipt(tmp_path / "receipt.json", valid_receipt)
 
@@ -466,6 +551,7 @@ def test_receipt_hash_mismatch_is_rejected_without_final_receipt(
 ) -> None:
     valid_receipt["metadata"] = {
         "timestamp": "2026-08-23T00:00:00Z",
+        "run_id": "run-a",
         "receipt_content_sha256": "0" * 64,
     }
     output = tmp_path / "receipt.json"
@@ -512,7 +598,9 @@ def test_atomic_write_fsyncs_file_and_parent_before_replace(
         return parent_descriptor
 
     def record_fsync(descriptor: int) -> None:
-        events.append("parent-fsync" if descriptor == parent_descriptor else "file-fsync")
+        events.append(
+            "parent-fsync" if descriptor == parent_descriptor else "file-fsync"
+        )
 
     def record_close(descriptor: int) -> None:
         assert descriptor == parent_descriptor
@@ -643,7 +731,7 @@ def test_volatile_only_differences_do_not_change_normative_digest(
     other = copy.deepcopy(valid_receipt)
     other["metadata"] = {
         "timestamp": "2026-08-24T00:00:00Z",
-        "run_id": "run-b",
+        "run_id": "run-a",
         "temporary_directory": "/tmp/different",
         "container_instance_id": "container-b",
     }
@@ -671,7 +759,7 @@ def test_model_contract_rejects_rehashed_noncanonical_uv_environment(
     environment["uv"] = "0.11.18"
     normative["environment_sha256"] = canonical_json_sha256(environment)
 
-    with pytest.raises(ReceiptValidationError, match="canonical_environment"):
+    with pytest.raises(ReceiptValidationError, match="parent environment"):
         atomic_write_receipt(tmp_path / "receipt.json", valid_receipt)
 
 

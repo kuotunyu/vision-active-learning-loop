@@ -21,11 +21,10 @@ from typing import Any
 
 import numpy as np
 import torch
-import yaml
 from transformers import RTDetrForObjectDetection
 
 from ..artifacts.digests import canonical_json_sha256, sha256_file
-from ..artifacts.receipts import atomic_write_receipt, validate_receipt
+from ..artifacts.receipts import atomic_write_receipt, validate_receipt_for_run
 from ..cli_manifest import command
 from ..environment import (
     EnvironmentContract,
@@ -77,6 +76,7 @@ _ENVIRONMENT_COMPARISON_FIELDS = (
     "schema_version",
     "python",
     "uv",
+    "scipy",
     "torch",
     "torchvision",
     "transformers",
@@ -92,6 +92,7 @@ _ENVIRONMENT_COMPARISON_FIELDS = (
     "tf32",
     "deterministic_algorithms",
     "bf16_supported",
+    "data_root_unset",
 )
 
 
@@ -160,9 +161,10 @@ def validate_live_environment_evidence(
     selected = evidence.get("selected_cuda")
     if not isinstance(observed, Mapping) or not isinstance(selected, Mapping):
         raise FeasibilityError("live environment evidence must be complete objects")
-    if parent_environment.get("status") != "PASS" or parent_environment.get(
-        "errors"
-    ) != []:
+    if (
+        parent_environment.get("status") != "PASS"
+        or parent_environment.get("errors") != []
+    ):
         raise FeasibilityError("parent model-contract environment must be PASS")
 
     contract = EnvironmentContract.from_yaml(
@@ -223,11 +225,7 @@ def validate_live_environment_evidence(
 def _observe_live_environment(
     parent_environment: Mapping[str, object],
 ) -> dict[str, object]:
-    config_path = _project_root() / "configs" / "environment" / "wave0.yaml"
-    config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
-    if not isinstance(config, Mapping):
-        raise FeasibilityError("environment contract must be a mapping")
-    observed = observe_environment(config)
+    observed = observe_environment()
     observed["data_root_unset"] = "VAL_DATA_ROOT" not in os.environ
     selected_index = torch.cuda.current_device()
     raw_uuid = getattr(torch.cuda.get_device_properties(selected_index), "uuid", None)
@@ -247,9 +245,7 @@ def _observe_live_environment(
             "selected_uuid": selected_uuid,
             "selected_device": f"cuda:{selected_index}",
         },
-        "parent_environment_sha256": canonical_json_sha256(
-            dict(parent_environment)
-        ),
+        "parent_environment_sha256": canonical_json_sha256(dict(parent_environment)),
     }
     return validate_live_environment_evidence(parent_environment, evidence)
 
@@ -297,7 +293,9 @@ def build_optimizer(model: torch.nn.Module) -> torch.optim.AdamW:
             continue
         (backbone if name.startswith("model.backbone") else detector).append(parameter)
     if not backbone or not detector:
-        raise FeasibilityError("RT-DETR backbone/detector parameter groups are required")
+        raise FeasibilityError(
+            "RT-DETR backbone/detector parameter groups are required"
+        )
     return torch.optim.AdamW(
         [
             {"params": detector, "lr": 1e-4},
@@ -352,7 +350,9 @@ def run_one_step_smoke(
 ) -> StepObservation:
     """Run exactly one BF16 forward/backward/clipped AdamW update on CUDA."""
     determinism = configure_determinism(seed)
-    parameters = [parameter for parameter in model.parameters() if parameter.requires_grad]
+    parameters = [
+        parameter for parameter in model.parameters() if parameter.requires_grad
+    ]
     if not parameters:
         raise FeasibilityError("model has no trainable parameters")
     devices = {parameter.device for parameter in parameters}
@@ -360,14 +360,18 @@ def run_one_step_smoke(
         raise FeasibilityError("model parameters span multiple devices")
     device = next(iter(devices))
     if device.type != "cuda":
-        raise FeasibilityError("canonical training feasibility requires CUDA; no CPU fallback")
+        raise FeasibilityError(
+            "canonical training feasibility requires CUDA; no CPU fallback"
+        )
     if not determinism.bf16_supported:
         raise FeasibilityError("BF16 is unsupported on the selected CUDA device")
 
     item_ids = batch.get("_val_item_ids")
     input_digests = batch.get("_val_input_digests")
-    if not isinstance(item_ids, (list, tuple)) or len(item_ids) != 2 or any(
-        not isinstance(item, str) for item in item_ids
+    if (
+        not isinstance(item_ids, (list, tuple))
+        or len(item_ids) != 2
+        or any(not isinstance(item, str) for item in item_ids)
     ):
         raise FeasibilityError("synthetic batch requires exactly two ordered item IDs")
     if not isinstance(input_digests, Mapping):
@@ -385,7 +389,11 @@ def run_one_step_smoke(
         640,
     ]:
         raise FeasibilityError("synthetic pixel_values shape mismatch")
-    if not isinstance(pixel_mask, torch.Tensor) or list(pixel_mask.shape) != [2, 640, 640]:
+    if not isinstance(pixel_mask, torch.Tensor) or list(pixel_mask.shape) != [
+        2,
+        640,
+        640,
+    ]:
         raise FeasibilityError("synthetic pixel_mask shape mismatch")
     if not isinstance(labels, list) or len(labels) != 2:
         raise FeasibilityError("synthetic labels are required for both images")
@@ -420,7 +428,9 @@ def run_one_step_smoke(
         if not finite_loss:
             raise FeasibilityError("non-finite loss")
         loss.backward()
-        gradients = [parameter.grad for parameter in parameters if parameter.grad is not None]
+        gradients = [
+            parameter.grad for parameter in parameters if parameter.grad is not None
+        ]
         finite_gradients = bool(gradients) and all(
             bool(torch.isfinite(gradient).all()) for gradient in gradients
         )
@@ -441,9 +451,10 @@ def run_one_step_smoke(
     gpu_seconds = float(start_event.elapsed_time(end_event)) / 1000.0
     loss_value = float(loss.detach().float().cpu())
     parameter_digest_after = trainable_parameter_sha256(model)
-    checkpoint_model_state, live_model_state_digest_after = (
-        _capture_checkpoint_model_state(model)
-    )
+    (
+        checkpoint_model_state,
+        live_model_state_digest_after,
+    ) = _capture_checkpoint_model_state(model)
     state = CheckpointState(
         model_state=checkpoint_model_state,
         optimizer_state=_state_to_cpu(optimizer.state_dict()),
@@ -490,16 +501,29 @@ def run_one_step_smoke(
 def evaluate_step_observation(observation: StepObservation) -> StepObservation:
     """Apply every normative stop condition without fallback or masking."""
     failures = (
-        (not observation.finite_loss or not all(math.isfinite(item) for item in observation.ordered_losses), "non-finite loss"),
+        (
+            not observation.finite_loss
+            or not all(math.isfinite(item) for item in observation.ordered_losses),
+            "non-finite loss",
+        ),
         (not observation.finite_gradients, "non-finite gradients"),
-        (observation.deterministic_fallback_detected, "deterministic fallback detected"),
+        (
+            observation.deterministic_fallback_detected,
+            "deterministic fallback detected",
+        ),
         (
             observation.cuda_matmul_allow_tf32 or observation.cudnn_allow_tf32,
             "TF32 is enabled",
         ),
         (observation.cudnn_benchmark, "cuDNN benchmark is enabled"),
-        (not observation.deterministic_algorithms, "deterministic algorithms are disabled"),
-        (observation.deterministic_debug_mode != 2, "deterministic error mode is disabled"),
+        (
+            not observation.deterministic_algorithms,
+            "deterministic algorithms are disabled",
+        ),
+        (
+            observation.deterministic_debug_mode != 2,
+            "deterministic error mode is disabled",
+        ),
         (
             observation.cublas_workspace_config != _CUBLAS_WORKSPACE_CONFIG,
             "deterministic CUBLAS workspace is not configured",
@@ -525,8 +549,7 @@ def _parameter_update_observed(observation: StepObservation) -> bool:
     return (
         observation.parameter_changed is True
         and observation.trainable_parameter_count > 0
-        and observation.parameter_digest_before
-        != observation.parameter_digest_after
+        and observation.parameter_digest_before != observation.parameter_digest_after
     )
 
 
@@ -562,21 +585,21 @@ def resolve_cli_paths(
     actual_model_contract = Path(model_contract).resolve(strict=True)
     actual_checkpoint_root = Path(checkpoint_root).resolve(strict=False)
     actual_output = Path(output).resolve(strict=False)
-    if (
-        actual_model_contract != expected_model_contract
-        or _path_has_link(Path(model_contract), receipts_root)
+    if actual_model_contract != expected_model_contract or _path_has_link(
+        Path(model_contract), receipts_root
     ):
         raise FeasibilityError(
             "model-contract must be the canonical Wave 0 PASS receipt"
         )
-    if (
-        actual_checkpoint_root.parent != checkpoints_root
-        or _path_has_link(Path(checkpoint_root), checkpoints_root)
+    if actual_checkpoint_root.parent != checkpoints_root or _path_has_link(
+        Path(checkpoint_root), checkpoints_root
     ):
         raise FeasibilityError(
             "checkpoint-root must be directly below VAL_ARTIFACT_ROOT/wave0/checkpoints"
         )
-    if actual_output.parent != receipts_root or _path_has_link(Path(output), receipts_root):
+    if actual_output.parent != receipts_root or _path_has_link(
+        Path(output), receipts_root
+    ):
         raise FeasibilityError(
             "output must be directly below VAL_ARTIFACT_ROOT/wave0/receipts"
         )
@@ -627,9 +650,7 @@ def _prepare_labeled_batch(
         name: _move_to_device(value, device) for name, value in dict(encoded).items()
     }
     batch["_val_item_ids"] = [str(item["id"]) for item in entries]
-    batch["_val_input_digests"] = {
-        "model_contract_receipt": model_contract_digest
-    }
+    batch["_val_input_digests"] = {"model_contract_receipt": model_contract_digest}
     shapes = {
         "pixel_values": list(encoded["pixel_values"].shape),
         "pixel_mask": list(encoded["pixel_mask"].shape),
@@ -695,10 +716,8 @@ def _build_receipt(
         and checkpoint_evidence.get("input_digests_verified") is True
     )
     checkpoint_round_trip = (
-        checkpoint_evidence.get("state_sha256_before_save")
-        == expected_state_sha256
-        and checkpoint_evidence.get("state_sha256_after_load")
-        == expected_state_sha256
+        checkpoint_evidence.get("state_sha256_before_save") == expected_state_sha256
+        and checkpoint_evidence.get("state_sha256_after_load") == expected_state_sha256
         and checkpoint_evidence.get("live_model_state_sha256_after_step")
         == observation.live_model_state_digest_after
         and checkpoint_evidence.get("live_model_state_sha256_after_step")
@@ -726,6 +745,7 @@ def _build_receipt(
         "canonical_environment": True,
         "deterministic_algorithms": observation.deterministic_algorithms,
         "deterministic_fallback_absent": not observation.deterministic_fallback_detected,
+        "exact_scipy": live_environment["observed"].get("scipy") == "1.18.0",
         "finite_gradients": observation.finite_gradients,
         "finite_loss": observation.finite_loss,
         "gradient_clip_0_1": recipe["gradient_clip_norm"] == 0.1,
@@ -737,9 +757,7 @@ def _build_receipt(
         "synthetic_labels_only": True,
         "tf32_disabled": runtime["tf32"] is False,
     }
-    errors = sorted(
-        name for name, passed in invariants.items() if passed is not True
-    )
+    errors = sorted(name for name, passed in invariants.items() if passed is not True)
     copied_hashes = {
         name: str(normative_contract[name])
         for name in (
@@ -753,9 +771,7 @@ def _build_receipt(
     normative = {
         **copied_hashes,
         "environment_sha256": canonical_json_sha256(dict(live_environment)),
-        "parent_environment_sha256": str(
-            live_environment["parent_environment_sha256"]
-        ),
+        "parent_environment_sha256": str(live_environment["parent_environment_sha256"]),
         "environment": dict(live_environment),
         "probe_sha256": _probe_hash(),
         "model_contract_receipt_sha256": model_contract_digest,
@@ -805,14 +821,18 @@ def _build_receipt(
 
 
 def _execute_probe(
-    model_contract_path: Path, checkpoint_root: Path, output_path: Path
+    model_contract_path: Path,
+    checkpoint_root: Path,
+    output_path: Path,
+    run_id: str,
 ) -> dict[str, object]:
     model_contract = _mapping(
         json.loads(model_contract_path.read_text(encoding="utf-8")), "model contract"
     )
-    validate_receipt(
+    validate_receipt_for_run(
         model_contract,
         _project_root() / "schemas" / "model-contract-receipt.schema.json",
+        run_id,
     )
     normative = _mapping(model_contract.get("normative"), "model contract normative")
     if normative.get("status") != "PASS":
@@ -915,7 +935,7 @@ def _execute_probe(
             checkpoint_write_seconds=checkpoint_write_seconds,
             checkpoint_load_seconds=checkpoint_load_seconds,
             resume_verified=resume_verified,
-            run_id=output_path.stem,
+            run_id=run_id,
             live_environment=live_environment,
         )
     finally:
@@ -929,9 +949,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="val probe training-feasibility")
     parser.add_argument("--model-contract", type=Path, required=True)
     parser.add_argument("--checkpoint-root", type=Path, required=True)
+    parser.add_argument("--run-id", required=True)
     parser.add_argument("--output", type=Path, required=True)
     arguments = parser.parse_args(argv)
     try:
+        if not arguments.run_id.strip():
+            raise FeasibilityError("run_id must be non-empty")
         model_contract, checkpoint_root, output = resolve_cli_paths(
             arguments.model_contract,
             arguments.checkpoint_root,
@@ -941,7 +964,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             raise FeasibilityError(
                 "fresh output path is required for each feasibility attempt"
             )
-        receipt = _execute_probe(model_contract, checkpoint_root, output)
+        receipt = _execute_probe(
+            model_contract, checkpoint_root, output, arguments.run_id
+        )
         atomic_write_receipt(output, receipt)
     except (
         CheckpointVerificationError,
@@ -951,7 +976,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         RuntimeError,
         ValueError,
     ) as error:
-        if isinstance(error, torch.OutOfMemoryError) or "out of memory" in str(error).lower():
+        if (
+            isinstance(error, torch.OutOfMemoryError)
+            or "out of memory" in str(error).lower()
+        ):
             print(f"OOM: {error}", file=sys.stderr)
         else:
             print(error, file=sys.stderr)

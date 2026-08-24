@@ -5,6 +5,8 @@ Canonical execution uses the pinned Linux OCI image on the WSL2 GPU backend. Nat
 | Component | Exact contract | Canonical support |
 | --- | --- | --- |
 | Python | 3.12.11 | WSL2/OCI |
+| uv | 0.8.15 | Lock generation, validation, and runtime observation |
+| SciPy | 1.18.0 | RT-DETR labeled training; observed from import metadata |
 | PyTorch | 2.12.0+cu126 | CUDA 12.6 wheel |
 | torchvision | 0.27.0+cu126 | Paired CUDA 12.6 wheel |
 | Transformers | 5.15.0 | PyPI release |
@@ -17,11 +19,14 @@ Set `VAL_ARTIFACT_ROOT` to the approved existing absolute artifact root. Receipt
 
 `container_image_digest` means the observed immutable base manifest-list digest, not the locally built final image digest. The trusted launcher must provide that observation as `VAL_OBSERVED_BASE_IMAGE_DIGEST`; a missing observation fails, and the checker never copies the expected config value into the receipt. A launcher may separately provide the locally inspected final image identity as `VAL_RUNTIME_IMAGE_DIGEST`, which is recorded as `runtime_image_digest` without substituting for the approved base digest.
 
+Every environment, model-contract, and feasibility attempt requires the same explicit non-empty `run_id`. Existing output paths are never overwritten. The model-contract consumes and embeds the schema/content-hash validated PASS environment parent for that run, then independently re-observes the full live environment. Feasibility repeats the live observation and validates it against the bound model/environment chain. Historical receipts remain inspectable but fail amended current-run validation.
+
 The compatibility receipt is generated with:
 
 ```console
 python -m vision_active_learning_loop.environment check \
   --config configs/environment/wave0.yaml \
+  --run-id <run-id> \
   --output "$VAL_ARTIFACT_ROOT/wave0/receipts/environment-receipt.json"
 ```
 

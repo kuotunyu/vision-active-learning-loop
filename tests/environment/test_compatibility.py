@@ -27,6 +27,7 @@ def contract() -> EnvironmentContract:
     return EnvironmentContract(
         python="3.12.11",
         uv=UV_VERSION,
+        scipy="1.18.0",
         torch="2.12.0+cu126",
         torchvision="0.27.0+cu126",
         transformers="5.15.0",
@@ -40,6 +41,7 @@ def canonical_observation() -> dict[str, object]:
         "schema_version": 1,
         "python": "3.12.11",
         "uv": UV_VERSION,
+        "scipy": "1.18.0",
         "torch": "2.12.0+cu126",
         "torchvision": "0.27.0+cu126",
         "transformers": "5.15.0",
@@ -64,6 +66,7 @@ def _write_contract(path: Path) -> None:
 schema_version: 1
 python: 3.12.11
 uv: {UV_VERSION}
+scipy: 1.18.0
 torch: 2.12.0+cu126
 torchvision: 0.27.0+cu126
 transformers: 5.15.0
@@ -174,9 +177,7 @@ def test_observation_does_not_fall_back_to_expected_image_digest(
         environment, "_torch_runtime", lambda: (None, False, True, None)
     )
 
-    observed = environment.observe_environment(
-        {"container_image": {"digest": BASE_IMAGE_DIGEST}}
-    )
+    observed = environment.observe_environment()
 
     assert observed["container_image_digest"] is None
 
@@ -202,7 +203,7 @@ def test_observation_uses_torch_runtime_cuda_and_reports_pycocotools(
     monkeypatch.setattr(environment, "_gpu", lambda: (None, None, None))
     monkeypatch.setattr(environment, "_installed_version", versions.get)
 
-    observed = environment.observe_environment({})
+    observed = environment.observe_environment()
 
     assert observed["cuda_runtime"] == "12.6"
     assert observed.get("pycocotools") == "2.0.10"
@@ -241,6 +242,7 @@ def test_contract_loads_machine_readable_yaml(tmp_path: Path) -> None:
     assert loaded == EnvironmentContract(
         python="3.12.11",
         uv=UV_VERSION,
+        scipy="1.18.0",
         torch="2.12.0+cu126",
         torchvision="0.27.0+cu126",
         transformers="5.15.0",
@@ -268,12 +270,11 @@ def test_receipt_status_fails_when_runtime_state_is_unsafe(
     monkeypatch.setattr(
         environment,
         "observe_environment",
-        lambda document: canonical_observation
-        | {"deterministic_algorithms": False},
+        lambda: canonical_observation | {"deterministic_algorithms": False},
     )
 
     exit_code = environment.check(
-        ["--config", str(config), "--output", str(output)]
+        ["--config", str(config), "--run-id", "test-run", "--output", str(output)]
     )
     receipt = json.loads(output.read_text(encoding="utf-8"))
 
@@ -285,15 +286,20 @@ def test_receipt_status_fails_when_runtime_state_is_unsafe(
     )
 
 
-def test_check_requires_artifact_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_check_requires_artifact_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     config = tmp_path / "wave0.yaml"
     output = tmp_path / "outside.json"
     _write_contract(config)
     monkeypatch.delenv("VAL_ARTIFACT_ROOT", raising=False)
 
-    assert environment.check(
-        ["--config", str(config), "--output", str(output)]
-    ) == 2
+    assert (
+        environment.check(
+            ["--config", str(config), "--run-id", "test-run", "--output", str(output)]
+        )
+        == 2
+    )
     assert not output.exists()
 
 
@@ -313,9 +319,12 @@ def test_check_rejects_output_escape(
     else:
         output = tmp_path / "absolute-escape.json"
 
-    assert environment.check(
-        ["--config", str(config), "--output", str(output)]
-    ) == 2
+    assert (
+        environment.check(
+            ["--config", str(config), "--run-id", "test-run", "--output", str(output)]
+        )
+        == 2
+    )
     assert not output.exists()
 
 
@@ -337,9 +346,12 @@ def test_check_rejects_symlink_output_escape(
     output = link / "escaped.json"
     monkeypatch.setenv("VAL_ARTIFACT_ROOT", str(artifact_root))
 
-    assert environment.check(
-        ["--config", str(config), "--output", str(output)]
-    ) == 2
+    assert (
+        environment.check(
+            ["--config", str(config), "--run-id", "test-run", "--output", str(output)]
+        )
+        == 2
+    )
     assert not (outside / "escaped.json").exists()
 
 
@@ -359,9 +371,7 @@ def test_check_rejects_symlink_wave_root_escape(
     output = artifact_root / "wave0" / "escaped.json"
     monkeypatch.setenv("VAL_ARTIFACT_ROOT", str(artifact_root))
 
-    assert environment.check(
-        ["--config", str(config), "--output", str(output)]
-    ) == 2
+    assert environment.check(["--config", str(config), "--output", str(output)]) == 2
     assert not (outside / "escaped.json").exists()
 
 
@@ -378,16 +388,19 @@ def test_check_rejects_set_data_root(
     monkeypatch.setenv("VAL_ARTIFACT_ROOT", str(artifact_root))
     monkeypatch.setenv("VAL_DATA_ROOT", "forbidden")
     monkeypatch.setattr(
-        environment, "observe_environment", lambda document: canonical_observation
+        environment, "observe_environment", lambda: canonical_observation
     )
 
-    assert environment.check(
-        ["--config", str(config), "--output", str(output)]
-    ) == 2
+    assert (
+        environment.check(
+            ["--config", str(config), "--run-id", "test-run", "--output", str(output)]
+        )
+        == 2
+    )
     receipt = json.loads(output.read_text(encoding="utf-8"))
-    assert "VAL_DATA_ROOT must remain unset for Wave 0" in receipt["normative"][
-        "errors"
-    ]
+    assert (
+        "VAL_DATA_ROOT must remain unset for Wave 0" in receipt["normative"]["errors"]
+    )
 
 
 @pytest.mark.parametrize("stdout", ["", "only-name,only-uuid"])
@@ -413,6 +426,7 @@ def test_contract_loads_and_rejects_uv_drift(tmp_path: Path) -> None:
     observed = {
         "python": "3.12.11",
         "uv": "0.11.18",
+        "scipy": "1.18.0",
         "torch": "2.12.0+cu126",
         "torchvision": "0.27.0+cu126",
         "transformers": "5.15.0",
@@ -448,7 +462,7 @@ def test_environment_check_publishes_content_addressed_pass_receipt(
     monkeypatch.setattr(
         environment,
         "observe_environment",
-        lambda document: canonical_observation
+        lambda: canonical_observation
         | {
             "schema_version": 1,
             "uv": UV_VERSION,
@@ -458,7 +472,12 @@ def test_environment_check_publishes_content_addressed_pass_receipt(
         },
     )
 
-    assert environment.check(["--config", str(config), "--output", str(output)]) == 0
+    assert (
+        environment.check(
+            ["--config", str(config), "--run-id", "test-run", "--output", str(output)]
+        )
+        == 0
+    )
     stored = json.loads(output.read_text(encoding="utf-8"))
     validate_receipt(
         stored, PROJECT_ROOT / "schemas" / "environment-receipt.schema.json"
@@ -469,7 +488,7 @@ def test_environment_check_publishes_content_addressed_pass_receipt(
     assert stored["metadata"]["receipt_content_sha256"]
 
 
-def test_environment_check_replaces_stale_false_pass_with_authoritative_uv_fail(
+def test_environment_check_never_overwrites_historical_receipt(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     canonical_observation: dict[str, object],
@@ -488,7 +507,7 @@ def test_environment_check_replaces_stale_false_pass_with_authoritative_uv_fail(
     monkeypatch.setattr(
         environment,
         "observe_environment",
-        lambda document: canonical_observation
+        lambda: canonical_observation
         | {
             "schema_version": 1,
             "uv": "0.11.18",
@@ -498,17 +517,16 @@ def test_environment_check_replaces_stale_false_pass_with_authoritative_uv_fail(
         },
     )
 
-    assert environment.check(["--config", str(config), "--output", str(output)]) == 2
-    stored = json.loads(output.read_text(encoding="utf-8"))
-    validate_receipt(
-        stored, PROJECT_ROOT / "schemas" / "environment-receipt.schema.json"
+    assert (
+        environment.check(
+            ["--config", str(config), "--run-id", "test-run", "--output", str(output)]
+        )
+        == 2
     )
-    assert stored["receipt_type"] == "environment"
-    assert stored["normative"]["status"] == "FAIL"
-    assert stored["normative"]["invariants"]["exact_uv"] is False
-    assert "uv must be exactly 0.8.15 (observed 0.11.18)" in stored["normative"][
-        "errors"
-    ]
+    assert json.loads(output.read_text(encoding="utf-8")) == {
+        "status": "PASS",
+        "deterministic_algorithms": False,
+    }
 
 
 def test_environment_receipt_rejects_rehashed_forged_uv_pass(
@@ -526,7 +544,7 @@ def test_environment_receipt_rejects_rehashed_forged_uv_pass(
     monkeypatch.setattr(
         environment,
         "observe_environment",
-        lambda document: canonical_observation
+        lambda: canonical_observation
         | {
             "schema_version": 1,
             "uv": UV_VERSION,
@@ -535,7 +553,12 @@ def test_environment_receipt_rejects_rehashed_forged_uv_pass(
             "runtime_image_digest": "sha256:" + "1" * 64,
         },
     )
-    assert environment.check(["--config", str(config), "--output", str(output)]) == 0
+    assert (
+        environment.check(
+            ["--config", str(config), "--run-id", "test-run", "--output", str(output)]
+        )
+        == 0
+    )
     forged = json.loads(output.read_text(encoding="utf-8"))
     forged["normative"]["observed"]["uv"] = "0.11.18"
     forged["metadata"]["receipt_content_sha256"] = receipts._receipt_content_sha256(
@@ -563,7 +586,7 @@ def test_environment_check_rejects_malformed_gpu_uuid(
     monkeypatch.setattr(
         environment,
         "observe_environment",
-        lambda document: canonical_observation
+        lambda: canonical_observation
         | {
             "schema_version": 1,
             "uv": UV_VERSION,
@@ -573,7 +596,12 @@ def test_environment_check_rejects_malformed_gpu_uuid(
         },
     )
 
-    assert environment.check(["--config", str(config), "--output", str(output)]) == 2
+    assert (
+        environment.check(
+            ["--config", str(config), "--run-id", "test-run", "--output", str(output)]
+        )
+        == 2
+    )
     stored = json.loads(output.read_text(encoding="utf-8"))
     assert stored["normative"]["invariants"]["canonical_gpu"] is False
 
@@ -593,7 +621,7 @@ def test_environment_receipt_rejects_invented_fail_cause(
     monkeypatch.setattr(
         environment,
         "observe_environment",
-        lambda document: canonical_observation
+        lambda: canonical_observation
         | {
             "schema_version": 1,
             "uv": "0.11.18",
@@ -602,7 +630,12 @@ def test_environment_receipt_rejects_invented_fail_cause(
             "runtime_image_digest": "sha256:" + "1" * 64,
         },
     )
-    assert environment.check(["--config", str(config), "--output", str(output)]) == 2
+    assert (
+        environment.check(
+            ["--config", str(config), "--run-id", "test-run", "--output", str(output)]
+        )
+        == 2
+    )
     forged = json.loads(output.read_text(encoding="utf-8"))
     forged["normative"]["errors"] = ["invented failure"]
     forged["metadata"]["receipt_content_sha256"] = receipts._receipt_content_sha256(

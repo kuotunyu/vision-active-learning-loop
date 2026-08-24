@@ -6,7 +6,7 @@
 
 **Architecture:** Canonical execution uses a digest-pinned OCI image inside WSL2 with the Windows RTX driver exposed through NVIDIA Container Toolkit. A `val probe model-contract` CLI generates schema-validated receipts from two synthetic images; a separate feasibility smoke performs one training step and checkpoint round-trip. A single fail-closed wave gate accepts receipts from two clean environments or blocks Wave 1.
 
-**Tech Stack:** Python 3.12.11; uv 0.8.15 lock workflow; PyTorch 2.12.0+cu126; torchvision 0.27.0+cu126; Transformers 5.15.0; safetensors; pytest; JSON Schema; CUDA 12.6; RTX 4090 24 GB; WSL2 Ubuntu 24.04; OCI.
+**Tech Stack:** Python 3.12.11; uv 0.8.15 lock workflow; SciPy 1.18.0 for RT-DETR labeled training; PyTorch 2.12.0+cu126; torchvision 0.27.0+cu126; Transformers 5.15.0; pycocotools 2.0.10; safetensors; pytest; JSON Schema; CUDA 12.6; RTX 4090 24 GB; WSL2 Ubuntu 24.04; OCI.
 
 ## Global Constraints
 
@@ -45,8 +45,8 @@
 - Produces: `EnvironmentContract.validate(observed: Mapping[str, object]) -> list[str]`
 - Produces console entry point: `[project.scripts] val = "vision_active_learning_loop.cli:main"`
 - Produces: `@command("group action")` metadata consumed by the AST-built lazy CLI manifest; command modules are imported only when selected.
-- Produces CLI: `python -m vision_active_learning_loop.environment check --config configs/environment/wave0.yaml --output <receipt.json>`
-- Receipt keys: `schema_version`, `python`, `torch`, `torchvision`, `transformers`, `cuda_runtime`, `gpu_name`, `gpu_uuid`, `driver`, `os`, `wsl`, `container_image_digest`, `tf32`, `deterministic_algorithms`, `status`, `errors`.
+- Produces CLI: `python -m vision_active_learning_loop.environment check --config configs/environment/wave0.yaml --run-id <run-id> --output <receipt.json>`
+- Receipt keys: `schema_version`, `python`, `uv`, `scipy`, `torch`, `torchvision`, `transformers`, `pycocotools`, `cuda_runtime`, `gpu_name`, `gpu_uuid`, `driver`, `os`, `wsl`, `container_image_digest`, `tf32`, `deterministic_algorithms`, `status`, `errors`; metadata requires a caller-provided non-empty `run_id`.
 
 - [ ] **Step 1: Write the failing compatibility tests**
 
@@ -73,7 +73,7 @@ Expected: collection fails because `vision_active_learning_loop.environment` doe
 
 - [ ] **Step 3: Add the exact lock inputs and validator**
 
-Set Python `==3.12.11`, torch `==2.12.0+cu126`, torchvision `==0.27.0+cu126`, Transformers `==5.15.0`, and pycocotools `==2.0.10`. Configure uv’s PyTorch index for CUDA 12.6 and generate `uv.lock`; `uv lock --check` must later reject drift. Use `nvidia/cuda:12.6.3-cudnn-runtime-ubuntu24.04` as the requested base tag, resolve it to a digest, and record the digest in the environment receipt. If the tag cannot be resolved or the compatibility matrix does not support the exact core versions, stop with `OWNER_DECISION_REQUIRED`; do not choose another base or core version.
+Set Python `==3.12.11`, uv `==0.8.15`, SciPy `==1.18.0`, torch `==2.12.0+cu126`, torchvision `==0.27.0+cu126`, Transformers `==5.15.0`, and pycocotools `==2.0.10`. SciPy is required for RT-DETR labeled training and its observed version must come from runtime import metadata, never expected configuration or receipt data. Configure uv’s PyTorch index for CUDA 12.6 and generate and check `uv.lock` with an actual uv `0.8.15` executable; `uv lock --check` must reject drift. Use `nvidia/cuda:12.6.3-cudnn-runtime-ubuntu24.04` as the requested base tag, resolve it to a digest, and record the digest in the environment receipt. If the tag cannot be resolved or the compatibility matrix does not support the exact core versions, stop with `OWNER_DECISION_REQUIRED`; do not choose another base or core version.
 
 Add the `val` entry point and AST-built lazy command manifest. A command module declares `@command("group action")`; manifest generation records module/callable without importing it, so trainer images do not import evaluator modules. Duplicate command paths or a missing callable fail the build.
 
@@ -100,7 +100,7 @@ Expected: lock check exits 0; compatibility and lazy-manifest tests pass, includ
 
 - [ ] **Step 5: Produce environment-boundary evidence**
 
-Run: `uv run python -m vision_active_learning_loop.environment check --config configs/environment/wave0.yaml --output "$VAL_ARTIFACT_ROOT/wave0/receipts/environment-receipt.json"`
+Run: `uv run python -m vision_active_learning_loop.environment check --config configs/environment/wave0.yaml --run-id <run-id> --output "$VAL_ARTIFACT_ROOT/wave0/receipts/environment-receipt.json"`
 
 Expected: on canonical WSL2/OCI, JSON status is `PASS`; on native Windows canonical mode, command exits 2 and status is `FAIL` without creating a success marker.
 
@@ -249,8 +249,8 @@ Expected: all negative tests pass by observing verifier exit 2 and a `FAIL` rece
 **Interfaces:**
 - Produces: `reset_four_class_head(model, seed: int = 17) -> None`
 - Produces: `extract_raw_contract(outputs) -> RawDetectorOutput`
-- Produces: `run_model_contract_probe(spec, asset_receipt, fixture_manifest) -> ModelContractReceipt`
-- CLI: `val probe model-contract --assets <receipt> --fixtures <manifest> --output <receipt>`
+- Produces: `run_model_contract_probe(spec, asset_receipt, fixture_manifest, parent_environment_receipt, environment_receipt_sha256, run_id) -> ModelContractReceipt`
+- CLI: `val probe model-contract --assets <receipt> --environment <environment-receipt> --fixtures <manifest> --run-id <run-id> --output <receipt>`
 
 - [ ] **Step 1: Generate and test two deterministic fixtures**
 
@@ -295,9 +295,9 @@ Verify `final_boxes` is exactly layer `-1`, penultimate is layer `-2`, source AS
 
 - [ ] **Step 4: Run the probe on the canonical GPU**
 
-Run: `uv run val probe model-contract --assets "$VAL_ARTIFACT_ROOT/wave0/receipts/model-assets.json" --fixtures fixtures/synthetic/wave0/fixture-manifest.json --output "$VAL_ARTIFACT_ROOT/wave0/receipts/model-contract-receipt.json"`
+Run: `uv run val probe model-contract --assets "$VAL_ARTIFACT_ROOT/wave0/receipts/model-assets.json" --environment "$VAL_ARTIFACT_ROOT/wave0/receipts/environment-receipt.json" --fixtures fixtures/synthetic/wave0/fixture-manifest.json --run-id <run-id> --output "$VAL_ARTIFACT_ROOT/wave0/receipts/model-contract-receipt.json"`
 
-Expected: exit 0 and `PASS`; all normative boolean fields true; receipt includes model/config/weights/Transformers source/processor/fixture/probe/environment hashes and observed shapes.
+Expected: exit 0 and `PASS`; all normative boolean fields true; the parent environment receipt is schema/content-hash validated as PASS for the same run, live uv/SciPy and the full environment are independently re-observed, and the receipt embeds the parent identity/content hash plus model/config/weights/Transformers source/processor/fixture/probe/environment hashes and observed shapes.
 
 - [ ] **Step 5: Prove fail-closed behavior**
 
@@ -329,7 +329,7 @@ Expected: tests pass, including injected fifth-logit, 299-query, permuted-interm
 - Produces: `run_one_step_smoke(model, batch, seed: int) -> StepObservation`
 - Produces: `save_checkpoint_atomic(state: CheckpointState, target: Path) -> str`
 - Produces: `load_checkpoint_verified(target: Path, expected_digest: str) -> CheckpointState`
-- CLI: `val probe training-feasibility --model-contract <receipt> --checkpoint-root <external-path> --output <receipt>`
+- CLI: `val probe training-feasibility --model-contract <receipt> --checkpoint-root <external-path> --run-id <run-id> --output <receipt>`
 
 - [ ] **Step 1: Write failing determinism and checkpoint tests**
 
@@ -356,7 +356,7 @@ Use seed 17, deterministic algorithms, cuDNN benchmark off, TF32 off, batch size
 
 - [ ] **Step 4: Run twice from the same initial state**
 
-Run: `uv run val probe training-feasibility --model-contract "$VAL_ARTIFACT_ROOT/wave0/receipts/model-contract-receipt.json" --checkpoint-root "$VAL_ARTIFACT_ROOT/wave0/checkpoints/feasibility-a" --output "$VAL_ARTIFACT_ROOT/wave0/receipts/feasibility-a.json" && uv run val probe training-feasibility --model-contract "$VAL_ARTIFACT_ROOT/wave0/receipts/model-contract-receipt.json" --checkpoint-root "$VAL_ARTIFACT_ROOT/wave0/checkpoints/feasibility-b" --output "$VAL_ARTIFACT_ROOT/wave0/receipts/feasibility-b.json"`
+Run: `uv run val probe training-feasibility --model-contract "$VAL_ARTIFACT_ROOT/wave0/receipts/model-contract-receipt.json" --checkpoint-root "$VAL_ARTIFACT_ROOT/wave0/checkpoints/feasibility-a" --run-id <run-id> --output "$VAL_ARTIFACT_ROOT/wave0/receipts/feasibility-a.json" && uv run val probe training-feasibility --model-contract "$VAL_ARTIFACT_ROOT/wave0/receipts/model-contract-receipt.json" --checkpoint-root "$VAL_ARTIFACT_ROOT/wave0/checkpoints/feasibility-b" --run-id <run-id> --output "$VAL_ARTIFACT_ROOT/wave0/receipts/feasibility-b.json"`
 
 Expected: both `PASS`, peak allocated VRAM <=22 GiB, finite forward/backward/update, identical ordered state digests and loss within the receipt’s exact canonical comparison rule.
 

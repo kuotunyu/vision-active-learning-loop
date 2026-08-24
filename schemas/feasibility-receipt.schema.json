@@ -78,6 +78,7 @@
             "canonical_environment",
             "deterministic_algorithms",
             "deterministic_fallback_absent",
+            "exact_scipy",
             "finite_gradients",
             "finite_loss",
             "gradient_clip_0_1",
@@ -100,6 +101,7 @@
             "canonical_environment": {"type": "boolean"},
             "deterministic_algorithms": {"type": "boolean"},
             "deterministic_fallback_absent": {"type": "boolean"},
+            "exact_scipy": {"type": "boolean"},
             "finite_gradients": {"type": "boolean"},
             "finite_loss": {"type": "boolean"},
             "gradient_clip_0_1": {"type": "boolean"},
@@ -261,7 +263,7 @@
       "required": ["timestamp", "run_id"],
       "properties": {
         "timestamp": {"type": "string"},
-        "run_id": {"type": "string"},
+        "run_id": {"type": "string", "pattern": ".*\\S.*"},
         "receipt_content_sha256": {"$ref": "#/$defs/sha256"}
       }
     }
@@ -276,11 +278,12 @@
         "observed": {
           "type": "object",
           "additionalProperties": false,
-          "required": ["schema_version", "python", "uv", "torch", "torchvision", "transformers", "pycocotools", "cuda_runtime", "gpu_name", "gpu_uuid", "driver", "os", "wsl", "container_image_digest", "runtime_image_digest", "tf32", "deterministic_algorithms", "bf16_supported", "data_root_unset"],
+          "required": ["schema_version", "python", "uv", "scipy", "torch", "torchvision", "transformers", "pycocotools", "cuda_runtime", "gpu_name", "gpu_uuid", "driver", "os", "wsl", "container_image_digest", "runtime_image_digest", "tf32", "deterministic_algorithms", "bf16_supported", "data_root_unset"],
           "properties": {
             "schema_version": {"const": 1},
             "python": {"type": "string"},
             "uv": {"type": "string"},
+            "scipy": {"type": "string"},
             "torch": {"type": "string"},
             "torchvision": {"type": "string"},
             "transformers": {"type": "string"},

@@ -38,6 +38,7 @@ def _parent_environment() -> dict[str, object]:
         "schema_version": 1,
         "python": "3.12.11",
         "uv": "0.8.15",
+        "scipy": "1.18.0",
         "torch": "2.12.0+cu126",
         "torchvision": "0.27.0+cu126",
         "transformers": "5.15.0",
@@ -53,6 +54,7 @@ def _parent_environment() -> dict[str, object]:
         "tf32": False,
         "deterministic_algorithms": True,
         "bf16_supported": True,
+        "data_root_unset": True,
         "status": "PASS",
         "errors": [],
         "torch_execution": {
@@ -83,6 +85,7 @@ def _environment_evidence() -> dict[str, object]:
             "schema_version",
             "python",
             "uv",
+            "scipy",
             "torch",
             "torchvision",
             "transformers",
@@ -98,6 +101,7 @@ def _environment_evidence() -> dict[str, object]:
             "tf32",
             "deterministic_algorithms",
             "bf16_supported",
+            "data_root_unset",
         )
     }
     observed["data_root_unset"] = True
@@ -159,9 +163,7 @@ def _receipt() -> dict[str, object]:
     comparison = deterministic_comparison(observation)
     environment = _environment_evidence()
     parent = build_valid_model_contract_receipt()
-    parent["metadata"]["receipt_content_sha256"] = _receipt_content_sha256(
-        parent
-    )
+    parent["metadata"]["receipt_content_sha256"] = _receipt_content_sha256(parent)
     parent_normative = parent["normative"]
     return {
         "receipt_type": "feasibility",
@@ -174,9 +176,7 @@ def _receipt() -> dict[str, object]:
             "fixture_sha256": parent_normative["fixture_sha256"],
             "probe_sha256": feasibility_probe._probe_hash(),
             "environment_sha256": canonical_json_sha256(environment),
-            "parent_environment_sha256": environment[
-                "parent_environment_sha256"
-            ],
+            "parent_environment_sha256": environment["parent_environment_sha256"],
             "environment": environment,
             "model_contract_receipt_sha256": _stored_receipt_sha256(parent),
             "parent_model_contract": parent,
@@ -198,6 +198,7 @@ def _receipt() -> dict[str, object]:
                 "canonical_environment": True,
                 "deterministic_algorithms": True,
                 "deterministic_fallback_absent": True,
+                "exact_scipy": True,
                 "finite_gradients": True,
                 "finite_loss": True,
                 "gradient_clip_0_1": True,
@@ -278,7 +279,7 @@ def _receipt() -> dict[str, object]:
             "status": "PASS",
             "errors": [],
         },
-        "metadata": {"timestamp": "2026-08-23T00:00:00Z", "run_id": "a"},
+        "metadata": {"timestamp": "2026-08-23T00:00:00Z", "run_id": "run-a"},
     }
 
 
@@ -364,9 +365,7 @@ def test_omitted_cpu_checkpoint_model_state_is_rejected(
 
     monkeypatch.setattr(feasibility_probe, "_state_to_cpu", omit_bias)
 
-    with pytest.raises(
-        FeasibilityError, match="CPU checkpoint model state mismatch"
-    ):
+    with pytest.raises(FeasibilityError, match="CPU checkpoint model state mismatch"):
         feasibility_probe._capture_checkpoint_model_state(model)
 
 
@@ -425,9 +424,7 @@ def test_feasibility_receipt_is_schema_valid_and_content_addressed(
             "tf32_disabled",
         ),
         (
-            lambda n: n["vram"].update(
-                {"peak_allocated_bytes": 22 * 1024**3 + 1}
-            ),
+            lambda n: n["vram"].update({"peak_allocated_bytes": 22 * 1024**3 + 1}),
             "peak_allocated_vram_within_22_gib",
         ),
         (
@@ -584,6 +581,8 @@ def test_cli_reports_missing_training_backend_without_traceback(
             str(paths[0]),
             "--checkpoint-root",
             str(paths[1]),
+            "--run-id",
+            "run-a",
             "--output",
             str(paths[2]),
         ]
@@ -600,6 +599,7 @@ def test_cli_reports_missing_training_backend_without_traceback(
     [
         ("observed", "python", "3.12.12", "python"),
         ("observed", "uv", "0.11.18", "uv"),
+        ("observed", "scipy", "1.17.1", "scipy"),
         ("selected", "selected_index", 1, "cuda:0"),
         ("selected", "selected_uuid", "22222222-2222-2222-2222-222222222222", "UUID"),
     ],
@@ -624,9 +624,7 @@ def test_feasibility_receipt_rejects_rehashed_environment_drift(
     receipt = _receipt()
     normative = receipt["normative"]
     normative["environment"]["observed"]["torch"] = "2.12.1+cu126"
-    normative["environment_sha256"] = canonical_json_sha256(
-        normative["environment"]
-    )
+    normative["environment_sha256"] = canonical_json_sha256(normative["environment"])
 
     with pytest.raises(ReceiptValidationError, match="live torch"):
         atomic_write_receipt(tmp_path / "feasibility.json", receipt)
@@ -648,9 +646,7 @@ def test_feasibility_receipt_rejects_consistently_rehashed_parent_bindings(
     ):
         normative[name] = "0" * 64
     normative["environment"]["parent_environment_sha256"] = "0" * 64
-    normative["environment_sha256"] = canonical_json_sha256(
-        normative["environment"]
-    )
+    normative["environment_sha256"] = canonical_json_sha256(normative["environment"])
 
     with pytest.raises(ReceiptValidationError, match="parent model-contract"):
         atomic_write_receipt(tmp_path / "feasibility.json", receipt)
@@ -675,12 +671,8 @@ def test_feasibility_receipt_rejects_rehashed_failed_parent(
     parent = normative["parent_model_contract"]
     parent["normative"]["status"] = "FAIL"
     parent["normative"]["errors"] = ["invented parent failure"]
-    parent["metadata"]["receipt_content_sha256"] = _receipt_content_sha256(
-        parent
-    )
-    normative["model_contract_receipt_sha256"] = _stored_receipt_sha256(
-        parent
-    )
+    parent["metadata"]["receipt_content_sha256"] = _receipt_content_sha256(parent)
+    normative["model_contract_receipt_sha256"] = _stored_receipt_sha256(parent)
 
     with pytest.raises(ReceiptValidationError, match="parent model-contract.*PASS"):
         atomic_write_receipt(tmp_path / "feasibility.json", receipt)
@@ -710,6 +702,8 @@ def test_cli_requires_fresh_output_path_before_execution(
             str(paths[0]),
             "--checkpoint-root",
             str(paths[1]),
+            "--run-id",
+            "run-a",
             "--output",
             str(paths[2]),
         ]

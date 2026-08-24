@@ -30,6 +30,7 @@ _APPROVED_ENVIRONMENT_CONTRACT = {
     "schema_version": 1,
     "python": "3.12.11",
     "uv": "0.8.15",
+    "scipy": "1.18.0",
     "torch": "2.12.0+cu126",
     "torchvision": "0.27.0+cu126",
     "transformers": "5.15.0",
@@ -50,7 +51,7 @@ _APPROVED_MODEL_CONTRACT_ASSET_HASHES = {
     "config_file_sha256": "0be0da088d7c323ebc32e7b564ffb7c072fd0c6197e0aba67a38d3eaf304e0e2",
     "processor_file_sha256": "ffb4b9461a1dad746be8f0f9c8330ed7743a1ba5fba4f75c232cd281b3d4c64a",
     "fixture_sha256": "4e5eddbb21426c00932c34af331ae3e0ef3d30eb9010da7310b7319e91ec6d0f",
-    "probe_sha256": "640d7aceb71aa67db5d16709e1cc0db8de78735407ca47c0b1ed43dd0624cec4",
+    "probe_sha256": "4b1eefa514dd94948101bf9b2c77edf9b37eec158ce0912375e8150e9d3d25e7",
 }
 _APPROVED_RTDETR_SOURCE_FILES = {
     "models/rt_detr/configuration_rt_detr.py": {
@@ -84,9 +85,23 @@ _APPROVED_MODEL_DOCUMENT_HASHES = {
         "processor": "0f6addc5987e9ab323986e0e3ad4ef3aeea735e6839c6df97dc9397e8df50669",
     },
 }
+
+
 def validate_receipt(receipt: Mapping[str, object], schema_path: Path) -> None:
     """Validate a stored receipt against its allowlisted receipt type and schema."""
     _validate_receipt(receipt, schema_path=schema_path, require_content_hash=True)
+
+
+def validate_receipt_for_run(
+    receipt: Mapping[str, object], schema_path: Path, run_id: str
+) -> None:
+    """Validate a receipt and require it to belong to the explicit current run."""
+    if not isinstance(run_id, str) or not run_id.strip():
+        raise ReceiptValidationError("expected run_id must be non-empty")
+    validate_receipt(receipt, schema_path)
+    metadata = receipt.get("metadata")
+    if not isinstance(metadata, Mapping) or metadata.get("run_id") != run_id:
+        raise ReceiptValidationError("receipt run_id does not match current run_id")
 
 
 def normative_receipt_sha256(receipt: Mapping[str, object]) -> str:
@@ -141,7 +156,10 @@ def atomic_write_receipt(path: Path, receipt: Mapping[str, object]) -> str:
 
 
 def _validate_receipt(
-    receipt: Mapping[str, object], *, schema_path: Path | None, require_content_hash: bool
+    receipt: Mapping[str, object],
+    *,
+    schema_path: Path | None,
+    require_content_hash: bool,
 ) -> None:
     if not isinstance(receipt, Mapping):
         raise ReceiptValidationError("receipt must be an object")
@@ -156,15 +174,23 @@ def _validate_receipt(
     _validate_schema(receipt, schema)
 
     normative = receipt.get("normative")
+    metadata = receipt.get("metadata")
     if not isinstance(normative, Mapping):
         raise ReceiptValidationError("normative must be an object")
-    if receipt.get("receipt_type") == "environment":
+    if not isinstance(metadata, Mapping):
+        raise ReceiptValidationError("metadata must be an object")
+    receipt_type = receipt.get("receipt_type")
+    if receipt_type in {"environment", "model-contract", "feasibility"}:
+        run_id = metadata.get("run_id")
+        if not isinstance(run_id, str) or not run_id.strip():
+            raise ReceiptValidationError("run_id must be non-empty")
+    if receipt_type == "environment":
         _validate_environment_consistency(normative)
-    elif receipt.get("receipt_type") == "model-contract":
-        _validate_model_contract_consistency(normative)
-    elif receipt.get("receipt_type") == "feasibility":
-        _validate_feasibility_consistency(normative)
-    elif receipt.get("receipt_type") == "model-assets":
+    elif receipt_type == "model-contract":
+        _validate_model_contract_consistency(normative, metadata)
+    elif receipt_type == "feasibility":
+        _validate_feasibility_consistency(normative, metadata)
+    elif receipt_type == "model-assets":
         _validate_model_assets_consistency(normative)
     invariants = normative.get("invariants")
     if not isinstance(invariants, Mapping):
@@ -219,6 +245,7 @@ def _validate_environment_consistency(normative: Mapping[str, object]) -> None:
     contract = EnvironmentContract(
         python=str(contract_document["python"]),
         uv=str(contract_document["uv"]),
+        scipy=str(contract_document["scipy"]),
         torch=str(contract_document["torch"]),
         torchvision=str(contract_document["torchvision"]),
         transformers=str(contract_document["transformers"]),
@@ -226,9 +253,7 @@ def _validate_environment_consistency(normative: Mapping[str, object]) -> None:
         pycocotools=str(contract_document["pycocotools"]),
         container_image_digest=str(contract_document["container_image_digest"]),
         tf32=bool(contract_document["tf32"]),
-        deterministic_algorithms=bool(
-            contract_document["deterministic_algorithms"]
-        ),
+        deterministic_algorithms=bool(contract_document["deterministic_algorithms"]),
         bf16_supported=bool(contract_document["bf16_supported"]),
         canonical_os=str(contract_document["canonical_os"]),
         requires_wsl=bool(contract_document["requires_wsl"]),
@@ -242,9 +267,7 @@ def _validate_environment_consistency(normative: Mapping[str, object]) -> None:
             )
     if set(invariants) != set(expected_invariants):
         raise ReceiptValidationError("environment invariant inventory mismatch")
-    expected_status = (
-        "PASS" if all(expected_invariants.values()) else "FAIL"
-    )
+    expected_status = "PASS" if all(expected_invariants.values()) else "FAIL"
     if normative.get("status") != expected_status:
         raise ReceiptValidationError(
             "environment status contradicts embedded observations"
@@ -269,9 +292,7 @@ def _validate_model_assets_consistency(normative: Mapping[str, object]) -> None:
     )
 
 
-def _validate_model_assets_pass_evidence(
-    normative: Mapping[str, object]
-) -> None:
+def _validate_model_assets_pass_evidence(normative: Mapping[str, object]) -> None:
     """Bind complete model-assets evidence to compiled payload/source/HF identities."""
 
     # Local import avoids a module cycle: the asset verifier publishes through
@@ -320,9 +341,11 @@ def _validate_model_assets_pass_evidence(
         expected_document_hashes = _APPROVED_MODEL_DOCUMENT_HASHES[name]
         for document_name in ("config", "processor"):
             document = model.get(document_name)
-            if not isinstance(document, Mapping) or canonical_json_sha256(
-                dict(document)
-            ) != expected_document_hashes[document_name]:
+            if (
+                not isinstance(document, Mapping)
+                or canonical_json_sha256(dict(document))
+                != expected_document_hashes[document_name]
+            ):
                 raise ReceiptValidationError(
                     f"{name} {document_name} differs from the approved payload"
                 )
@@ -370,7 +393,9 @@ def _validate_model_assets_pass_evidence(
                 )
 
 
-def _validate_model_contract_consistency(normative: Mapping[str, object]) -> None:
+def _validate_model_contract_consistency(
+    normative: Mapping[str, object], metadata: Mapping[str, object]
+) -> None:
     """Reject embedded model-contract evidence that contradicts its digests/proofs."""
     digest_documents = {
         "config_sha256": "config",
@@ -397,6 +422,33 @@ def _validate_model_contract_consistency(normative: Mapping[str, object]) -> Non
             "source_files do not match the compiled approved source observations"
         )
 
+    parent_environment_receipt = normative.get("parent_environment_receipt")
+    if not isinstance(parent_environment_receipt, Mapping):
+        raise ReceiptValidationError("parent environment receipt must be an object")
+    _validate_receipt(
+        parent_environment_receipt,
+        schema_path=_ALLOWED_SCHEMAS[("environment", 1)],
+        require_content_hash=True,
+    )
+    parent_metadata = parent_environment_receipt.get("metadata")
+    parent_normative = parent_environment_receipt.get("normative")
+    if not isinstance(parent_metadata, Mapping) or not isinstance(
+        parent_normative, Mapping
+    ):
+        raise ReceiptValidationError("parent environment receipt is incomplete")
+    if parent_metadata.get("run_id") != metadata.get("run_id"):
+        raise ReceiptValidationError("parent environment run_id mismatch")
+    if parent_normative.get("status") != "PASS":
+        raise ReceiptValidationError("parent environment receipt must be PASS")
+    if normative.get("environment_receipt_sha256") != _stored_receipt_sha256(
+        parent_environment_receipt
+    ):
+        raise ReceiptValidationError("parent environment receipt digest mismatch")
+    if normative.get("environment_receipt_content_sha256") != parent_metadata.get(
+        "receipt_content_sha256"
+    ):
+        raise ReceiptValidationError("parent environment content hash mismatch")
+
     config = normative.get("config")
     shapes = normative.get("observed_shapes")
     processor = normative.get("processor")
@@ -418,6 +470,7 @@ def _validate_model_contract_consistency(normative: Mapping[str, object]) -> Non
         "schema_version": 1,
         "python": "3.12.11",
         "uv": "0.8.15",
+        "scipy": "1.18.0",
         "torch": "2.12.0+cu126",
         "torchvision": "0.27.0+cu126",
         "transformers": "5.15.0",
@@ -432,6 +485,7 @@ def _validate_model_contract_consistency(normative: Mapping[str, object]) -> Non
         "tf32": False,
         "deterministic_algorithms": True,
         "bf16_supported": True,
+        "data_root_unset": True,
         "status": "PASS",
         "errors": [],
     }
@@ -479,8 +533,31 @@ def _validate_model_contract_consistency(normative: Mapping[str, object]) -> Non
             and bool(environment.get("driver"))
             and _is_prefixed_sha256(environment.get("runtime_image_digest"))
         ),
+        "exact_scipy": environment.get("scipy") == "1.18.0",
     }
     torch_execution = environment.get("torch_execution")
+    parent_observed = parent_normative.get("observed")
+    if not isinstance(parent_observed, Mapping):
+        raise ReceiptValidationError("parent environment observation is missing")
+    for field in _APPROVED_ENVIRONMENT_CONTRACT:
+        if field in {"canonical_os", "requires_wsl"}:
+            continue
+        if environment.get(field) != parent_observed.get(field):
+            raise ReceiptValidationError(
+                f"live {field} differs from parent environment receipt"
+            )
+    for field in (
+        "gpu_uuid",
+        "driver",
+        "os",
+        "wsl",
+        "runtime_image_digest",
+        "data_root_unset",
+    ):
+        if environment.get(field) != parent_observed.get(field):
+            raise ReceiptValidationError(
+                f"live {field} differs from parent environment receipt"
+            )
     if isinstance(torch_execution, Mapping):
         selected_device = torch_execution.get("selected_device")
         selected_index = torch_execution.get("selected_index")
@@ -540,7 +617,9 @@ def _validate_model_contract_consistency(normative: Mapping[str, object]) -> Non
             )
 
 
-def _validate_feasibility_consistency(normative: Mapping[str, object]) -> None:
+def _validate_feasibility_consistency(
+    normative: Mapping[str, object], metadata: Mapping[str, object]
+) -> None:
     """Reject feasibility claims that contradict their embedded observations."""
     runtime = normative.get("runtime")
     recipe = normative.get("recipe")
@@ -594,8 +673,13 @@ def _validate_feasibility_consistency(normative: Mapping[str, object]) -> None:
         require_content_hash=True,
     )
     parent_normative = parent_model_contract.get("normative")
+    parent_metadata = parent_model_contract.get("metadata")
     if not isinstance(parent_normative, Mapping):
         raise ReceiptValidationError("parent model-contract normative is missing")
+    if not isinstance(parent_metadata, Mapping) or parent_metadata.get(
+        "run_id"
+    ) != metadata.get("run_id"):
+        raise ReceiptValidationError("parent model-contract run_id mismatch")
     parent_invariants = parent_normative.get("invariants")
     if (
         parent_normative.get("status") != "PASS"
@@ -604,9 +688,7 @@ def _validate_feasibility_consistency(normative: Mapping[str, object]) -> None:
         or not parent_invariants
         or any(value is not True for value in parent_invariants.values())
     ):
-        raise ReceiptValidationError(
-            "parent model-contract must be a complete PASS"
-        )
+        raise ReceiptValidationError("parent model-contract must be a complete PASS")
     if normative.get("model_contract_receipt_sha256") != _stored_receipt_sha256(
         parent_model_contract
     ):
@@ -625,9 +707,7 @@ def _validate_feasibility_consistency(normative: Mapping[str, object]) -> None:
     parent_environment = parent_normative.get("environment")
     if not isinstance(parent_environment, Mapping):
         raise ReceiptValidationError("parent model-contract environment is missing")
-    expected_parent_environment_sha256 = canonical_json_sha256(
-        dict(parent_environment)
-    )
+    expected_parent_environment_sha256 = canonical_json_sha256(dict(parent_environment))
 
     observed_environment = environment.get("observed")
     selected_cuda = environment.get("selected_cuda")
@@ -635,13 +715,10 @@ def _validate_feasibility_consistency(normative: Mapping[str, object]) -> None:
         selected_cuda, Mapping
     ):
         raise ReceiptValidationError("feasibility environment evidence is incomplete")
-    if normative.get("environment_sha256") != canonical_json_sha256(
-        dict(environment)
-    ):
+    if normative.get("environment_sha256") != canonical_json_sha256(dict(environment)):
         raise ReceiptValidationError("feasibility environment digest mismatch")
     if (
-        normative.get("parent_environment_sha256")
-        != expected_parent_environment_sha256
+        normative.get("parent_environment_sha256") != expected_parent_environment_sha256
         or environment.get("parent_environment_sha256")
         != expected_parent_environment_sha256
     ):
@@ -652,6 +729,7 @@ def _validate_feasibility_consistency(normative: Mapping[str, object]) -> None:
         "schema_version",
         "python",
         "uv",
+        "scipy",
         "torch",
         "torchvision",
         "transformers",
@@ -667,6 +745,7 @@ def _validate_feasibility_consistency(normative: Mapping[str, object]) -> None:
         "tf32",
         "deterministic_algorithms",
         "bf16_supported",
+        "data_root_unset",
     ):
         if observed_environment.get(field) != parent_environment.get(field):
             raise ReceiptValidationError(
@@ -682,6 +761,7 @@ def _validate_feasibility_consistency(normative: Mapping[str, object]) -> None:
     contract = EnvironmentContract(
         python=str(_APPROVED_ENVIRONMENT_CONTRACT["python"]),
         uv=str(_APPROVED_ENVIRONMENT_CONTRACT["uv"]),
+        scipy=str(_APPROVED_ENVIRONMENT_CONTRACT["scipy"]),
         torch=str(_APPROVED_ENVIRONMENT_CONTRACT["torch"]),
         torchvision=str(_APPROVED_ENVIRONMENT_CONTRACT["torchvision"]),
         transformers=str(_APPROVED_ENVIRONMENT_CONTRACT["transformers"]),
@@ -699,9 +779,7 @@ def _validate_feasibility_consistency(normative: Mapping[str, object]) -> None:
         requires_wsl=bool(_APPROVED_ENVIRONMENT_CONTRACT["requires_wsl"]),
         gpu_name=str(_APPROVED_ENVIRONMENT_CONTRACT["gpu_name"]),
     )
-    live_environment_invariants = environment_invariants(
-        contract, observed_environment
-    )
+    live_environment_invariants = environment_invariants(contract, observed_environment)
     selected_uuid = _normalized_gpu_uuid(selected_cuda.get("selected_uuid"))
     observed_uuid = _normalized_gpu_uuid(observed_environment.get("gpu_uuid"))
     canonical_environment = (
@@ -720,7 +798,9 @@ def _validate_feasibility_consistency(normative: Mapping[str, object]) -> None:
     ordered_losses = normative.get("ordered_losses")
     if not isinstance(ordered_losses, list):
         raise ReceiptValidationError("ordered_losses must be an array")
-    expected_loss_hex = [value.hex() for value in ordered_losses if isinstance(value, float)]
+    expected_loss_hex = [
+        value.hex() for value in ordered_losses if isinstance(value, float)
+    ]
     if len(expected_loss_hex) != len(ordered_losses):
         expected_loss_hex = [float(value).hex() for value in ordered_losses]
     comparison_preimage = {
@@ -763,8 +843,7 @@ def _validate_feasibility_consistency(normative: Mapping[str, object]) -> None:
         == "ordered-trainable-named-parameters-sha256-v1"
         and type(step.get("trainable_parameter_count")) is int
         and step.get("trainable_parameter_count", 0) > 0
-        and step.get("parameter_digest_before")
-        != step.get("parameter_digest_after")
+        and step.get("parameter_digest_before") != step.get("parameter_digest_after")
     )
     expected_evidence = {
         "parameter_changed": parameter_update_observed,
@@ -776,8 +855,7 @@ def _validate_feasibility_consistency(normative: Mapping[str, object]) -> None:
         "bf16_supported": runtime.get("bf16_supported") is True,
         "checkpoint_content_verified": checkpoint.get("file_sha256")
         == normative.get("checkpoint_sha256")
-        and checkpoint.get("verified_file_sha256")
-        == normative.get("checkpoint_sha256")
+        and checkpoint.get("verified_file_sha256") == normative.get("checkpoint_sha256")
         and checkpoint.get("input_digests_verified") is True,
         "checkpoint_round_trip": checkpoint.get("state_sha256_before_save")
         == normative.get("checkpoint_state_sha256")
@@ -794,14 +872,16 @@ def _validate_feasibility_consistency(normative: Mapping[str, object]) -> None:
         and runtime.get("device") == selected_cuda.get("selected_device"),
         "deterministic_algorithms": runtime.get("deterministic_algorithms") is True
         and runtime.get("deterministic_debug_mode") == 2,
-        "deterministic_fallback_absent": runtime.get(
-            "deterministic_fallback_detected"
-        )
+        "deterministic_fallback_absent": runtime.get("deterministic_fallback_detected")
         is False,
+        "exact_scipy": observed_environment.get("scipy") == "1.18.0",
         "finite_gradients": step.get("finite_gradients") is True,
         "finite_loss": step.get("finite_loss") is True
         and bool(ordered_losses)
-        and all(type(value) in (int, float) and math.isfinite(value) for value in ordered_losses)
+        and all(
+            type(value) in (int, float) and math.isfinite(value)
+            for value in ordered_losses
+        )
         and step.get("loss_hex") == float(ordered_losses[0]).hex(),
         "gradient_clip_0_1": recipe.get("gradient_clip_norm") == 0.1,
         "peak_allocated_vram_within_22_gib": peak_allocated <= limit
@@ -809,8 +889,7 @@ def _validate_feasibility_consistency(normative: Mapping[str, object]) -> None:
         "resume_state_verified": normative.get("resume_verified") is True
         and checkpoint.get("state_digests_after_restore") == state_digests,
         "seed_17": runtime.get("seed") == 17 and recipe.get("seed") == 17,
-        "synthetic_labels_only": recipe.get("fixture_set")
-        == "wave0-rtdetr-contract"
+        "synthetic_labels_only": recipe.get("fixture_set") == "wave0-rtdetr-contract"
         and dict(synthetic_labels)
         == {
             "item_ids": ["wide-gradient", "tall-checker"],
@@ -839,9 +918,7 @@ def _validate_feasibility_consistency(normative: Mapping[str, object]) -> None:
             )
         raise ReceiptValidationError("training recipe differs from the approved smoke")
     if set(invariants) != set(expected_evidence):
-        raise ReceiptValidationError(
-            "feasibility invariant inventory mismatch"
-        )
+        raise ReceiptValidationError("feasibility invariant inventory mismatch")
     for name, expected in expected_evidence.items():
         if invariants.get(name) is not expected:
             raise ReceiptValidationError(
@@ -852,23 +929,22 @@ def _validate_feasibility_consistency(normative: Mapping[str, object]) -> None:
     )
     expected_status = "PASS" if not expected_errors else "FAIL"
     if normative.get("status") != expected_status:
-        raise ReceiptValidationError(
-            "feasibility status contradicts embedded evidence"
-        )
+        raise ReceiptValidationError("feasibility status contradicts embedded evidence")
     if normative.get("errors") != expected_errors:
-        raise ReceiptValidationError(
-            "feasibility errors contradict embedded evidence"
-        )
+        raise ReceiptValidationError("feasibility errors contradict embedded evidence")
 
 
 def _normalized_gpu_uuid(value: object) -> str | None:
     if not isinstance(value, str) or not value:
         return None
     normalized = value.removeprefix("GPU-").lower()
-    if re.fullmatch(
-        r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}",
-        normalized,
-    ) is None:
+    if (
+        re.fullmatch(
+            r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}",
+            normalized,
+        )
+        is None
+    ):
         return None
     return normalized
 
@@ -888,16 +964,19 @@ def _training_probe_sha256() -> str:
         / "checkpoint_io.py",
     )
     observations = {
-        path.relative_to(project_root).as_posix(): hashlib.sha256(
-            path.read_text(encoding="utf-8").encode("utf-8")
-        ).hexdigest()
+        path.relative_to(project_root)
+        .as_posix(): hashlib.sha256(path.read_text(encoding="utf-8").encode("utf-8"))
+        .hexdigest()
         for path in source_files
     }
     return canonical_json_sha256(observations)
 
 
 def _is_prefixed_sha256(value: object) -> bool:
-    return isinstance(value, str) and re.fullmatch(r"sha256:[0-9a-f]{64}", value) is not None
+    return (
+        isinstance(value, str)
+        and re.fullmatch(r"sha256:[0-9a-f]{64}", value) is not None
+    )
 
 
 def _expected_schema_path(receipt: Mapping[str, object]) -> Path:
@@ -980,9 +1059,7 @@ def _validate_schema(
             elif additional is False:
                 raise ReceiptValidationError(f"{location}.{name} is not permitted")
             elif isinstance(additional, Mapping):
-                _validate_schema(
-                    member, additional, f"{location}.{name}", root_schema
-                )
+                _validate_schema(member, additional, f"{location}.{name}", root_schema)
     elif schema_type == "array":
         if not isinstance(value, list):
             raise ReceiptValidationError(f"{location} must be an array")
@@ -992,9 +1069,7 @@ def _validate_schema(
         items = schema.get("items")
         if isinstance(items, Mapping):
             for index, member in enumerate(value):
-                _validate_schema(
-                    member, items, f"{location}[{index}]", root_schema
-                )
+                _validate_schema(member, items, f"{location}[{index}]", root_schema)
     elif schema_type == "string":
         if not isinstance(value, str):
             raise ReceiptValidationError(f"{location} must be a string")

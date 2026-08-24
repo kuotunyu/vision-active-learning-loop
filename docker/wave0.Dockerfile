@@ -23,7 +23,7 @@ RUN test -n "${PYTHON_SHA256}" \
     && ./configure --prefix=/opt/python --with-ensurepip=install \
     && make --jobs="$(nproc)" \
     && make install \
-    && /opt/python/bin/python3.12 -m pip install --no-cache-dir uv==0.11.18 \
+    && /opt/python/bin/python3.12 -m pip install --no-cache-dir uv==0.8.15 \
     && apt-get purge --yes --auto-remove build-essential curl \
     && rm -rf /var/lib/apt/lists/* /tmp/python-source /tmp/python.tgz
 

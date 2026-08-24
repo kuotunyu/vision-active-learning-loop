@@ -10,11 +10,11 @@ import platform
 import re
 import subprocess
 import sys
+import tomllib
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
 
 import yaml
 
@@ -36,6 +36,7 @@ class EnvironmentBoundaryError(ValueError):
 class EnvironmentContract:
     python: str
     uv: str
+    scipy: str
     torch: str
     torchvision: str
     transformers: str
@@ -70,6 +71,7 @@ class EnvironmentContract:
         return cls(
             python=str(document["python"]),
             uv=str(document["uv"]),
+            scipy=str(document["scipy"]),
             torch=str(document["torch"]),
             torchvision=str(document["torchvision"]),
             transformers=str(document["transformers"]),
@@ -90,6 +92,7 @@ class EnvironmentContract:
             "schema_version": 1,
             "python": self.python,
             "uv": self.uv,
+            "scipy": self.scipy,
             "torch": self.torch,
             "torchvision": self.torchvision,
             "transformers": self.transformers,
@@ -113,6 +116,7 @@ class EnvironmentContract:
         expected = {
             "python": self.python,
             "uv": self.uv,
+            "scipy": self.scipy,
             "torch": self.torch,
             "torchvision": self.torchvision,
             "transformers": self.transformers,
@@ -140,8 +144,7 @@ def environment_invariants(
     runtime_image_digest = observed.get("runtime_image_digest")
     return {
         "approved_base_image": (
-            observed.get("container_image_digest")
-            == contract.container_image_digest
+            observed.get("container_image_digest") == contract.container_image_digest
         ),
         "bf16_supported": observed.get("bf16_supported") is contract.bf16_supported,
         "canonical_gpu": (
@@ -162,16 +165,14 @@ def environment_invariants(
         "exact_cuda_runtime": observed.get("cuda_runtime") == contract.cuda_runtime,
         "exact_pycocotools": observed.get("pycocotools") == contract.pycocotools,
         "exact_python": observed.get("python") == contract.python,
+        "exact_scipy": observed.get("scipy") == contract.scipy,
         "exact_torch": observed.get("torch") == contract.torch,
         "exact_torchvision": observed.get("torchvision") == contract.torchvision,
-        "exact_transformers": (
-            observed.get("transformers") == contract.transformers
-        ),
+        "exact_transformers": (observed.get("transformers") == contract.transformers),
         "exact_uv": observed.get("uv") == contract.uv,
         "runtime_image_recorded": (
             isinstance(runtime_image_digest, str)
-            and re.fullmatch(r"sha256:[0-9a-f]{64}", runtime_image_digest)
-            is not None
+            and re.fullmatch(r"sha256:[0-9a-f]{64}", runtime_image_digest) is not None
         ),
         "tf32_disabled": observed.get("tf32") is contract.tf32,
     }
@@ -272,13 +273,15 @@ def _configure_torch_runtime(contract: EnvironmentContract) -> None:
     torch.use_deterministic_algorithms(contract.deterministic_algorithms)
 
 
-def observe_environment(config: Mapping[str, Any]) -> dict[str, object]:
+def observe_environment() -> dict[str, object]:
+    """Observe runtime state without accepting caller-provided expected values."""
     gpu_name, gpu_uuid, driver = _gpu()
     cuda_runtime, tf32, deterministic, bf16_supported = _torch_runtime()
     return {
-        "schema_version": config.get("schema_version", 1),
+        "schema_version": 1,
         "python": platform.python_version(),
         "uv": _uv_version(),
+        "scipy": _installed_version("scipy"),
         "torch": _installed_version("torch"),
         "torchvision": _installed_version("torchvision"),
         "transformers": _installed_version("transformers"),
@@ -289,14 +292,39 @@ def observe_environment(config: Mapping[str, Any]) -> dict[str, object]:
         "driver": driver,
         "os": platform.system(),
         "wsl": _wsl(),
-        "container_image_digest": os.environ.get(
-            "VAL_OBSERVED_BASE_IMAGE_DIGEST"
-        ),
+        "container_image_digest": os.environ.get("VAL_OBSERVED_BASE_IMAGE_DIGEST"),
         "runtime_image_digest": os.environ.get("VAL_RUNTIME_IMAGE_DIGEST"),
         "tf32": tf32,
         "deterministic_algorithms": deterministic,
         "bf16_supported": bf16_supported,
     }
+
+
+def project_environment_input_errors(
+    config_path: Path, pyproject_path: Path, dockerfile_path: Path
+) -> list[str]:
+    """Validate the tracked dependency inputs against the exact Wave 0 contract."""
+    config = yaml.safe_load(Path(config_path).read_text(encoding="utf-8"))
+    project = tomllib.loads(Path(pyproject_path).read_text(encoding="utf-8"))
+    dockerfile = Path(dockerfile_path).read_text(encoding="utf-8")
+    if not isinstance(config, Mapping):
+        return ["environment config must be a YAML mapping"]
+    errors: list[str] = []
+    if str(config.get("scipy")) != "1.18.0":
+        errors.append("environment config must declare scipy==1.18.0")
+    project_table = project.get("project")
+    dependencies = (
+        project_table.get("dependencies", [])
+        if isinstance(project_table, Mapping)
+        else []
+    )
+    if not isinstance(dependencies, list) or "scipy==1.18.0" not in dependencies:
+        errors.append("project dependencies must declare scipy==1.18.0")
+    match = re.search(r"\buv==([^\s\\]+)", dockerfile)
+    observed_uv = match.group(1) if match is not None else None
+    if observed_uv != "0.8.15":
+        errors.append(f"Dockerfile must install uv==0.8.15 (observed {observed_uv})")
+    return errors
 
 
 def _resolve_receipt_output(output: Path) -> Path:
@@ -332,20 +360,31 @@ def _resolve_receipt_output(output: Path) -> Path:
 def check(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="val environment check")
     parser.add_argument("--config", type=Path, required=True)
+    parser.add_argument("--run-id", required=True)
     parser.add_argument("--output", type=Path, required=True)
     arguments = parser.parse_args(argv)
+
+    if not arguments.run_id.strip():
+        print("run_id must be non-empty", file=sys.stderr)
+        return 2
 
     try:
         output = _resolve_receipt_output(arguments.output)
     except EnvironmentBoundaryError as error:
         print(error, file=sys.stderr)
         return 2
+    if output.exists():
+        print(
+            "fresh output path is required for each environment attempt",
+            file=sys.stderr,
+        )
+        return 2
     document = yaml.safe_load(arguments.config.read_text(encoding="utf-8"))
     if not isinstance(document, Mapping):
         raise ValueError("environment contract must be a YAML mapping")
     contract = EnvironmentContract.from_yaml(arguments.config)
     _configure_torch_runtime(contract)
-    observed = observe_environment(document)
+    observed = observe_environment()
     observed["data_root_unset"] = "VAL_DATA_ROOT" not in os.environ
     errors = environment_errors(contract, observed)
     invariants = environment_invariants(contract, observed)
@@ -361,7 +400,10 @@ def check(argv: Sequence[str] | None = None) -> int:
             "status": "FAIL" if errors else "PASS",
             "errors": errors,
         },
-        "metadata": {"timestamp": datetime.now(UTC).isoformat()},
+        "metadata": {
+            "timestamp": datetime.now(UTC).isoformat(),
+            "run_id": arguments.run_id,
+        },
     }
     atomic_write_receipt(output, receipt)
     return 2 if errors else 0

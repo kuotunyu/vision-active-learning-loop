@@ -15,16 +15,20 @@ from pathlib import Path
 from typing import Any
 
 import torch
-import yaml
 from PIL import Image
 from transformers import RTDetrForObjectDetection, RTDetrImageProcessor
 
-from ..artifacts.digests import canonical_json_sha256
-from ..artifacts.receipts import atomic_write_receipt, validate_receipt
+from ..artifacts.digests import canonical_json_sha256, sha256_file
+from ..artifacts.receipts import (
+    atomic_write_receipt,
+    validate_receipt,
+    validate_receipt_for_run,
+)
 from ..cli_manifest import command
 from ..environment import (
     EnvironmentContract,
     _configure_torch_runtime,
+    environment_invariants,
     observe_environment,
 )
 from ..models.assets import (
@@ -60,6 +64,7 @@ REQUIRED_MODEL_CONTRACT_INVARIANTS = (
     "decoder_class_heads_four_channels",
     "decoder_layers_at_least_two",
     "expected_valid_mask_rectangles",
+    "exact_scipy",
     "final_boxes_are_last_layer",
     "foreground_scores_are_sigmoid",
     "four_class_head_reset_seed_17",
@@ -113,8 +118,12 @@ class ModelContractReceipt:
     shapes: Mapping[str, list[int]]
     invariants: Mapping[str, bool]
     environment: Mapping[str, object]
+    parent_environment_receipt: Mapping[str, object]
+    environment_receipt_sha256: str
+    environment_receipt_content_sha256: str
     errors: tuple[str, ...]
     timestamp: str
+    run_id: str
 
     @property
     def status(self) -> str:
@@ -157,6 +166,11 @@ class ModelContractReceipt:
             "config": config,
             "processor": dict(self.processor),
             "environment": dict(self.environment),
+            "parent_environment_receipt": dict(self.parent_environment_receipt),
+            "environment_receipt_sha256": self.environment_receipt_sha256,
+            "environment_receipt_content_sha256": (
+                self.environment_receipt_content_sha256
+            ),
             "observed_shapes": {
                 name: list(self.shapes.get(name, []))
                 for name in REQUIRED_MODEL_CONTRACT_SHAPES
@@ -169,7 +183,7 @@ class ModelContractReceipt:
             "receipt_type": "model-contract",
             "schema_version": 1,
             "normative": normative,
-            "metadata": {"timestamp": self.timestamp},
+            "metadata": {"timestamp": self.timestamp, "run_id": self.run_id},
         }
 
 
@@ -207,8 +221,7 @@ def _config_document(
             for index, label in enumerate(("D00", "D10", "D20", "D40"))
         },
         "label2id": {
-            label: index
-            for index, label in enumerate(("D00", "D10", "D20", "D40"))
+            label: index for index, label in enumerate(("D00", "D10", "D20", "D40"))
         },
     }
 
@@ -238,8 +251,12 @@ def observe_processor_contract(
     pixel_values = batch.get("pixel_values")
     pixel_mask = batch.get("pixel_mask")
     shapes = {
-        "pixel_values": list(pixel_values.shape) if isinstance(pixel_values, torch.Tensor) else [],
-        "pixel_mask": list(pixel_mask.shape) if isinstance(pixel_mask, torch.Tensor) else [],
+        "pixel_values": list(pixel_values.shape)
+        if isinstance(pixel_values, torch.Tensor)
+        else [],
+        "pixel_mask": list(pixel_mask.shape)
+        if isinstance(pixel_mask, torch.Tensor)
+        else [],
     }
 
     expected_masks = torch.zeros((2, 640, 640), dtype=torch.int64)
@@ -274,8 +291,7 @@ def observe_processor_contract(
             and _size_value(processor.pad_size, "width") == 640
         ),
         "rescale_one_over_255": (
-            processor.do_rescale is True
-            and float(processor.rescale_factor) == 1 / 255
+            processor.do_rescale is True and float(processor.rescale_factor) == 1 / 255
         ),
         "normalization_disabled": processor.do_normalize is False,
         "pixel_values_shape": shapes["pixel_values"] == [2, 3, 640, 640],
@@ -390,10 +406,7 @@ def _snapshot_root(root: Path, spec: PinnedAssetSpec) -> Path:
     wave_root = _required_child_directory(root, "wave0")
     cache_root = _required_child_directory(wave_root, "model_cache")
     candidates = (
-        cache_root
-        / "snapshots"
-        / spec.repo_id.replace("/", "--")
-        / spec.revision,
+        cache_root / "snapshots" / spec.repo_id.replace("/", "--") / spec.revision,
         cache_root
         / f"models--{spec.repo_id.replace('/', '--')}"
         / "snapshots"
@@ -428,12 +441,12 @@ def _source_document(
 
 def _runtime_environment() -> tuple[dict[str, object], list[str]]:
     config_path = _project_root() / "configs" / "environment" / "wave0.yaml"
-    config = _mapping(yaml.safe_load(config_path.read_text(encoding="utf-8")), "environment config")
     contract = EnvironmentContract.from_yaml(config_path)
     _configure_torch_runtime(contract)
-    observed = observe_environment(config)
+    observed = observe_environment()
+    observed["data_root_unset"] = "VAL_DATA_ROOT" not in os.environ
     errors = contract.validate(observed)
-    if "VAL_DATA_ROOT" in os.environ:
+    if observed["data_root_unset"] is not True:
         errors.append("VAL_DATA_ROOT must remain unset for Wave 0")
     environment = {
         **observed,
@@ -507,7 +520,9 @@ def _receipt_hashes(
         if name.startswith("models/rt_detr/")
     }
     return {
-        "model_sha256": str(_mapping(files["model.safetensors"], "model file")["sha256"]),
+        "model_sha256": str(
+            _mapping(files["model.safetensors"], "model file")["sha256"]
+        ),
         "config_sha256": canonical_json_sha256(dict(config)),
         "config_file_sha256": str(
             _mapping(files["config.json"], "config file")["sha256"]
@@ -530,6 +545,9 @@ def _model_receipt(
     source_files: Mapping[str, Mapping[str, object]],
     fixture_manifest: Path,
     environment: Mapping[str, object],
+    parent_environment_receipt: Mapping[str, object],
+    environment_receipt_sha256: str,
+    run_id: str,
     config_num_queries: int,
     config_num_labels: int,
     decoder_layers: int,
@@ -568,8 +586,17 @@ def _model_receipt(
         shapes=shapes,
         invariants=invariants,
         environment=environment,
+        parent_environment_receipt=parent_environment_receipt,
+        environment_receipt_sha256=environment_receipt_sha256,
+        environment_receipt_content_sha256=str(
+            _mapping(
+                parent_environment_receipt.get("metadata"),
+                "parent environment metadata",
+            )["receipt_content_sha256"]
+        ),
         errors=tuple(errors),
         timestamp=datetime.now(UTC).isoformat(),
+        run_id=run_id,
     )
 
 
@@ -577,6 +604,9 @@ def run_model_contract_probe(
     spec: PinnedAssetSpec | None,
     asset_receipt: Mapping[str, object],
     fixture_manifest: Path,
+    parent_environment_receipt: Mapping[str, object],
+    environment_receipt_sha256: str,
+    run_id: str,
 ) -> ModelContractReceipt:
     """Execute the exact pinned RT-DETR label-free contract on canonical CUDA."""
     normative = _mapping(asset_receipt.get("normative"), "asset receipt normative")
@@ -584,6 +614,21 @@ def run_model_contract_probe(
         raise ModelContractInputError("asset receipt must have PASS status")
     if spec is None:
         raise ModelContractInputError("the approved RT-DETR spec is required")
+    validate_receipt_for_run(
+        parent_environment_receipt,
+        _project_root() / "schemas" / "environment-receipt.schema.json",
+        run_id,
+    )
+    parent_environment_normative = _mapping(
+        parent_environment_receipt.get("normative"),
+        "parent environment normative",
+    )
+    if parent_environment_normative.get("status") != "PASS":
+        raise ModelContractInputError("parent environment receipt must be PASS")
+    parent_environment = _mapping(
+        parent_environment_normative.get("observed"),
+        "parent environment observation",
+    )
     validate_receipt(
         asset_receipt,
         _project_root() / "schemas" / "model-asset-receipt.schema.json",
@@ -600,7 +645,9 @@ def run_model_contract_probe(
     snapshot = _snapshot_root(root, spec)
     verified_model = verify_snapshot(spec, snapshot).as_dict()
     if verified_model != dict(asset_model):
-        raise ModelContractInputError("live RT-DETR snapshot differs from asset receipt")
+        raise ModelContractInputError(
+            "live RT-DETR snapshot differs from asset receipt"
+        )
     source_observations = verify_transformers_source(spec)
     source_files = _source_document(source_observations)
     asset_transformers = _mapping(
@@ -610,13 +657,20 @@ def run_model_contract_probe(
         asset_transformers.get("version") != spec.transformers_version
         or asset_transformers.get("files") != source_files
     ):
-        raise ModelContractInputError("live Transformers source differs from asset receipt")
+        raise ModelContractInputError(
+            "live Transformers source differs from asset receipt"
+        )
 
     _, images = _load_fixture_images(fixture_manifest)
     processor = build_contract_processor()
     batch = prepare_contract_batch(processor, images)
     processor_observation = observe_processor_contract(processor, batch)
     environment, environment_errors = _runtime_environment()
+    for field, expected in parent_environment.items():
+        if environment.get(field) != expected:
+            environment_errors.append(
+                f"live {field} differs from parent environment receipt"
+            )
     environment = {
         **environment,
         "torch_execution": _unobserved_torch_execution(),
@@ -629,6 +683,12 @@ def run_model_contract_probe(
         "live_snapshot_matches_asset_receipt": True,
         "live_transformers_source_matches_asset_receipt": True,
         "canonical_environment": not environment_errors,
+        "exact_scipy": environment_invariants(
+            EnvironmentContract.from_yaml(
+                _project_root() / "configs" / "environment" / "wave0.yaml"
+            ),
+            environment,
+        )["exact_scipy"],
         **processor_observation.invariants,
     }
     if environment_errors:
@@ -638,6 +698,9 @@ def run_model_contract_probe(
             source_files=source_files,
             fixture_manifest=fixture_manifest,
             environment=environment,
+            parent_environment_receipt=parent_environment_receipt,
+            environment_receipt_sha256=environment_receipt_sha256,
+            run_id=run_id,
             config_num_queries=int(base_config.get("num_queries", 0)),
             config_num_labels=4,
             decoder_layers=int(base_config.get("decoder_layers", 0)),
@@ -656,8 +719,7 @@ def run_model_contract_probe(
             use_safetensors=True,
         )
         original_head_rows = [
-            head.weight[:4].detach().clone()
-            for head in model.model.decoder.class_embed
+            head.weight[:4].detach().clone() for head in model.model.decoder.class_embed
         ]
         reset_four_class_head(model, seed=17)
         first_reset = [
@@ -724,15 +786,16 @@ def run_model_contract_probe(
             "label_free_model_call": "labels" not in batch,
         }
         shapes = {**base_shapes, **raw_observation.shapes}
-        errors = [
-            name for name, passed in invariants.items() if passed is not True
-        ]
+        errors = [name for name, passed in invariants.items() if passed is not True]
         return _model_receipt(
             spec=spec,
             asset_model=asset_model,
             source_files=source_files,
             fixture_manifest=fixture_manifest,
             environment=environment,
+            parent_environment_receipt=parent_environment_receipt,
+            environment_receipt_sha256=environment_receipt_sha256,
+            run_id=run_id,
             config_num_queries=raw_observation.config_num_queries,
             config_num_labels=raw_observation.config_num_labels,
             decoder_layers=raw_observation.decoder_layers,
@@ -748,8 +811,13 @@ def run_model_contract_probe(
             source_files=source_files,
             fixture_manifest=fixture_manifest,
             environment=environment,
+            parent_environment_receipt=parent_environment_receipt,
+            environment_receipt_sha256=environment_receipt_sha256,
+            run_id=run_id,
             config_num_queries=int(base_config.get("num_queries", 0)),
-            config_num_labels=int(getattr(getattr(model, "config", None), "num_labels", 4)),
+            config_num_labels=int(
+                getattr(getattr(model, "config", None), "num_labels", 4)
+            ),
             decoder_layers=int(base_config.get("decoder_layers", 0)),
             shapes=base_shapes,
             invariants=invariants,
@@ -761,8 +829,8 @@ def run_model_contract_probe(
 
 
 def _resolve_cli_paths(
-    assets: Path, fixtures: Path, output: Path
-) -> tuple[Path, Path, Path]:
+    assets: Path, environment: Path, fixtures: Path, output: Path
+) -> tuple[Path, Path, Path, Path]:
     root = _artifact_root()
     wave_root = _required_child_directory(root, "wave0")
     receipts_root = _required_child_directory(wave_root, "receipts")
@@ -772,25 +840,27 @@ def _resolve_cli_paths(
         raise ModelContractInputError(
             "assets must be VAL_ARTIFACT_ROOT/wave0/receipts/model-assets.json"
         )
+    expected_environment = receipts_root / "environment-receipt.json"
+    actual_environment = Path(environment).resolve(strict=True)
+    if actual_environment != expected_environment or _is_link_or_junction(
+        Path(environment)
+    ):
+        raise ModelContractInputError(
+            "environment must be VAL_ARTIFACT_ROOT/wave0/receipts/"
+            "environment-receipt.json"
+        )
     expected_fixtures = (
-        _project_root()
-        / "fixtures"
-        / "synthetic"
-        / "wave0"
-        / "fixture-manifest.json"
+        _project_root() / "fixtures" / "synthetic" / "wave0" / "fixture-manifest.json"
     ).resolve(strict=True)
     actual_fixtures = Path(fixtures).resolve(strict=True)
     if actual_fixtures != expected_fixtures or _is_link_or_junction(Path(fixtures)):
         raise ModelContractInputError("fixtures must be the tracked Wave 0 manifest")
     actual_output = Path(output).resolve(strict=False)
-    if (
-        actual_output.parent != receipts_root
-        or _is_link_or_junction(Path(output))
-    ):
+    if actual_output.parent != receipts_root or _is_link_or_junction(Path(output)):
         raise ModelContractInputError(
             "output must be directly below VAL_ARTIFACT_ROOT/wave0/receipts"
         )
-    return actual_assets, actual_fixtures, actual_output
+    return actual_assets, actual_environment, actual_fixtures, actual_output
 
 
 @command("probe model-contract")
@@ -798,20 +868,42 @@ def main(argv: Sequence[str] | None = None) -> int:
     """Run the canonical, offline, label-free RT-DETR contract probe."""
     parser = argparse.ArgumentParser(prog="val probe model-contract")
     parser.add_argument("--assets", type=Path, required=True)
+    parser.add_argument("--environment", type=Path, required=True)
     parser.add_argument("--fixtures", type=Path, required=True)
+    parser.add_argument("--run-id", required=True)
     parser.add_argument("--output", type=Path, required=True)
     arguments = parser.parse_args(argv)
     try:
-        assets_path, fixtures_path, output_path = _resolve_cli_paths(
-            arguments.assets, arguments.fixtures, arguments.output
+        if not arguments.run_id.strip():
+            raise ModelContractInputError("run_id must be non-empty")
+        assets_path, environment_path, fixtures_path, output_path = _resolve_cli_paths(
+            arguments.assets,
+            arguments.environment,
+            arguments.fixtures,
+            arguments.output,
         )
+        if output_path.exists():
+            raise ModelContractInputError(
+                "fresh output path is required for each model-contract attempt"
+            )
         asset_receipt = _mapping(
             json.loads(assets_path.read_text(encoding="utf-8")), "asset receipt"
+        )
+        environment_receipt = _mapping(
+            json.loads(environment_path.read_text(encoding="utf-8")),
+            "environment receipt",
         )
         spec = load_pinned_asset_specs(
             _project_root() / "configs" / "models" / "pinned-models.yaml"
         )["rtdetr"]
-        receipt = run_model_contract_probe(spec, asset_receipt, fixtures_path)
+        receipt = run_model_contract_probe(
+            spec,
+            asset_receipt,
+            fixtures_path,
+            environment_receipt,
+            sha256_file(environment_path),
+            arguments.run_id,
+        )
         atomic_write_receipt(output_path, receipt.as_dict())
     except (ModelContractInputError, OSError, ValueError) as error:
         print(error, file=sys.stderr)

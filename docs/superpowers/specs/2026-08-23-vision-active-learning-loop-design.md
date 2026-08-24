@@ -8,7 +8,7 @@
 **Repository:** `vision-active-learning-loop`
 **Target roles:** Computer Vision Engineer, Machine Learning Engineer, AI Engineer
 **Design choice:** Modified Option B — multi-country object-detection active learning
-**Runtime gate:** Wave 0 must verify every executable model-contract invariant; any failure stops execution and returns the protocol to design review.
+**Runtime gate:** Wave 0 must verify every executable model-contract invariant from a new run-scoped evidence chain. The environment, model-contract, and feasibility receipts must share a non-empty run identity and exact parent bindings; each runtime observation must independently report uv `0.8.15` and SciPy `1.18.0`. Historical or fixed-name evidence is never current by implication. Any failure stops execution and returns the protocol to design review.
 **Implementation status:** Approval records the design/planning baseline only. It does not mean that a dataset or model was downloaded, a dependency was installed, a GPU experiment was executed, or a publication/remote repository was created.
 
 ## 1. Executive decision
@@ -240,6 +240,8 @@ The implementation plan must preserve these exact core versions:
 | Component | Version | License/purpose |
 |---|---|---|
 | Python | 3.12.11 | Runtime |
+| uv | 0.8.15 | Normative lock generation and validation |
+| SciPy | 1.18.0 | Exact RT-DETR labeled-training dependency |
 | PyTorch | 2.12.0+cu126 | BSD-style; detector training |
 | torchvision | 0.27.0+cu126 | BSD-style; tensor/image operations |
 | Transformers | 5.15.0 | Apache-2.0; RT-DETR and DINOv2 implementations |

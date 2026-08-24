@@ -12,6 +12,7 @@ from torch import nn
 from transformers.models.rt_detr.modeling_rt_detr import RTDetrForObjectDetection
 
 import vision_active_learning_loop.probes.model_contract as model_contract_probe
+import vision_active_learning_loop.artifacts.receipts as receipt_module
 from vision_active_learning_loop.artifacts.receipts import (
     atomic_write_receipt,
     validate_receipt,
@@ -41,6 +42,10 @@ from vision_active_learning_loop.probes.model_contract import (
     run_model_contract_probe,
 )
 from vision_active_learning_loop.artifacts.digests import canonical_json_sha256
+from vision_active_learning_loop.environment import (
+    EnvironmentContract,
+    environment_invariants,
+)
 
 
 FIXTURE_MANIFEST = (
@@ -54,9 +59,7 @@ FIXTURE_MANIFEST = (
 
 def _outputs(*, queries: int = 300, labels: int = 4, decoder_layers: int = 3):
     logits = torch.linspace(-2, 2, 2 * queries * labels).reshape(2, queries, labels)
-    intermediate = torch.linspace(
-        0, 1, 2 * decoder_layers * queries * 4
-    ).reshape(
+    intermediate = torch.linspace(0, 1, 2 * decoder_layers * queries * 4).reshape(
         2, decoder_layers, queries, 4
     )
     return SimpleNamespace(
@@ -350,6 +353,7 @@ def _receipt(*, processor_passed: bool = True) -> ModelContractReceipt:
         "schema_version": 1,
         "python": "3.12.11",
         "uv": "0.8.15",
+        "scipy": "1.18.0",
         "torch": "2.12.0+cu126",
         "torchvision": "0.27.0+cu126",
         "transformers": "5.15.0",
@@ -365,6 +369,7 @@ def _receipt(*, processor_passed: bool = True) -> ModelContractReceipt:
         "tf32": False,
         "deterministic_algorithms": True,
         "bf16_supported": True,
+        "data_root_unset": True,
         "status": "PASS",
         "errors": [],
         "torch_execution": {
@@ -393,9 +398,37 @@ def _receipt(*, processor_passed: bool = True) -> ModelContractReceipt:
         "processor_sha256": canonical_json_sha256(processor),
         "processor_file_sha256": "ffb4b9461a1dad746be8f0f9c8330ed7743a1ba5fba4f75c232cd281b3d4c64a",
         "fixture_sha256": "4e5eddbb21426c00932c34af331ae3e0ef3d30eb9010da7310b7319e91ec6d0f",
-        "probe_sha256": "640d7aceb71aa67db5d16709e1cc0db8de78735407ca47c0b1ed43dd0624cec4",
+        "probe_sha256": "4b1eefa514dd94948101bf9b2c77edf9b37eec158ce0912375e8150e9d3d25e7",
         "environment_sha256": canonical_json_sha256(environment),
     }
+    parent_observed = {
+        name: value
+        for name, value in environment.items()
+        if name not in {"status", "errors", "torch_execution"}
+    }
+    contract = EnvironmentContract.from_yaml(
+        Path(__file__).resolve().parents[2] / "configs" / "environment" / "wave0.yaml"
+    )
+    contract_document = contract.as_dict()
+    parent_environment = {
+        "receipt_type": "environment",
+        "schema_version": 1,
+        "normative": {
+            "contract": contract_document,
+            "contract_sha256": canonical_json_sha256(contract_document),
+            "observed": parent_observed,
+            "invariants": environment_invariants(contract, parent_observed),
+            "status": "PASS",
+            "errors": [],
+        },
+        "metadata": {
+            "timestamp": "2026-08-24T00:00:00+00:00",
+            "run_id": "run-a",
+        },
+    }
+    parent_environment["metadata"][
+        "receipt_content_sha256"
+    ] = receipt_module._receipt_content_sha256(parent_environment)
     return ModelContractReceipt(
         model_repository="PekingU/rtdetr_r18vd",
         model_revision="cc5b50f32f0100caaa3bd275343e2fb17762c73d",
@@ -415,15 +448,21 @@ def _receipt(*, processor_passed: bool = True) -> ModelContractReceipt:
         },
         invariants={
             name: (
-                processor_passed
-                if name == "expected_valid_mask_rectangles"
-                else True
+                processor_passed if name == "expected_valid_mask_rectangles" else True
             )
             for name in REQUIRED_MODEL_CONTRACT_INVARIANTS
         },
         environment=environment,
+        parent_environment_receipt=parent_environment,
+        environment_receipt_sha256=receipt_module._stored_receipt_sha256(
+            parent_environment
+        ),
+        environment_receipt_content_sha256=parent_environment["metadata"][
+            "receipt_content_sha256"
+        ],
         errors=() if processor_passed else ("expected_valid_mask_rectangles",),
         timestamp="2026-08-24T00:00:00+00:00",
+        run_id="run-a",
     )
 
 
@@ -447,9 +486,7 @@ def test_model_contract_receipt_is_schema_valid_and_content_addressed(
     assert stored["normative"]["config"]["num_queries"] == 300
     assert stored["normative"]["source_files"]
     assert stored["normative"]["processor"]["do_normalize"] is False
-    assert stored["normative"]["environment"]["gpu_name"] == (
-        "NVIDIA GeForce RTX 4090"
-    )
+    assert stored["normative"]["environment"]["gpu_name"] == ("NVIDIA GeForce RTX 4090")
     assert stored["normative"]["status"] == "PASS"
 
 
@@ -525,9 +562,7 @@ def test_receipt_hashes_distinguish_raw_files_from_effective_documents(
     assert hashes["config_file_sha256"] == "b" * 64
     assert hashes["config_sha256"] == canonical_json_sha256(config)
     assert hashes["processor_file_sha256"] == "c" * 64
-    assert hashes["processor_sha256"] == canonical_json_sha256(
-        _processor_document()
-    )
+    assert hashes["processor_sha256"] == canonical_json_sha256(_processor_document())
 
 
 def test_fixture_digest_is_canonical_across_line_endings(
@@ -618,9 +653,7 @@ def test_selected_torch_gpu_identity_is_bound_to_nvidia_smi_uuid(
     monkeypatch.setattr(
         torch.cuda,
         "get_device_properties",
-        lambda index: SimpleNamespace(
-            uuid="11111111-1111-1111-1111-111111111111"
-        ),
+        lambda index: SimpleNamespace(uuid="11111111-1111-1111-1111-111111111111"),
     )
 
     observation = observe_execution_device(
@@ -662,6 +695,8 @@ def test_probe_rejects_linked_wave0_parent(
     receipts_root.mkdir(parents=True)
     assets = receipts_root / "model-assets.json"
     assets.write_text("{}\n", encoding="utf-8")
+    environment_receipt = receipts_root / "environment-receipt.json"
+    environment_receipt.write_text("{}\n", encoding="utf-8")
     monkeypatch.setenv("VAL_ARTIFACT_ROOT", str(tmp_path))
     monkeypatch.delenv("VAL_DATA_ROOT", raising=False)
     monkeypatch.setattr(
@@ -672,6 +707,7 @@ def test_probe_rejects_linked_wave0_parent(
     with pytest.raises(ModelContractInputError, match="link"):
         _resolve_cli_paths(
             assets,
+            environment_receipt,
             FIXTURE_MANIFEST,
             receipts_root / "model-contract-receipt.json",
         )
@@ -845,10 +881,20 @@ def test_probe_publishes_complete_fail_receipt_for_malformed_intermediate_shape(
         "inspect_rtdetr_source_contract",
         lambda path: _approved_source(),
     )
-    monkeypatch.setattr(model_contract_probe, "RTDetrForObjectDetection", MalformedModel)
+    monkeypatch.setattr(
+        model_contract_probe, "RTDetrForObjectDetection", MalformedModel
+    )
     monkeypatch.setattr(torch.cuda, "current_device", lambda: 0)
 
-    receipt = run_model_contract_probe(spec, asset_receipt, FIXTURE_MANIFEST)
+    parent = _receipt()
+    receipt = run_model_contract_probe(
+        spec,
+        asset_receipt,
+        FIXTURE_MANIFEST,
+        parent.parent_environment_receipt,
+        parent.environment_receipt_sha256,
+        parent.run_id,
+    )
     output = tmp_path / "model-contract.json"
     atomic_write_receipt(output, receipt.as_dict())
 
@@ -877,7 +923,14 @@ def test_probe_rejects_failed_asset_receipt_before_model_execution() -> None:
     failed_assets = {"normative": {"status": "FAIL"}}
 
     with pytest.raises(ModelContractInputError, match="PASS"):
-        run_model_contract_probe(None, failed_assets, FIXTURE_MANIFEST)
+        run_model_contract_probe(
+            None,
+            failed_assets,
+            FIXTURE_MANIFEST,
+            {},
+            "0" * 64,
+            "run-a",
+        )
 
 
 def test_probe_cli_requires_external_artifact_root(
@@ -890,8 +943,12 @@ def test_probe_cli_requires_external_artifact_root(
         [
             "--assets",
             "model-assets.json",
+            "--environment",
+            "environment-receipt.json",
             "--fixtures",
             str(FIXTURE_MANIFEST),
+            "--run-id",
+            "run-a",
             "--output",
             "model-contract.json",
         ]
