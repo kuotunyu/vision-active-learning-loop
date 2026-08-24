@@ -115,6 +115,15 @@
         "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
       }
     },
+    "lockFile": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["size", "sha256"],
+      "properties": {
+        "size": {"const": 0},
+        "sha256": {"const": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+      }
+    },
     "licenseEvidence": {
       "type": "object",
       "additionalProperties": false,
@@ -164,13 +173,17 @@
     "rtdetrMetadataInventory": {
       "type": "object",
       "additionalProperties": false,
-      "required": [".cache/huggingface/.gitignore", ".cache/huggingface/CACHEDIR.TAG", ".cache/huggingface/download/README.md.metadata", ".cache/huggingface/download/config.json.metadata", ".cache/huggingface/download/model.safetensors.metadata", ".cache/huggingface/download/preprocessor_config.json.metadata", ".cache/huggingface/trees/cc5b50f32f0100caaa3bd275343e2fb17762c73d.json"],
+      "required": [".cache/huggingface/.gitignore", ".cache/huggingface/CACHEDIR.TAG", ".cache/huggingface/download/README.md.lock", ".cache/huggingface/download/README.md.metadata", ".cache/huggingface/download/config.json.lock", ".cache/huggingface/download/config.json.metadata", ".cache/huggingface/download/model.safetensors.lock", ".cache/huggingface/download/model.safetensors.metadata", ".cache/huggingface/download/preprocessor_config.json.lock", ".cache/huggingface/download/preprocessor_config.json.metadata", ".cache/huggingface/trees/cc5b50f32f0100caaa3bd275343e2fb17762c73d.json"],
       "properties": {
         ".cache/huggingface/.gitignore": {"$ref": "#/$defs/file"},
         ".cache/huggingface/CACHEDIR.TAG": {"$ref": "#/$defs/file"},
+        ".cache/huggingface/download/README.md.lock": {"$ref": "#/$defs/lockFile"},
         ".cache/huggingface/download/README.md.metadata": {"$ref": "#/$defs/file"},
+        ".cache/huggingface/download/config.json.lock": {"$ref": "#/$defs/lockFile"},
         ".cache/huggingface/download/config.json.metadata": {"$ref": "#/$defs/file"},
+        ".cache/huggingface/download/model.safetensors.lock": {"$ref": "#/$defs/lockFile"},
         ".cache/huggingface/download/model.safetensors.metadata": {"$ref": "#/$defs/file"},
+        ".cache/huggingface/download/preprocessor_config.json.lock": {"$ref": "#/$defs/lockFile"},
         ".cache/huggingface/download/preprocessor_config.json.metadata": {"$ref": "#/$defs/file"},
         ".cache/huggingface/trees/cc5b50f32f0100caaa3bd275343e2fb17762c73d.json": {"$ref": "#/$defs/file"}
       }
@@ -178,13 +191,17 @@
     "dinov2MetadataInventory": {
       "type": "object",
       "additionalProperties": false,
-      "required": [".cache/huggingface/.gitignore", ".cache/huggingface/CACHEDIR.TAG", ".cache/huggingface/download/README.md.metadata", ".cache/huggingface/download/config.json.metadata", ".cache/huggingface/download/model.safetensors.metadata", ".cache/huggingface/download/preprocessor_config.json.metadata", ".cache/huggingface/trees/ed25f3a31f01632728cabb09d1542f84ab7b0056.json"],
+      "required": [".cache/huggingface/.gitignore", ".cache/huggingface/CACHEDIR.TAG", ".cache/huggingface/download/README.md.lock", ".cache/huggingface/download/README.md.metadata", ".cache/huggingface/download/config.json.lock", ".cache/huggingface/download/config.json.metadata", ".cache/huggingface/download/model.safetensors.lock", ".cache/huggingface/download/model.safetensors.metadata", ".cache/huggingface/download/preprocessor_config.json.lock", ".cache/huggingface/download/preprocessor_config.json.metadata", ".cache/huggingface/trees/ed25f3a31f01632728cabb09d1542f84ab7b0056.json"],
       "properties": {
         ".cache/huggingface/.gitignore": {"$ref": "#/$defs/file"},
         ".cache/huggingface/CACHEDIR.TAG": {"$ref": "#/$defs/file"},
+        ".cache/huggingface/download/README.md.lock": {"$ref": "#/$defs/lockFile"},
         ".cache/huggingface/download/README.md.metadata": {"$ref": "#/$defs/file"},
+        ".cache/huggingface/download/config.json.lock": {"$ref": "#/$defs/lockFile"},
         ".cache/huggingface/download/config.json.metadata": {"$ref": "#/$defs/file"},
+        ".cache/huggingface/download/model.safetensors.lock": {"$ref": "#/$defs/lockFile"},
         ".cache/huggingface/download/model.safetensors.metadata": {"$ref": "#/$defs/file"},
+        ".cache/huggingface/download/preprocessor_config.json.lock": {"$ref": "#/$defs/lockFile"},
         ".cache/huggingface/download/preprocessor_config.json.metadata": {"$ref": "#/$defs/file"},
         ".cache/huggingface/trees/ed25f3a31f01632728cabb09d1542f84ab7b0056.json": {"$ref": "#/$defs/file"}
       }

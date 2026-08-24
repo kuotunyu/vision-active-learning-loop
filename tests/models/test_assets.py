@@ -26,6 +26,7 @@ from vision_active_learning_loop.models.assets import (
     RevisionMismatch,
     SourceMismatch,
     _external_roots,
+    _verify_huggingface_metadata,
     load_pinned_asset_specs,
     main,
     verify_snapshot,
@@ -35,6 +36,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 CONFIG_PATH = PROJECT_ROOT / "configs" / "models" / "pinned-models.yaml"
 RTDETR_REVISION = "cc5b50f32f0100caaa3bd275343e2fb17762c73d"
 DINO_REVISION = "ed25f3a31f01632728cabb09d1542f84ab7b0056"
+EMPTY_SHA256 = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
 METADATA_IDENTITY = {
     "rtdetr": {
         "README.md": (
@@ -118,6 +120,7 @@ def _write_huggingface_metadata(root: Path, spec) -> None:
             f"{spec.revision}\n{etag}\n1.0\n",
             encoding="utf-8",
         )
+        (download_root / f"{name}.lock").write_bytes(b"")
         entry = {"size": expected.size, "blob_id": blob_id}
         if name == "model.safetensors":
             entry.update(lfs_sha256=expected.sha256, lfs_size=expected.size)
@@ -142,6 +145,10 @@ def _minimal_model_receipt(spec, metadata_identity):
     for name in spec.files:
         path = f".cache/huggingface/download/{name}.metadata"
         metadata_inventory[path] = {"size": 1, "sha256": "a" * 64}
+        metadata_inventory[f".cache/huggingface/download/{name}.lock"] = {
+            "size": 0,
+            "sha256": EMPTY_SHA256,
+        }
         etag, blob_id = metadata_identity[name]
         metadata_files[name] = {
             "metadata_path": path,
@@ -372,6 +379,93 @@ def test_correctly_named_snapshot_without_hf_metadata_is_rejected(
         verify_snapshot(specs["rtdetr"], root)
 
 
+def test_hf_metadata_accepts_and_receipts_exact_empty_payload_locks(
+    specs, tmp_path: Path
+) -> None:
+    spec = specs["rtdetr"]
+    root = _snapshot_root(tmp_path, spec.repo_id, spec.revision)
+    _write_huggingface_metadata(root, spec)
+
+    metadata = _verify_huggingface_metadata(spec, root)
+
+    expected_locks = {f".cache/huggingface/download/{name}.lock" for name in spec.files}
+    observed_locks = {path for path in metadata.inventory if path.endswith(".lock")}
+    assert observed_locks == expected_locks
+    for path in expected_locks:
+        assert metadata.inventory[path].size == 0
+        assert metadata.inventory[path].sha256 == EMPTY_SHA256
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    ["missing", "extra", "wrong-name", "unpaired"],
+)
+def test_hf_metadata_lock_inventory_fails_closed(
+    specs, tmp_path: Path, mutation: str
+) -> None:
+    spec = specs["dinov2"]
+    root = _snapshot_root(tmp_path, spec.repo_id, spec.revision)
+    _write_huggingface_metadata(root, spec)
+    download_root = root / ".cache" / "huggingface" / "download"
+    lock_path = download_root / "config.json.lock"
+
+    if mutation == "missing":
+        lock_path.unlink()
+    elif mutation == "extra":
+        (download_root / "unapproved.lock").write_bytes(b"")
+    elif mutation == "wrong-name":
+        lock_path.rename(download_root / "config.lock")
+    else:
+        (download_root / "config.json.metadata").unlink()
+
+    with pytest.raises(RevisionMismatch, match="exact expected set"):
+        _verify_huggingface_metadata(spec, root)
+
+
+def test_hf_metadata_rejects_nonempty_payload_lock(specs, tmp_path: Path) -> None:
+    spec = specs["rtdetr"]
+    root = _snapshot_root(tmp_path, spec.repo_id, spec.revision)
+    _write_huggingface_metadata(root, spec)
+    lock_path = root / ".cache" / "huggingface" / "download" / "README.md.lock"
+    lock_path.write_bytes(b"not-empty")
+
+    with pytest.raises(RevisionMismatch, match="lock.*zero bytes"):
+        _verify_huggingface_metadata(spec, root)
+
+
+@pytest.mark.parametrize("link_kind", ["symlink", "junction"])
+def test_hf_metadata_rejects_linked_payload_lock(
+    specs,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    link_kind: str,
+) -> None:
+    spec = specs["rtdetr"]
+    root = _snapshot_root(tmp_path, spec.repo_id, spec.revision)
+    _write_huggingface_metadata(root, spec)
+    lock_path = root / ".cache" / "huggingface" / "download" / "README.md.lock"
+
+    if link_kind == "symlink":
+        original = Path.is_symlink
+
+        def simulated_link(path: Path) -> bool:
+            return path == lock_path or original(path)
+
+        monkeypatch.setattr(Path, "is_symlink", simulated_link)
+    else:
+        original_junction = getattr(Path, "is_junction", None)
+
+        def simulated_junction(path: Path) -> bool:
+            return path == lock_path or (
+                bool(original_junction(path)) if original_junction else False
+            )
+
+        monkeypatch.setattr(Path, "is_junction", simulated_junction, raising=False)
+
+    with pytest.raises(ArtifactBoundaryError, match="symlink or junction"):
+        _verify_huggingface_metadata(spec, root)
+
+
 def test_hf_metadata_with_wrong_commit_is_rejected(specs, tmp_path: Path) -> None:
     spec = specs["dinov2"]
     root = _snapshot_root(tmp_path, spec.repo_id, spec.revision)
@@ -515,6 +609,38 @@ def test_model_asset_schema_resolves_nested_file_reference(
 
     with pytest.raises(ReceiptValidationError, match="sha256"):
         atomic_write_receipt(tmp_path / "receipt.json", receipt)
+
+
+@pytest.mark.parametrize(
+    ("model_name", "field", "invalid_value", "expected_error"),
+    [
+        ("rtdetr", "size", 1, "must equal 0"),
+        (
+            "dinov2",
+            "sha256",
+            "0" * 64,
+            f"must equal '{EMPTY_SHA256}'",
+        ),
+    ],
+)
+def test_model_asset_schema_rejects_nonempty_lock_identity(
+    specs,
+    tmp_path: Path,
+    model_name: str,
+    field: str,
+    invalid_value: object,
+    expected_error: str,
+) -> None:
+    receipt = _valid_model_asset_receipt(specs)
+    inventory = receipt["normative"]["models"][model_name]["huggingface_metadata"][
+        "inventory"
+    ]
+    inventory[".cache/huggingface/download/model.safetensors.lock"][
+        field
+    ] = invalid_value
+
+    with pytest.raises(ReceiptValidationError, match=expected_error):
+        atomic_write_receipt(tmp_path / f"{model_name}.json", receipt)
 
 
 @pytest.mark.parametrize(

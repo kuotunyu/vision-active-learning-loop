@@ -404,6 +404,7 @@ def _metadata_paths(spec: PinnedAssetSpec) -> set[str]:
         f".cache/huggingface/trees/{spec.revision}.json",
     }
     paths.update(f".cache/huggingface/download/{name}.metadata" for name in spec.files)
+    paths.update(f".cache/huggingface/download/{name}.lock" for name in spec.files)
     return paths
 
 
@@ -476,6 +477,9 @@ def _verify_huggingface_metadata(
 
     file_metadata: dict[str, HuggingFaceFileMetadata] = {}
     for name, expected in spec.files.items():
+        lock_relative = f".cache/huggingface/download/{name}.lock"
+        if inventory[lock_relative].size != 0:
+            raise RevisionMismatch(f"{name} Hugging Face lock must be zero bytes")
         metadata_relative = f".cache/huggingface/download/{name}.metadata"
         metadata_path = root / Path(metadata_relative)
         try:
