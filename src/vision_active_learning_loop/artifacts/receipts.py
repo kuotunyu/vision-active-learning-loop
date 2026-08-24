@@ -13,6 +13,7 @@ from collections.abc import Mapping
 from pathlib import Path
 
 from .digests import canonical_json_sha256
+from .no_clobber import open_unique_staging_file, publish_staged_file_no_clobber
 
 
 class ReceiptValidationError(ValueError):
@@ -125,9 +126,9 @@ def _stored_receipt_sha256(receipt: Mapping[str, object]) -> str:
 
 
 def atomic_write_receipt(path: Path, receipt: Mapping[str, object]) -> str:
-    """Validate and atomically publish one canonical receipt, returning its digest."""
+    """Validate and publish one immutable canonical receipt, returning its digest."""
     target = Path(path)
-    partial = target.with_name(f"{target.name}.partial")
+    staging = None
     try:
         document = copy.deepcopy(dict(receipt))
         expected_schema = _expected_schema_path(document)
@@ -146,19 +147,34 @@ def atomic_write_receipt(path: Path, receipt: Mapping[str, object]) -> str:
             document, schema_path=expected_schema, require_content_hash=True
         )
 
-        target.parent.mkdir(parents=True, exist_ok=True)
         encoded = _canonical_storage_bytes(document)
-        _unlink_if_present(partial)
-        with partial.open("xb") as output:
+        expected_storage_sha256 = hashlib.sha256(encoded).hexdigest()
+        staging = open_unique_staging_file(target)
+        with staging.handle as output:
             output.write(encoded)
             output.flush()
             os.fsync(output.fileno())
+
+        staged_bytes = staging.path.read_bytes()
+        if hashlib.sha256(staged_bytes).hexdigest() != expected_storage_sha256:
+            raise ReceiptValidationError("staged receipt bytes do not match input")
+        try:
+            staged_document = json.loads(staged_bytes)
+        except (UnicodeDecodeError, json.JSONDecodeError) as error:
+            raise ReceiptValidationError("staged receipt is not valid JSON") from error
+        if not isinstance(staged_document, Mapping):
+            raise ReceiptValidationError("staged receipt must be an object")
+        _validate_receipt(
+            staged_document,
+            schema_path=expected_schema,
+            require_content_hash=True,
+        )
         _fsync_parent(target.parent)
-        os.replace(partial, target)
+        publish_staged_file_no_clobber(staging.path, target)
         return digest
-    except Exception:
-        _unlink_if_present(partial)
-        raise
+    finally:
+        if staging is not None:
+            _unlink_staging_best_effort(staging.path)
 
 
 def _validate_receipt(
@@ -1342,10 +1358,10 @@ def _canonical_storage_bytes(receipt: Mapping[str, object]) -> bytes:
     )
 
 
-def _unlink_if_present(path: Path) -> None:
+def _unlink_staging_best_effort(path: Path) -> None:
     try:
         path.unlink()
-    except FileNotFoundError:
+    except OSError:
         pass
 
 

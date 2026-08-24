@@ -3,19 +3,27 @@ from __future__ import annotations
 import copy
 import errno
 import json
+import multiprocessing
 import os
 from pathlib import Path
+from typing import BinaryIO, Self
 
 import pytest
 
 from vision_active_learning_loop.artifacts import receipts
 from vision_active_learning_loop.artifacts.digests import canonical_json_sha256
+from vision_active_learning_loop.artifacts.no_clobber import (
+    NoClobberError,
+    StagingFile,
+)
 from vision_active_learning_loop.artifacts.receipts import (
     ReceiptValidationError,
     atomic_write_receipt,
     normative_receipt_sha256,
     validate_receipt,
 )
+
+from .test_no_clobber import _make_directory_link
 
 HASH = "a" * 64
 MODEL_CONTRACT_INVARIANTS = (
@@ -137,6 +145,24 @@ def build_valid_environment_receipt(run_id: str = "run-a") -> dict[str, object]:
         document
     )
     return document
+
+
+def _race_publish_receipt(
+    output: Path, run_id: str, barrier: object, result_queue: object
+) -> None:
+    original_publish = receipts.publish_staged_file_no_clobber
+
+    def synchronized_publish(staging: Path, destination: Path) -> None:
+        barrier.wait()  # type: ignore[attr-defined]
+        original_publish(staging, destination)
+
+    receipts.publish_staged_file_no_clobber = synchronized_publish
+    try:
+        digest = atomic_write_receipt(output, build_valid_environment_receipt(run_id))
+    except NoClobberError:
+        result_queue.put("no-clobber")  # type: ignore[attr-defined]
+    else:
+        result_queue.put(f"published:{digest}")  # type: ignore[attr-defined]
 
 
 def build_valid_model_contract_receipt() -> dict[str, object]:
@@ -457,6 +483,78 @@ def test_invalid_update_preserves_existing_valid_receipt(
 
 
 @pytest.mark.parametrize(
+    "existing_kind",
+    [
+        "valid-receipt",
+        "invalid-receipt",
+        "empty-file",
+        "directory",
+        "symlink",
+        "junction",
+    ],
+)
+def test_receipt_publication_never_replaces_any_existing_destination(
+    tmp_path: Path,
+    valid_receipt: dict[str, object],
+    existing_kind: str,
+) -> None:
+    """Catch any pre-existing path being overwritten, followed, or repurposed."""
+    output = tmp_path / "receipt.json"
+    prior = b"prior-evidence"
+    if existing_kind == "valid-receipt":
+        atomic_write_receipt(output, valid_receipt)
+        original = output.read_bytes()
+    elif existing_kind == "invalid-receipt":
+        output.write_bytes(prior)
+        original = prior
+    elif existing_kind == "empty-file":
+        output.write_bytes(b"")
+        original = b""
+    elif existing_kind == "directory":
+        output.mkdir()
+        (output / "prior.bin").write_bytes(prior)
+        original = prior
+    elif existing_kind == "symlink":
+        source = tmp_path / "source.bin"
+        source.write_bytes(prior)
+        try:
+            output.symlink_to(source)
+        except OSError as error:
+            pytest.skip(f"file symlink unavailable: {error}")
+        original = prior
+    else:
+        source = tmp_path / "junction-source"
+        _make_directory_link(output, source, junction=True)
+        (source / "prior.bin").write_bytes(prior)
+        original = prior
+
+    with pytest.raises(NoClobberError):
+        atomic_write_receipt(output, valid_receipt)
+
+    if existing_kind in {"directory", "junction"}:
+        assert (output / "prior.bin").read_bytes() == original
+    else:
+        assert output.read_bytes() == original
+
+
+def test_receipt_publication_requires_existing_non_link_parent(
+    tmp_path: Path, valid_receipt: dict[str, object]
+) -> None:
+    missing_output = tmp_path / "missing" / "receipt.json"
+    with pytest.raises(OSError, match="parent"):
+        atomic_write_receipt(missing_output, valid_receipt)
+    assert not missing_output.exists()
+
+    real_parent = tmp_path / "real-parent"
+    linked_parent = tmp_path / "linked-parent"
+    _make_directory_link(linked_parent, real_parent, junction=True)
+    linked_output = linked_parent / "receipt.json"
+    with pytest.raises(OSError, match="parent|link|junction"):
+        atomic_write_receipt(linked_output, valid_receipt)
+    assert not linked_output.exists()
+
+
+@pytest.mark.parametrize(
     ("mutation", "expected"),
     [
         (lambda receipt: receipt["normative"]["invariants"].update({"logits_shape": False}), "PASS"),  # type: ignore[index,union-attr]
@@ -738,34 +836,33 @@ def test_receipt_hash_mismatch_is_rejected_without_final_receipt(
     assert not output.exists()
 
 
-def test_rename_failure_preserves_existing_valid_receipt(
+def test_receipt_publication_never_calls_replace(
     tmp_path: Path,
     valid_receipt: dict[str, object],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     output = tmp_path / "receipt.json"
+    monkeypatch.setattr(
+        receipts.os,
+        "replace",
+        lambda *args: (_ for _ in ()).throw(
+            AssertionError("replace cannot provide no-clobber publication")
+        ),
+    )
+
     atomic_write_receipt(output, valid_receipt)
-    original = output.read_bytes()
 
-    def fail_rename(source: Path, destination: Path) -> None:
-        raise OSError("injected rename failure")
-
-    monkeypatch.setattr(receipts.os, "replace", fail_rename)
-    with pytest.raises(OSError, match="injected rename failure"):
-        atomic_write_receipt(output, valid_receipt)
-
-    assert output.read_bytes() == original
-    assert not (tmp_path / "receipt.json.partial").exists()
+    assert output.exists()
 
 
-def test_atomic_write_fsyncs_file_and_parent_before_replace(
+def test_atomic_write_fsyncs_file_and_parent_before_decisive_link(
     tmp_path: Path,
     valid_receipt: dict[str, object],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     events: list[str] = []
     parent_descriptor = 999
-    original_replace = receipts.os.replace
+    original_link = receipts.os.link
 
     def record_open(directory: Path, flags: int) -> int:
         assert directory == tmp_path
@@ -782,14 +879,14 @@ def test_atomic_write_fsyncs_file_and_parent_before_replace(
         assert descriptor == parent_descriptor
         events.append("parent-close")
 
-    def record_replace(source: Path, destination: Path) -> None:
-        events.append("replace")
-        original_replace(source, destination)
+    def record_link(source: Path, destination: Path, *, follow_symlinks: bool) -> None:
+        events.append("link")
+        original_link(source, destination, follow_symlinks=follow_symlinks)
 
     monkeypatch.setattr(receipts.os, "open", record_open)
     monkeypatch.setattr(receipts.os, "fsync", record_fsync)
     monkeypatch.setattr(receipts.os, "close", record_close)
-    monkeypatch.setattr(receipts.os, "replace", record_replace)
+    monkeypatch.setattr(receipts.os, "link", record_link)
 
     atomic_write_receipt(tmp_path / "receipt.json", valid_receipt)
 
@@ -798,41 +895,166 @@ def test_atomic_write_fsyncs_file_and_parent_before_replace(
         "parent-open",
         "parent-fsync",
         "parent-close",
-        "replace",
+        "link",
     ]
 
 
-def test_atomic_write_has_no_fallible_operation_after_replace(
+def test_atomic_write_has_no_required_fallible_operation_after_link(
     tmp_path: Path,
     valid_receipt: dict[str, object],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     output = tmp_path / "receipt.json"
-    replaced = False
+    linked = False
     parent_descriptor = 999
-    original_replace = receipts.os.replace
+    original_link = receipts.os.link
+    original_unlink = Path.unlink
 
     def record_open(directory: Path, flags: int) -> int:
         return parent_descriptor
 
-    def fail_if_after_replace(descriptor: int) -> None:
-        if replaced:
-            raise OSError("post-replace operation must not run")
+    def fail_if_after_link(descriptor: int) -> None:
+        if linked:
+            raise OSError("post-link operation must not run")
 
-    def record_replace(source: Path, destination: Path) -> None:
-        nonlocal replaced
-        original_replace(source, destination)
-        replaced = True
+    def record_link(source: Path, destination: Path, *, follow_symlinks: bool) -> None:
+        nonlocal linked
+        original_link(source, destination, follow_symlinks=follow_symlinks)
+        linked = True
+
+    def fail_stage_cleanup(path: Path, *args: object, **kwargs: object) -> None:
+        if linked and path.name.endswith(".staging"):
+            raise OSError("injected best-effort cleanup failure")
+        original_unlink(path, *args, **kwargs)
 
     monkeypatch.setattr(receipts.os, "open", record_open)
-    monkeypatch.setattr(receipts.os, "fsync", fail_if_after_replace)
+    monkeypatch.setattr(receipts.os, "fsync", fail_if_after_link)
     monkeypatch.setattr(receipts.os, "close", lambda descriptor: None)
-    monkeypatch.setattr(receipts.os, "replace", record_replace)
+    monkeypatch.setattr(receipts.os, "link", record_link)
+    monkeypatch.setattr(Path, "unlink", fail_stage_cleanup)
 
     atomic_write_receipt(output, valid_receipt)
 
-    assert replaced is True
+    assert linked is True
     assert output.exists()
+    stored = json.loads(output.read_text(encoding="utf-8"))
+    validate_receipt(stored, _schema_path("model-contract-receipt.schema.json"))
+
+
+def test_receipt_publication_race_has_one_complete_winner(tmp_path: Path) -> None:
+    output = tmp_path / "environment.json"
+    context = multiprocessing.get_context("spawn")
+    barrier = context.Barrier(2)
+    result_queue = context.Queue()
+    processes = [
+        context.Process(
+            target=_race_publish_receipt,
+            args=(output, run_id, barrier, result_queue),
+        )
+        for run_id in ("run-a", "run-b")
+    ]
+    for process in processes:
+        process.start()
+    for process in processes:
+        process.join(timeout=20)
+    alive = [process for process in processes if process.is_alive()]
+    for process in alive:
+        process.terminate()
+        process.join()
+
+    assert not alive
+    assert all(process.exitcode == 0 for process in processes)
+    results = [result_queue.get(timeout=5) for _ in processes]
+    assert sum(result.startswith("published:") for result in results) == 1
+    assert results.count("no-clobber") == 1
+    stored = json.loads(output.read_text(encoding="utf-8"))
+    validate_receipt(stored, _schema_path("environment-receipt.schema.json"))
+    assert stored["metadata"]["run_id"] in {"run-a", "run-b"}
+    assert not list(tmp_path.glob("*.partial"))
+    assert not list(tmp_path.glob("*.staging"))
+
+
+@pytest.mark.parametrize("failure", ["file-fsync", "parent-fsync", "hard-link"])
+def test_receipt_publication_storage_failure_leaves_no_destination(
+    tmp_path: Path,
+    valid_receipt: dict[str, object],
+    monkeypatch: pytest.MonkeyPatch,
+    failure: str,
+) -> None:
+    output = tmp_path / "receipt.json"
+
+    if failure == "file-fsync":
+        monkeypatch.setattr(
+            receipts.os,
+            "fsync",
+            lambda descriptor: (_ for _ in ()).throw(
+                OSError(errno.EIO, "injected file fsync failure")
+            ),
+        )
+    elif failure == "parent-fsync":
+        monkeypatch.setattr(
+            receipts,
+            "_fsync_parent",
+            lambda parent: (_ for _ in ()).throw(
+                OSError(errno.EIO, "injected parent fsync failure")
+            ),
+        )
+    else:
+        monkeypatch.setattr(
+            receipts,
+            "publish_staged_file_no_clobber",
+            lambda staging, destination: (_ for _ in ()).throw(
+                OSError(errno.EIO, "injected hard-link failure")
+            ),
+        )
+
+    with pytest.raises(OSError, match="injected"):
+        atomic_write_receipt(output, valid_receipt)
+
+    assert not output.exists()
+    assert not list(tmp_path.glob("*.partial"))
+    assert not list(tmp_path.glob("*.staging"))
+
+
+def test_receipt_publication_detects_injected_short_write(
+    tmp_path: Path,
+    valid_receipt: dict[str, object],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    output = tmp_path / "receipt.json"
+    original_open = receipts.open_unique_staging_file
+
+    class ShortWriter:
+        def __init__(self, handle: BinaryIO) -> None:
+            self.handle = handle
+
+        def __enter__(self) -> Self:
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            self.handle.close()
+
+        def write(self, content: bytes) -> int:
+            self.handle.write(content[:-1])
+            return len(content)
+
+        def flush(self) -> None:
+            self.handle.flush()
+
+        def fileno(self) -> int:
+            return self.handle.fileno()
+
+    def open_short_writer(destination: Path) -> StagingFile:
+        staging = original_open(destination)
+        return StagingFile(staging.path, ShortWriter(staging.handle))  # type: ignore[arg-type]
+
+    monkeypatch.setattr(receipts, "open_unique_staging_file", open_short_writer)
+
+    with pytest.raises(ReceiptValidationError, match="staged receipt bytes"):
+        atomic_write_receipt(output, valid_receipt)
+
+    assert not output.exists()
+    assert not list(tmp_path.glob("*.staging"))
 
 
 def test_parent_fsync_propagates_supported_platform_storage_failure(

@@ -215,3 +215,51 @@ def test_publish_fails_closed_when_safe_hard_link_is_unsupported(
 
     assert not destination.exists()
     assert stage.read_bytes() == b"complete"
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows NTFS contract")
+def test_windows_ntfs_no_clobber_and_junction_parent_contract(
+    tmp_path: Path,
+) -> None:
+    destination = tmp_path / "receipt.json"
+    first_stage = open_unique_staging_file(destination)
+    first_stage.handle.write(b"first")
+    first_stage.handle.close()
+    publish_staged_file_no_clobber(first_stage.path, destination)
+
+    second_stage = open_unique_staging_file(destination)
+    second_stage.handle.write(b"second")
+    second_stage.handle.close()
+    with pytest.raises(NoClobberError):
+        publish_staged_file_no_clobber(second_stage.path, destination)
+
+    assert destination.read_bytes() == b"first"
+
+    real_parent = tmp_path / "real-parent"
+    linked_parent = tmp_path / "linked-parent"
+    _make_directory_link(linked_parent, real_parent, junction=True)
+    with pytest.raises(OSError, match="parent|link|junction"):
+        open_unique_staging_file(linked_parent / "forbidden.json")
+
+
+@pytest.mark.skipif(os.name == "nt", reason="Linux filesystem contract")
+def test_linux_no_clobber_and_symlink_parent_contract(tmp_path: Path) -> None:
+    destination = tmp_path / "receipt.json"
+    first_stage = open_unique_staging_file(destination)
+    first_stage.handle.write(b"first")
+    first_stage.handle.close()
+    publish_staged_file_no_clobber(first_stage.path, destination)
+
+    second_stage = open_unique_staging_file(destination)
+    second_stage.handle.write(b"second")
+    second_stage.handle.close()
+    with pytest.raises(NoClobberError):
+        publish_staged_file_no_clobber(second_stage.path, destination)
+
+    assert destination.read_bytes() == b"first"
+
+    real_parent = tmp_path / "real-parent"
+    linked_parent = tmp_path / "linked-parent"
+    _make_directory_link(linked_parent, real_parent, junction=False)
+    with pytest.raises(OSError, match="parent|link|junction"):
+        open_unique_staging_file(linked_parent / "forbidden.json")

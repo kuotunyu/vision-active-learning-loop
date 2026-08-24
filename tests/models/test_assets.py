@@ -614,6 +614,7 @@ def test_cli_failure_writes_fail_receipt_and_exits_two(
     )
     (root / "model.safetensors").write_bytes(b"tampered")
     output = artifact_root / "wave0" / "receipts" / "model-assets.json"
+    output.parent.mkdir(parents=True)
     monkeypatch.setenv("VAL_ARTIFACT_ROOT", str(artifact_root))
     monkeypatch.delenv("VAL_DATA_ROOT", raising=False)
     monkeypatch.setenv("HF_HUB_OFFLINE", "1")
