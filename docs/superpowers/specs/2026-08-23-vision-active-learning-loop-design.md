@@ -1,6 +1,6 @@
 # Vision Active Learning Loop — Formal Design Specification
 
-**Status:** A2 design amendment committed for owner written-spec review; implementation planning is not yet authorized
+**Status:** A2 owner written review approved / A2 implementation planning authorized
 **Milestone:** M0 complete for the original design; A2 amendment pending owner written-spec review
 **Owner approval date:** 2026-08-23
 **Approved commit baseline:** `8b456800077d45fa9a6bb0dcd4ecb70c0edc89c6`
