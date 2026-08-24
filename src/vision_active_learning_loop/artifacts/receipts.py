@@ -26,6 +26,7 @@ _ALLOWED_SCHEMAS = {
     ("model-contract", 1): _SCHEMA_ROOT / "model-contract-receipt.schema.json",
     ("feasibility", 1): _SCHEMA_ROOT / "feasibility-receipt.schema.json",
     ("model-assets", 1): _SCHEMA_ROOT / "model-asset-receipt.schema.json",
+    ("wave0-gate", 1): _SCHEMA_ROOT / "wave0-gate-receipt.schema.json",
 }
 _APPROVED_ENVIRONMENT_CONTRACT = {
     "schema_version": 1,
@@ -207,6 +208,7 @@ def _validate_receipt(
         "model-assets",
         "model-contract",
         "feasibility",
+        "wave0-gate",
     }:
         run_id = metadata.get("run_id")
         if not isinstance(run_id, str) or not run_id.strip():
@@ -219,6 +221,8 @@ def _validate_receipt(
         _validate_feasibility_consistency(normative, metadata)
     elif receipt_type == "model-assets":
         _validate_model_assets_consistency(normative)
+    elif receipt_type == "wave0-gate":
+        _validate_wave0_gate_consistency(normative)
     invariants = normative.get("invariants")
     if not isinstance(invariants, Mapping):
         raise ReceiptValidationError("invariants must be an object")
@@ -317,6 +321,71 @@ def _validate_model_assets_consistency(normative: Mapping[str, object]) -> None:
     raise ReceiptValidationError(
         "model-assets FAIL contradicts complete verified evidence"
     )
+
+
+def _validate_wave0_gate_consistency(normative: Mapping[str, object]) -> None:
+    """Bind the aggregate verdict to the exact approved invariant inventory."""
+    from ..gates.wave0 import WAVE0_GATE_INVARIANTS
+
+    invariants = normative.get("invariants")
+    errors = normative.get("errors")
+    status = normative.get("status")
+    interpretation = normative.get("interpretation")
+    if not isinstance(invariants, Mapping) or set(invariants) != set(
+        WAVE0_GATE_INVARIANTS
+    ):
+        raise ReceiptValidationError("wave0 gate invariant inventory mismatch")
+    expected_status = (
+        "PASS"
+        if all(invariants.get(name) is True for name in WAVE0_GATE_INVARIANTS)
+        and errors == []
+        else "FAIL"
+    )
+    if status != expected_status:
+        raise ReceiptValidationError("wave0 gate status contradicts its evidence")
+    expected_interpretation = (
+        "WAVE0_A2_PASS / WAVE1_NOT_STARTED"
+        if expected_status == "PASS"
+        else "WAVE0_A2_NORMATIVE_FAIL / WAVE1_FORBIDDEN"
+    )
+    if interpretation != expected_interpretation:
+        raise ReceiptValidationError(
+            "wave0 gate interpretation contradicts its evidence"
+        )
+    if expected_status == "PASS":
+        parent_receipts = normative.get("parent_receipts")
+        comparisons = normative.get("deterministic_comparisons")
+        expected_attempts = {"primary", "clean_a", "clean_b"}
+        expected_stages = {
+            "environment",
+            "model_assets",
+            "model_contract",
+            "feasibility_a",
+            "feasibility_b",
+        }
+        expected_comparisons = {
+            f"{attempt}_{suffix}"
+            for attempt in expected_attempts
+            for suffix in ("feasibility_a", "feasibility_b", "replay")
+        }
+        if (
+            not isinstance(parent_receipts, Mapping)
+            or set(parent_receipts) != expected_attempts
+            or any(
+                not isinstance(values, Mapping) or set(values) != expected_stages
+                for values in parent_receipts.values()
+            )
+        ):
+            raise ReceiptValidationError(
+                "PASS wave0 gate requires every registered parent receipt"
+            )
+        if (
+            not isinstance(comparisons, Mapping)
+            or set(comparisons) != expected_comparisons
+        ):
+            raise ReceiptValidationError(
+                "PASS wave0 gate requires every deterministic comparison"
+            )
 
 
 def _validate_model_assets_pass_evidence(normative: Mapping[str, object]) -> None:

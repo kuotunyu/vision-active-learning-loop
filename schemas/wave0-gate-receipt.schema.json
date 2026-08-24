@@ -1,0 +1,100 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "wave0-gate-receipt.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["receipt_type", "schema_version", "normative", "metadata"],
+  "properties": {
+    "receipt_type": {"const": "wave0-gate"},
+    "schema_version": {"const": 1},
+    "normative": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "parent_receipts",
+        "deterministic_comparisons",
+        "invariants",
+        "status",
+        "errors",
+        "interpretation"
+      ],
+      "properties": {
+        "parent_receipts": {
+          "type": "object",
+          "additionalProperties": {"$ref": "#/$defs/hash_map"}
+        },
+        "deterministic_comparisons": {"$ref": "#/$defs/hash_map"},
+        "invariants": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "primary_complete_pass",
+            "clean_a_complete_pass",
+            "clean_b_complete_pass",
+            "all_run_ids_match",
+            "all_parent_bindings_match",
+            "loss_source_hash_matches",
+            "synthetic_target_hash_matches",
+            "all_classification_tensors_four_channels",
+            "labeled_losses_finite_scalar",
+            "bf16_backward_passed",
+            "finite_gradients_passed",
+            "parameter_update_passed",
+            "vram_limit_passed",
+            "checkpoint_round_trips_passed",
+            "feasibility_ab_deterministic",
+            "clean_replays_deterministic",
+            "data_root_unset",
+            "fresh_evidence_chain",
+            "historical_evidence_not_used"
+          ],
+          "properties": {
+            "primary_complete_pass": {"type": "boolean"},
+            "clean_a_complete_pass": {"type": "boolean"},
+            "clean_b_complete_pass": {"type": "boolean"},
+            "all_run_ids_match": {"type": "boolean"},
+            "all_parent_bindings_match": {"type": "boolean"},
+            "loss_source_hash_matches": {"type": "boolean"},
+            "synthetic_target_hash_matches": {"type": "boolean"},
+            "all_classification_tensors_four_channels": {"type": "boolean"},
+            "labeled_losses_finite_scalar": {"type": "boolean"},
+            "bf16_backward_passed": {"type": "boolean"},
+            "finite_gradients_passed": {"type": "boolean"},
+            "parameter_update_passed": {"type": "boolean"},
+            "vram_limit_passed": {"type": "boolean"},
+            "checkpoint_round_trips_passed": {"type": "boolean"},
+            "feasibility_ab_deterministic": {"type": "boolean"},
+            "clean_replays_deterministic": {"type": "boolean"},
+            "data_root_unset": {"type": "boolean"},
+            "fresh_evidence_chain": {"type": "boolean"},
+            "historical_evidence_not_used": {"type": "boolean"}
+          }
+        },
+        "status": {"enum": ["PASS", "FAIL"]},
+        "errors": {"type": "array", "items": {"type": "string"}},
+        "interpretation": {
+          "enum": [
+            "WAVE0_A2_PASS / WAVE1_NOT_STARTED",
+            "WAVE0_A2_NORMATIVE_FAIL / WAVE1_FORBIDDEN"
+          ]
+        }
+      }
+    },
+    "metadata": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["run_id"],
+      "properties": {
+        "run_id": {"type": "string", "minLength": 1},
+        "receipt_content_sha256": {"$ref": "#/$defs/sha256"}
+      }
+    }
+  },
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "hash_map": {
+      "type": "object",
+      "additionalProperties": {"$ref": "#/$defs/sha256"}
+    }
+  }
+}

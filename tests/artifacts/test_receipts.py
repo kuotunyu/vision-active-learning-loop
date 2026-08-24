@@ -1123,6 +1123,53 @@ def test_boolean_schema_version_is_rejected(
         atomic_write_receipt(tmp_path / "receipt.json", valid_receipt)
 
 
+def test_wave0_gate_receipt_requires_complete_parent_and_comparison_inventory(
+    tmp_path: Path,
+) -> None:
+    from vision_active_learning_loop.gates.wave0 import (
+        WAVE0_GATE_INVARIANTS,
+        Wave0GateReceipt,
+    )
+
+    stages = (
+        "environment",
+        "model_assets",
+        "model_contract",
+        "feasibility_a",
+        "feasibility_b",
+    )
+    attempts = ("primary", "clean_a", "clean_b")
+    receipt = Wave0GateReceipt(
+        run_id="run-a",
+        parent_receipts={
+            attempt: {stage: "a" * 64 for stage in stages} for attempt in attempts
+        },
+        deterministic_comparisons={
+            f"{attempt}_{suffix}": "b" * 64
+            for attempt in attempts
+            for suffix in ("feasibility_a", "feasibility_b", "replay")
+        },
+        invariants={name: True for name in WAVE0_GATE_INVARIANTS},
+        errors=[],
+    )
+    output = tmp_path / "wave0-gate.json"
+
+    atomic_write_receipt(output, receipt.as_dict())
+
+    stored = json.loads(output.read_text(encoding="utf-8"))
+    validate_receipt(stored, _schema_path("wave0-gate-receipt.schema.json"))
+
+    for field in ("parent_receipts", "deterministic_comparisons"):
+        forged = receipt.as_dict()
+        normative = forged["normative"]
+        assert isinstance(normative, dict)
+        value = normative[field]
+        assert isinstance(value, dict)
+        value.pop(next(iter(value)))
+        with pytest.raises(ReceiptValidationError, match="requires every"):
+            atomic_write_receipt(tmp_path / f"forged-{field}.json", forged)
+
+
 def test_volatile_only_differences_do_not_change_normative_digest(
     valid_receipt: dict[str, object]
 ) -> None:
