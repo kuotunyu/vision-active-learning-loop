@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import copy
 import json
+import shutil
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -281,6 +283,51 @@ def test_gate_cli_is_registered_and_creates_no_capability(
     )
     assert not list(tmp_path.rglob("*.pass"))
     assert not list(tmp_path.rglob("*wave1*"))
+
+
+def test_powershell_writer_publishes_zero_byte_log_for_empty_output(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Catch successful silent stages failing before their audit log is created."""
+    powershell = shutil.which("powershell")
+    if powershell is None:
+        pytest.skip("Windows PowerShell is unavailable")
+
+    project_root = Path(__file__).parents[2]
+    output = tmp_path / "empty-stage.log"
+    monkeypatch.setenv(
+        "VAL_TEST_WAVE0_SCRIPT", str(project_root / "scripts/run_wave0_clean.ps1")
+    )
+    monkeypatch.setenv("VAL_TEST_EMPTY_LOG", str(output))
+    command = r"""
+$ErrorActionPreference = 'Stop'
+$Tokens = $null
+$ParseErrors = $null
+$Ast = [System.Management.Automation.Language.Parser]::ParseFile(
+    $env:VAL_TEST_WAVE0_SCRIPT,
+    [ref]$Tokens,
+    [ref]$ParseErrors
+)
+if ($ParseErrors.Count -ne 0) { throw 'Wave 0 script did not parse' }
+$WriteFunction = $Ast.Find({
+    param($Node)
+    $Node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
+        $Node.Name -eq 'Write-NewText'
+}, $true)
+if ($null -eq $WriteFunction) { throw 'Write-NewText was not found' }
+Invoke-Expression $WriteFunction.Extent.Text
+Write-NewText -Path $env:VAL_TEST_EMPTY_LOG -Text ''
+"""
+
+    completed = subprocess.run(
+        [powershell, "-NoProfile", "-NonInteractive", "-Command", command],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert output.read_bytes() == b""
 
 
 def test_powershell_and_bash_scripts_have_equivalent_fail_closed_stages() -> None:

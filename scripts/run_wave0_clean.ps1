@@ -32,7 +32,10 @@ $AuditRoot = New-Item -ItemType Directory -Path (Join-Path $AttemptRoot 'audit')
 $Worktree = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..')).Path
 
 function Write-NewText {
-    param([Parameter(Mandatory = $true)][string]$Path, [Parameter(Mandatory = $true)][string]$Text)
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][AllowEmptyString()][string]$Text
+    )
     $encoding = [System.Text.UTF8Encoding]::new($false)
     $stream = [System.IO.FileStream]::new(
         $Path,
