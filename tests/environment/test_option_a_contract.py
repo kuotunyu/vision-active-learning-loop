@@ -3,15 +3,14 @@ from pathlib import Path
 
 import pytest
 
-import vision_active_learning_loop.environment as environment
 import vision_active_learning_loop.probes.model_contract as model_contract_probe
+from vision_active_learning_loop import environment
 from vision_active_learning_loop.artifacts import receipts
 from vision_active_learning_loop.artifacts.receipts import (
     ReceiptValidationError,
     validate_receipt,
 )
 from vision_active_learning_loop.environment import EnvironmentContract
-
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 SCHEMA = PROJECT_ROOT / "schemas" / "environment-receipt.schema.json"
@@ -54,6 +53,7 @@ def _run_check(
     artifact_root = tmp_path / "artifacts"
     artifact_root.mkdir()
     output = artifact_root / "wave0" / "receipts" / "environment.json"
+    output.parent.mkdir(parents=True)
     monkeypatch.setenv("VAL_ARTIFACT_ROOT", str(artifact_root))
     monkeypatch.delenv("VAL_DATA_ROOT", raising=False)
     monkeypatch.setattr(environment, "observe_environment", lambda: observation)

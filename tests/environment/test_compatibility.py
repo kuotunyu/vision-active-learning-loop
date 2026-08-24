@@ -6,14 +6,13 @@ from types import SimpleNamespace
 
 import pytest
 
-import vision_active_learning_loop.environment as environment
+from vision_active_learning_loop import environment
 from vision_active_learning_loop.artifacts import receipts
 from vision_active_learning_loop.artifacts.receipts import (
     ReceiptValidationError,
     validate_receipt,
 )
 from vision_active_learning_loop.environment import EnvironmentContract
-
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 BASE_IMAGE_DIGEST = (
@@ -265,6 +264,7 @@ def test_receipt_status_fails_when_runtime_state_is_unsafe(
     config = tmp_path / "wave0.yaml"
     _write_contract(config)
     output = artifact_root / "wave0" / "receipts" / "environment-receipt.json"
+    output.parent.mkdir(parents=True)
     monkeypatch.setenv("VAL_ARTIFACT_ROOT", str(artifact_root))
     monkeypatch.delenv("VAL_DATA_ROOT", raising=False)
     monkeypatch.setattr(
@@ -390,6 +390,7 @@ def test_check_rejects_set_data_root(
     config = tmp_path / "wave0.yaml"
     _write_contract(config)
     output = artifact_root / "wave0" / "receipts" / "receipt.json"
+    output.parent.mkdir(parents=True)
     monkeypatch.setenv("VAL_ARTIFACT_ROOT", str(artifact_root))
     monkeypatch.setenv("VAL_DATA_ROOT", "forbidden")
     monkeypatch.setattr(
@@ -462,6 +463,7 @@ def test_environment_check_publishes_content_addressed_pass_receipt(
     config = tmp_path / "wave0.yaml"
     _write_contract(config)
     output = artifact_root / "wave0" / "receipts" / "environment-receipt.json"
+    output.parent.mkdir(parents=True)
     monkeypatch.setenv("VAL_ARTIFACT_ROOT", str(artifact_root))
     monkeypatch.delenv("VAL_DATA_ROOT", raising=False)
     monkeypatch.setattr(
@@ -544,6 +546,7 @@ def test_environment_receipt_rejects_rehashed_forged_uv_pass(
     config = tmp_path / "wave0.yaml"
     _write_contract(config)
     output = artifact_root / "wave0" / "receipts" / "environment-receipt.json"
+    output.parent.mkdir(parents=True)
     monkeypatch.setenv("VAL_ARTIFACT_ROOT", str(artifact_root))
     monkeypatch.delenv("VAL_DATA_ROOT", raising=False)
     monkeypatch.setattr(
@@ -586,6 +589,7 @@ def test_environment_check_rejects_malformed_gpu_uuid(
     config = tmp_path / "wave0.yaml"
     _write_contract(config)
     output = artifact_root / "wave0" / "receipts" / "environment-receipt.json"
+    output.parent.mkdir(parents=True)
     monkeypatch.setenv("VAL_ARTIFACT_ROOT", str(artifact_root))
     monkeypatch.delenv("VAL_DATA_ROOT", raising=False)
     monkeypatch.setattr(
@@ -621,6 +625,7 @@ def test_environment_receipt_rejects_invented_fail_cause(
     config = tmp_path / "wave0.yaml"
     _write_contract(config)
     output = artifact_root / "wave0" / "receipts" / "environment-receipt.json"
+    output.parent.mkdir(parents=True)
     monkeypatch.setenv("VAL_ARTIFACT_ROOT", str(artifact_root))
     monkeypatch.delenv("VAL_DATA_ROOT", raising=False)
     monkeypatch.setattr(
