@@ -18,6 +18,8 @@
         "processor_sha256",
         "processor_file_sha256",
         "fixture_sha256",
+        "loss_source_sha256",
+        "synthetic_target_sha256",
         "probe_sha256",
         "environment_sha256",
         "environment_receipt_sha256",
@@ -30,6 +32,9 @@
         "processor",
         "environment",
         "observed_shapes",
+        "labeled_observed_shapes",
+        "observed_class_modules",
+        "labeled_loss_hex",
         "invariants",
         "status",
         "errors"
@@ -38,11 +43,13 @@
         "model_sha256": {"const": "fe87a5a30f5daf298d10794c7682a63b6107986f97d6a770ba948d89e4340093"},
         "config_sha256": {"$ref": "#/$defs/sha256"},
         "config_file_sha256": {"const": "0be0da088d7c323ebc32e7b564ffb7c072fd0c6197e0aba67a38d3eaf304e0e2"},
-        "source_sha256": {"const": "5f73e90042b8a0f344e116593b4106a04751167cadb362b8b97db7e70fae5cfe"},
+        "source_sha256": {"const": "8ef5c4fec87fa10ff7ab65f38ad894968f43d0a59ddb86bf8e4da1786c2fe239"},
         "processor_sha256": {"$ref": "#/$defs/sha256"},
         "processor_file_sha256": {"const": "ffb4b9461a1dad746be8f0f9c8330ed7743a1ba5fba4f75c232cd281b3d4c64a"},
         "fixture_sha256": {"const": "4e5eddbb21426c00932c34af331ae3e0ef3d30eb9010da7310b7319e91ec6d0f"},
-        "probe_sha256": {"const": "dd95659c64a60adb459ebecd75ba225281b359fb17d2847596f3705bc4ea43a8"},
+        "loss_source_sha256": {"const": "01c6fe0bdc5965ccf71e7eabfc98a3d05101300bc69dc1773ae3f58ebd7d02e6"},
+        "synthetic_target_sha256": {"const": "abffd232b48a8306af8a35e6e2bce3ad0afa92f6380508f47e9c22b90e87d198"},
+        "probe_sha256": {"const": "42a1df763c5e22cdfdcfc16821ba4c371946a9e81004de2425c369e3e6d5964e"},
         "environment_sha256": {"$ref": "#/$defs/sha256"},
         "environment_receipt_sha256": {"$ref": "#/$defs/sha256"},
         "environment_receipt_content_sha256": {"$ref": "#/$defs/sha256"},
@@ -61,6 +68,7 @@
           "type": "object",
           "additionalProperties": false,
           "required": [
+            "loss/loss_rt_detr.py",
             "models/rt_detr/configuration_rt_detr.py",
             "models/rt_detr/configuration_rt_detr_resnet.py",
             "models/rt_detr/image_processing_rt_detr.py",
@@ -68,6 +76,7 @@
             "models/rt_detr/modeling_rt_detr_resnet.py"
           ],
           "properties": {
+            "loss/loss_rt_detr.py": {"const": {"size": 22057, "sha256": "01c6fe0bdc5965ccf71e7eabfc98a3d05101300bc69dc1773ae3f58ebd7d02e6"}},
             "models/rt_detr/configuration_rt_detr.py": {"const": {"size": 9028, "sha256": "22c1b65c1385d35534658cbf1e91afa7174737134cb6a14ffdaffcd7b7a161a6"}},
             "models/rt_detr/configuration_rt_detr_resnet.py": {"const": {"size": 3538, "sha256": "52a9a3ca8dd648f04bcb5f61b30ab927ca3f15187748736f7714f48af1f1ae73"}},
             "models/rt_detr/image_processing_rt_detr.py": {"const": {"size": 24476, "sha256": "47ae2f0ca25a2763f4f42b27e8a2760bcbb0c2ef07d0f1e97aa779f9219fc558"}},
@@ -194,15 +203,55 @@
         "observed_shapes": {
           "type": "object",
           "additionalProperties": false,
-          "required": ["logits", "pred_boxes", "intermediate_reference_points", "pixel_values", "pixel_mask"],
+          "required": ["logits", "intermediate_logits", "enc_outputs_class", "enc_topk_logits", "pred_boxes", "intermediate_reference_points", "pixel_values", "pixel_mask"],
           "properties": {
             "logits": {"$ref": "#/$defs/shape"},
+            "intermediate_logits": {"$ref": "#/$defs/shape"},
+            "enc_outputs_class": {"$ref": "#/$defs/shape"},
+            "enc_topk_logits": {"$ref": "#/$defs/shape"},
             "pred_boxes": {"$ref": "#/$defs/shape"},
             "intermediate_reference_points": {"$ref": "#/$defs/shape"},
             "pixel_values": {"$ref": "#/$defs/shape"},
             "pixel_mask": {"$ref": "#/$defs/shape"}
           }
         },
+        "labeled_observed_shapes": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["loss", "logits", "intermediate_logits", "enc_outputs_class", "enc_topk_logits", "decoder_auxiliary_logits", "encoder_auxiliary_logits", "denoising_auxiliary_logits"],
+          "properties": {
+            "loss": {"$ref": "#/$defs/shape"},
+            "logits": {"$ref": "#/$defs/shape"},
+            "intermediate_logits": {"$ref": "#/$defs/shape"},
+            "enc_outputs_class": {"$ref": "#/$defs/shape"},
+            "enc_topk_logits": {"$ref": "#/$defs/shape"},
+            "decoder_auxiliary_logits": {"$ref": "#/$defs/shapeList"},
+            "encoder_auxiliary_logits": {"$ref": "#/$defs/shapeList"},
+            "denoising_auxiliary_logits": {"$ref": "#/$defs/shapeList"}
+          }
+        },
+        "observed_class_modules": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["decoder_class_heads", "denoising_class_embed", "encoder_score_head", "num_labels", "id2label", "label2id", "reset_seed", "replacement_order", "deterministic_replay", "structure_preserved", "pretrained_class_rows_reused"],
+          "properties": {
+            "decoder_class_heads": {
+              "type": "array",
+              "items": {"$ref": "#/$defs/decoderClassHead"}
+            },
+            "denoising_class_embed": {"$ref": "#/$defs/denoisingClassEmbed"},
+            "encoder_score_head": {"$ref": "#/$defs/encoderScoreHead"},
+            "num_labels": {"type": "integer"},
+            "id2label": {"type": "object"},
+            "label2id": {"type": "object"},
+            "reset_seed": {"type": "integer"},
+            "replacement_order": {"type": "array", "items": {"type": "string"}},
+            "deterministic_replay": {"type": "boolean"},
+            "structure_preserved": {"type": "boolean"},
+            "pretrained_class_rows_reused": {"type": "boolean"}
+          }
+        },
+        "labeled_loss_hex": {"type": "string"},
         "invariants": {
           "type": "object",
           "additionalProperties": false,
@@ -212,19 +261,32 @@
             "bilinear_resize",
             "bottom_right_padding_is_zero",
             "canonical_environment",
+            "class_reset_preserves_structure",
             "config_decoder_layers_3",
             "config_num_labels_4",
             "config_num_queries_300",
             "decoder_class_heads_four_channels",
+            "decoder_auxiliary_logits_four_channels",
             "decoder_layers_at_least_two",
+            "denoising_auxiliary_logits_four_channels",
+            "denoising_class_embed_five_rows_padding_four",
+            "enc_outputs_class_four_channels",
+            "enc_topk_logits_four_channels",
+            "encoder_auxiliary_logits_four_channels",
+            "encoder_score_head_four_channels",
             "expected_valid_mask_rectangles",
+            "exact_rdd_label_mappings",
             "exact_scipy",
             "final_boxes_are_last_layer",
             "foreground_scores_are_sigmoid",
             "four_class_head_reset_seed_17",
+            "four_class_reset_rng_order_seed_17",
             "inputs_on_selected_cuda_device",
             "intermediate_reference_points_shape",
+            "intermediate_logits_four_channels",
             "label_free_model_call",
+            "labeled_forward_finite_scalar_loss",
+            "labeled_model_call",
             "labels_absent",
             "live_snapshot_matches_asset_receipt",
             "live_transformers_source_matches_asset_receipt",
@@ -232,6 +294,7 @@
             "model_eval_mode",
             "model_on_selected_cuda_device",
             "native_fifth_logit_absent",
+            "no_reachable_non_four_class_logits",
             "normalization_disabled",
             "outputs_on_selected_cuda_device",
             "padding_enabled",
@@ -245,6 +308,7 @@
             "source_final_boxes_last_layer",
             "source_no_query_permutation",
             "source_stack_axis_one",
+            "synthetic_targets_only",
             "torch_cuda_available",
             "torch_inference_mode",
             "torch_selected_gpu_is_canonical"
@@ -255,19 +319,32 @@
             "bilinear_resize": {"type": "boolean"},
             "bottom_right_padding_is_zero": {"type": "boolean"},
             "canonical_environment": {"type": "boolean"},
+            "class_reset_preserves_structure": {"type": "boolean"},
             "config_decoder_layers_3": {"type": "boolean"},
             "config_num_labels_4": {"type": "boolean"},
             "config_num_queries_300": {"type": "boolean"},
             "decoder_class_heads_four_channels": {"type": "boolean"},
+            "decoder_auxiliary_logits_four_channels": {"type": "boolean"},
             "decoder_layers_at_least_two": {"type": "boolean"},
+            "denoising_auxiliary_logits_four_channels": {"type": "boolean"},
+            "denoising_class_embed_five_rows_padding_four": {"type": "boolean"},
+            "enc_outputs_class_four_channels": {"type": "boolean"},
+            "enc_topk_logits_four_channels": {"type": "boolean"},
+            "encoder_auxiliary_logits_four_channels": {"type": "boolean"},
+            "encoder_score_head_four_channels": {"type": "boolean"},
             "expected_valid_mask_rectangles": {"type": "boolean"},
+            "exact_rdd_label_mappings": {"type": "boolean"},
             "exact_scipy": {"type": "boolean"},
             "final_boxes_are_last_layer": {"type": "boolean"},
             "foreground_scores_are_sigmoid": {"type": "boolean"},
             "four_class_head_reset_seed_17": {"type": "boolean"},
+            "four_class_reset_rng_order_seed_17": {"type": "boolean"},
             "inputs_on_selected_cuda_device": {"type": "boolean"},
             "intermediate_reference_points_shape": {"type": "boolean"},
+            "intermediate_logits_four_channels": {"type": "boolean"},
             "label_free_model_call": {"type": "boolean"},
+            "labeled_forward_finite_scalar_loss": {"type": "boolean"},
+            "labeled_model_call": {"type": "boolean"},
             "labels_absent": {"type": "boolean"},
             "live_snapshot_matches_asset_receipt": {"type": "boolean"},
             "live_transformers_source_matches_asset_receipt": {"type": "boolean"},
@@ -275,6 +352,7 @@
             "model_eval_mode": {"type": "boolean"},
             "model_on_selected_cuda_device": {"type": "boolean"},
             "native_fifth_logit_absent": {"type": "boolean"},
+            "no_reachable_non_four_class_logits": {"type": "boolean"},
             "normalization_disabled": {"type": "boolean"},
             "outputs_on_selected_cuda_device": {"type": "boolean"},
             "padding_enabled": {"type": "boolean"},
@@ -288,6 +366,7 @@
             "source_final_boxes_last_layer": {"type": "boolean"},
             "source_no_query_permutation": {"type": "boolean"},
             "source_stack_axis_one": {"type": "boolean"},
+            "synthetic_targets_only": {"type": "boolean"},
             "torch_cuda_available": {"type": "boolean"},
             "torch_inference_mode": {"type": "boolean"},
             "torch_selected_gpu_is_canonical": {"type": "boolean"}
@@ -315,6 +394,53 @@
     "shape": {
       "type": "array",
       "items": {"type": "integer"}
+    },
+    "shapeList": {
+      "type": "array",
+      "minItems": 1,
+      "items": {"$ref": "#/$defs/shape"}
+    },
+    "decoderClassHead": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "replaced", "in_features", "out_features", "bias", "device", "dtype"],
+      "properties": {
+        "path": {"type": "string", "pattern": "^model\\.model\\.decoder\\.class_embed\\[[0-9]+\\]$"},
+        "replaced": {"type": "boolean"},
+        "in_features": {"type": "integer"},
+        "out_features": {"type": "integer"},
+        "bias": {"type": "boolean"},
+        "device": {"type": "string"},
+        "dtype": {"type": "string"}
+      }
+    },
+    "denoisingClassEmbed": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "replaced", "embedding_dim", "num_embeddings", "padding_idx", "device", "dtype"],
+      "properties": {
+        "path": {"const": "model.model.denoising_class_embed"},
+        "replaced": {"type": "boolean"},
+        "embedding_dim": {"type": "integer"},
+        "num_embeddings": {"type": "integer"},
+        "padding_idx": {"type": "integer"},
+        "device": {"type": "string"},
+        "dtype": {"type": "string"}
+      }
+    },
+    "encoderScoreHead": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "replaced", "in_features", "out_features", "bias", "device", "dtype"],
+      "properties": {
+        "path": {"const": "model.model.enc_score_head"},
+        "replaced": {"type": "boolean"},
+        "in_features": {"type": "integer"},
+        "out_features": {"type": "integer"},
+        "bias": {"type": "boolean"},
+        "device": {"type": "string"},
+        "dtype": {"type": "string"}
+      }
     }
   }
 }

@@ -51,9 +51,15 @@ _APPROVED_MODEL_CONTRACT_ASSET_HASHES = {
     "config_file_sha256": "0be0da088d7c323ebc32e7b564ffb7c072fd0c6197e0aba67a38d3eaf304e0e2",
     "processor_file_sha256": "ffb4b9461a1dad746be8f0f9c8330ed7743a1ba5fba4f75c232cd281b3d4c64a",
     "fixture_sha256": "4e5eddbb21426c00932c34af331ae3e0ef3d30eb9010da7310b7319e91ec6d0f",
-    "probe_sha256": "dd95659c64a60adb459ebecd75ba225281b359fb17d2847596f3705bc4ea43a8",
+    "loss_source_sha256": "01c6fe0bdc5965ccf71e7eabfc98a3d05101300bc69dc1773ae3f58ebd7d02e6",
+    "synthetic_target_sha256": "abffd232b48a8306af8a35e6e2bce3ad0afa92f6380508f47e9c22b90e87d198",
+    "probe_sha256": "42a1df763c5e22cdfdcfc16821ba4c371946a9e81004de2425c369e3e6d5964e",
 }
 _APPROVED_RTDETR_SOURCE_FILES = {
+    "loss/loss_rt_detr.py": {
+        "size": 22057,
+        "sha256": "01c6fe0bdc5965ccf71e7eabfc98a3d05101300bc69dc1773ae3f58ebd7d02e6",
+    },
     "models/rt_detr/configuration_rt_detr.py": {
         "size": 9028,
         "sha256": "22c1b65c1385d35534658cbf1e91afa7174737134cb6a14ffdaffcd7b7a161a6",
@@ -180,7 +186,12 @@ def _validate_receipt(
     if not isinstance(metadata, Mapping):
         raise ReceiptValidationError("metadata must be an object")
     receipt_type = receipt.get("receipt_type")
-    if receipt_type in {"environment", "model-contract", "feasibility"}:
+    if receipt_type in {
+        "environment",
+        "model-assets",
+        "model-contract",
+        "feasibility",
+    }:
         run_id = metadata.get("run_id")
         if not isinstance(run_id, str) or not run_id.strip():
             raise ReceiptValidationError("run_id must be non-empty")
@@ -451,16 +462,28 @@ def _validate_model_contract_consistency(
 
     config = normative.get("config")
     shapes = normative.get("observed_shapes")
+    labeled_shapes = normative.get("labeled_observed_shapes")
+    class_modules = normative.get("observed_class_modules")
     processor = normative.get("processor")
     environment = normative.get("environment")
     invariants = normative.get("invariants")
     if not all(
         isinstance(value, Mapping)
-        for value in (config, shapes, processor, environment, invariants)
+        for value in (
+            config,
+            shapes,
+            labeled_shapes,
+            class_modules,
+            processor,
+            environment,
+            invariants,
+        )
     ):
         raise ReceiptValidationError("model-contract evidence must be objects")
     assert isinstance(config, Mapping)
     assert isinstance(shapes, Mapping)
+    assert isinstance(labeled_shapes, Mapping)
+    assert isinstance(class_modules, Mapping)
     assert isinstance(processor, Mapping)
     assert isinstance(environment, Mapping)
     assert isinstance(invariants, Mapping)
@@ -490,13 +513,133 @@ def _validate_model_contract_consistency(
         "errors": [],
     }
     logits_shape = shapes.get("logits")
+    decoder_heads = class_modules.get("decoder_class_heads")
+    denoising = class_modules.get("denoising_class_embed")
+    encoder = class_modules.get("encoder_score_head")
+    if (
+        not isinstance(decoder_heads, list)
+        or not isinstance(denoising, Mapping)
+        or not isinstance(encoder, Mapping)
+    ):
+        raise ReceiptValidationError("class-module evidence is incomplete")
+    expected_paths = [
+        f"model.model.decoder.class_embed[{index}]"
+        for index in range(decoder_layers if type(decoder_layers) is int else 0)
+    ]
+
+    def shape_ends_in_four(value: object, *, rank: int | None = None) -> bool:
+        return (
+            isinstance(value, list)
+            and (rank is None or len(value) == rank)
+            and bool(value)
+            and value[-1] == 4
+        )
+
+    def every_shape_ends_in_four(value: object) -> bool:
+        return (
+            isinstance(value, list)
+            and bool(value)
+            and all(shape_ends_in_four(shape) for shape in value)
+        )
+
+    try:
+        labeled_loss = float.fromhex(str(normative.get("labeled_loss_hex")))
+    except ValueError:
+        labeled_loss = math.nan
+    labeled_loss_finite_scalar = labeled_shapes.get("loss") == [] and math.isfinite(
+        labeled_loss
+    )
+    decoder_heads_four = (
+        len(decoder_heads) == decoder_layers
+        and [head.get("path") for head in decoder_heads] == expected_paths
+        and all(
+            isinstance(head, Mapping)
+            and head.get("replaced") is True
+            and head.get("out_features") == 4
+            and type(head.get("in_features")) is int
+            and head["in_features"] > 0
+            and isinstance(head.get("bias"), bool)
+            and isinstance(head.get("device"), str)
+            and bool(head["device"])
+            and isinstance(head.get("dtype"), str)
+            and bool(head["dtype"])
+            for head in decoder_heads
+        )
+    )
+    denoising_four = (
+        denoising.get("path") == "model.model.denoising_class_embed"
+        and denoising.get("replaced") is True
+        and denoising.get("num_embeddings") == 5
+        and denoising.get("padding_idx") == 4
+        and type(denoising.get("embedding_dim")) is int
+        and denoising["embedding_dim"] > 0
+        and isinstance(denoising.get("device"), str)
+        and bool(denoising["device"])
+        and isinstance(denoising.get("dtype"), str)
+        and bool(denoising["dtype"])
+    )
+    encoder_four = (
+        encoder.get("path") == "model.model.enc_score_head"
+        and encoder.get("replaced") is True
+        and encoder.get("out_features") == 4
+        and type(encoder.get("in_features")) is int
+        and encoder["in_features"] > 0
+        and isinstance(encoder.get("bias"), bool)
+        and isinstance(encoder.get("device"), str)
+        and bool(encoder["device"])
+        and isinstance(encoder.get("dtype"), str)
+        and bool(encoder["dtype"])
+    )
+    exact_mappings = (
+        class_modules.get("num_labels") == 4
+        and class_modules.get("id2label")
+        == {"0": "D00", "1": "D10", "2": "D20", "3": "D40"}
+        and class_modules.get("label2id") == {"D00": 0, "D10": 1, "D20": 2, "D40": 3}
+    )
+    reset_order_proven = (
+        class_modules.get("reset_seed") == 17
+        and class_modules.get("replacement_order")
+        == [
+            *expected_paths,
+            "model.model.denoising_class_embed",
+            "model.model.enc_score_head",
+        ]
+        and class_modules.get("deterministic_replay") is True
+    )
+    label_free_class_shapes = (
+        shape_ends_in_four(shapes.get("logits"), rank=3)
+        and shape_ends_in_four(shapes.get("intermediate_logits"), rank=4)
+        and shape_ends_in_four(shapes.get("enc_outputs_class"), rank=3)
+        and shape_ends_in_four(shapes.get("enc_topk_logits"), rank=3)
+    )
+    labeled_class_shapes = (
+        shape_ends_in_four(labeled_shapes.get("logits"), rank=3)
+        and shape_ends_in_four(labeled_shapes.get("intermediate_logits"), rank=4)
+        and shape_ends_in_four(labeled_shapes.get("enc_outputs_class"), rank=3)
+        and shape_ends_in_four(labeled_shapes.get("enc_topk_logits"), rank=3)
+        and every_shape_ends_in_four(labeled_shapes.get("decoder_auxiliary_logits"))
+        and every_shape_ends_in_four(labeled_shapes.get("encoder_auxiliary_logits"))
+        and every_shape_ends_in_four(labeled_shapes.get("denoising_auxiliary_logits"))
+    )
     expected_evidence: dict[str, bool] = {
         "config_decoder_layers_3": decoder_layers == 3,
         "config_num_queries_300": config.get("num_queries") == 300,
         "config_num_labels_4": config.get("num_labels") == 4,
+        "class_reset_preserves_structure": class_modules.get("structure_preserved")
+        is True,
         "decoder_layers_at_least_two": (
             type(decoder_layers) is int and decoder_layers >= 2
         ),
+        "decoder_class_heads_four_channels": decoder_heads_four,
+        "denoising_class_embed_five_rows_padding_four": denoising_four,
+        "encoder_score_head_four_channels": encoder_four,
+        "exact_rdd_label_mappings": exact_mappings,
+        "four_class_head_reset_seed_17": reset_order_proven,
+        "four_class_reset_rng_order_seed_17": reset_order_proven,
+        "pretrained_coco_head_rows_not_reused": class_modules.get(
+            "pretrained_class_rows_reused"
+        )
+        is False,
         "logits_shape": shapes.get("logits") == [2, 300, 4],
         "pred_boxes_shape": shapes.get("pred_boxes") == [2, 300, 4],
         "intermediate_reference_points_shape": shapes.get(
@@ -508,6 +651,35 @@ def _validate_model_contract_consistency(
             and len(logits_shape) == 3
             and logits_shape[-1] == 4
         ),
+        "intermediate_logits_four_channels": (
+            shape_ends_in_four(shapes.get("intermediate_logits"), rank=4)
+            and shape_ends_in_four(labeled_shapes.get("intermediate_logits"), rank=4)
+        ),
+        "enc_outputs_class_four_channels": (
+            shape_ends_in_four(shapes.get("enc_outputs_class"), rank=3)
+            and shape_ends_in_four(labeled_shapes.get("enc_outputs_class"), rank=3)
+        ),
+        "enc_topk_logits_four_channels": (
+            shape_ends_in_four(shapes.get("enc_topk_logits"), rank=3)
+            and shape_ends_in_four(labeled_shapes.get("enc_topk_logits"), rank=3)
+        ),
+        "decoder_auxiliary_logits_four_channels": every_shape_ends_in_four(
+            labeled_shapes.get("decoder_auxiliary_logits")
+        ),
+        "encoder_auxiliary_logits_four_channels": every_shape_ends_in_four(
+            labeled_shapes.get("encoder_auxiliary_logits")
+        ),
+        "denoising_auxiliary_logits_four_channels": every_shape_ends_in_four(
+            labeled_shapes.get("denoising_auxiliary_logits")
+        ),
+        "no_reachable_non_four_class_logits": (
+            label_free_class_shapes and labeled_class_shapes
+        ),
+        "labeled_forward_finite_scalar_loss": labeled_loss_finite_scalar,
+        "label_free_model_call": label_free_class_shapes,
+        "labeled_model_call": labeled_class_shapes and labeled_loss_finite_scalar,
+        "synthetic_targets_only": normative.get("synthetic_target_sha256")
+        == _APPROVED_MODEL_CONTRACT_ASSET_HASHES["synthetic_target_sha256"],
         "pixel_values_shape": shapes.get("pixel_values") == [2, 3, 640, 640],
         "pixel_mask_shape": shapes.get("pixel_mask") == [2, 640, 640],
         "aspect_preserving_size": processor.get("size")
@@ -610,7 +782,35 @@ def _validate_model_contract_consistency(
             }
         )
 
+    exact_a2_invariants = {
+        "class_reset_preserves_structure",
+        "decoder_class_heads_four_channels",
+        "decoder_auxiliary_logits_four_channels",
+        "denoising_auxiliary_logits_four_channels",
+        "denoising_class_embed_five_rows_padding_four",
+        "enc_outputs_class_four_channels",
+        "enc_topk_logits_four_channels",
+        "encoder_auxiliary_logits_four_channels",
+        "encoder_score_head_four_channels",
+        "exact_rdd_label_mappings",
+        "four_class_head_reset_seed_17",
+        "four_class_reset_rng_order_seed_17",
+        "intermediate_logits_four_channels",
+        "label_free_model_call",
+        "labeled_forward_finite_scalar_loss",
+        "labeled_model_call",
+        "no_reachable_non_four_class_logits",
+        "pretrained_coco_head_rows_not_reused",
+        "synthetic_targets_only",
+    }
     for invariant_name, evidence_passed in expected_evidence.items():
+        if (
+            invariant_name in exact_a2_invariants
+            and invariants.get(invariant_name) is not evidence_passed
+        ):
+            raise ReceiptValidationError(
+                f"{invariant_name} contradicts embedded model-contract evidence"
+            )
         if invariants.get(invariant_name) is True and evidence_passed is not True:
             raise ReceiptValidationError(
                 f"{invariant_name} contradicts embedded model-contract evidence"
@@ -699,6 +899,8 @@ def _validate_feasibility_consistency(
         "source_sha256",
         "processor_sha256",
         "fixture_sha256",
+        "loss_source_sha256",
+        "synthetic_target_sha256",
     ):
         if normative.get(name) != parent_normative.get(name):
             raise ReceiptValidationError(

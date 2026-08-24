@@ -51,12 +51,12 @@ from ..training.checkpoint_io import (
 from .model_contract import (
     _artifact_root,
     _is_link_or_junction,
-    _load_fixture_images,
     _mapping,
     _project_root,
     _required_child_directory,
     _snapshot_root,
     build_contract_processor,
+    load_synthetic_contract_fixture,
 )
 
 
@@ -400,7 +400,6 @@ def run_one_step_smoke(
 
     optimizer = build_optimizer(model)
     scheduler = build_scheduler(optimizer)
-    scaler = None
     sampler_digest = hashlib.sha256(
         json.dumps(list(item_ids), separators=(",", ":")).encode("utf-8")
     ).hexdigest()
@@ -609,41 +608,13 @@ def resolve_cli_paths(
 def _prepare_labeled_batch(
     device: torch.device, model_contract_digest: str
 ) -> tuple[Mapping[str, Any], Mapping[str, list[int]], Mapping[str, object]]:
-    manifest, images = _load_fixture_images(_FIXTURE_MANIFEST)
-    entries = manifest["images"]
+    fixture = load_synthetic_contract_fixture(_FIXTURE_MANIFEST)
+    entries = fixture.manifest["images"]
     assert isinstance(entries, list)
-    annotations = [
-        {
-            "image_id": 1,
-            "annotations": [
-                {
-                    "id": 1,
-                    "image_id": 1,
-                    "category_id": 0,
-                    "bbox": [64.0, 32.0, 192.0, 96.0],
-                    "area": 18432.0,
-                    "iscrowd": 0,
-                }
-            ],
-        },
-        {
-            "image_id": 2,
-            "annotations": [
-                {
-                    "id": 2,
-                    "image_id": 2,
-                    "category_id": 3,
-                    "bbox": [32.0, 128.0, 96.0, 256.0],
-                    "area": 24576.0,
-                    "iscrowd": 0,
-                }
-            ],
-        },
-    ]
     processor = build_contract_processor()
     encoded = processor(
-        images=images,
-        annotations=annotations,
+        images=fixture.images,
+        annotations=fixture.annotations,
         return_tensors="pt",
     )
     batch = {
@@ -766,6 +737,8 @@ def _build_receipt(
             "source_sha256",
             "processor_sha256",
             "fixture_sha256",
+            "loss_source_sha256",
+            "synthetic_target_sha256",
         )
     }
     normative = {

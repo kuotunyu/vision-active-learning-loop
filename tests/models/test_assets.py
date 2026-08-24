@@ -14,11 +14,12 @@ from vision_active_learning_loop.artifacts.digests import (
 from vision_active_learning_loop.artifacts.receipts import (
     ReceiptValidationError,
     atomic_write_receipt,
+    validate_receipt_for_run,
 )
 from vision_active_learning_loop.models.assets import (
     APPROVED_MODELS,
-    AssetMismatch,
     ArtifactBoundaryError,
+    AssetMismatch,
     FileSpec,
     LicenseMismatch,
     PinnedAssetSpec,
@@ -29,7 +30,6 @@ from vision_active_learning_loop.models.assets import (
     main,
     verify_snapshot,
 )
-
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 CONFIG_PATH = PROJECT_ROOT / "configs" / "models" / "pinned-models.yaml"
@@ -95,12 +95,7 @@ def _bind_minimal_test_documents(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def _snapshot_root(tmp_path: Path, repo_id: str, revision: str) -> Path:
-    root = (
-        tmp_path
-        / f"models--{repo_id.replace('/', '--')}"
-        / "snapshots"
-        / revision
-    )
+    root = tmp_path / f"models--{repo_id.replace('/', '--')}" / "snapshots" / revision
     root.mkdir(parents=True)
     return root
 
@@ -144,7 +139,7 @@ def _minimal_model_receipt(spec, metadata_identity):
         },
     }
     metadata_files = {}
-    for name, expected in spec.files.items():
+    for name in spec.files:
         path = f".cache/huggingface/download/{name}.metadata"
         metadata_inventory[path] = {"size": 1, "sha256": "a" * 64}
         etag, blob_id = metadata_identity[name]
@@ -208,8 +203,35 @@ def _valid_model_asset_receipt(specs):
             "status": "PASS",
             "errors": [],
         },
-        "metadata": {"timestamp": "2026-08-23T00:00:00Z"},
+        "metadata": {"timestamp": "2026-08-23T00:00:00Z", "run_id": "run-a"},
     }
+
+
+def test_model_asset_receipt_requires_run_identity(specs, tmp_path: Path) -> None:
+    """Catch publishing model assets outside the fresh run-scoped A2 chain."""
+    receipt = _valid_model_asset_receipt(specs)
+    atomic_write_receipt(tmp_path / "model-assets.json", receipt)
+
+    without_run = _valid_model_asset_receipt(specs)
+    del without_run["metadata"]["run_id"]
+    with pytest.raises(ReceiptValidationError, match="run_id"):
+        atomic_write_receipt(tmp_path / "missing-run.json", without_run)
+
+
+def test_model_asset_parent_from_another_run_is_rejected(specs, tmp_path: Path) -> None:
+    """Catch cross-run asset evidence entering a fresh model-contract chain."""
+    output = tmp_path / "model-assets.json"
+    receipt = _valid_model_asset_receipt(specs)
+    receipt["metadata"]["run_id"] = "run-b"
+    atomic_write_receipt(output, receipt)
+    stored = json.loads(output.read_text(encoding="utf-8"))
+
+    with pytest.raises(ReceiptValidationError, match="run_id"):
+        validate_receipt_for_run(
+            stored,
+            PROJECT_ROOT / "schemas" / "model-asset-receipt.schema.json",
+            "run-a",
+        )
 
 
 def test_rtdetr_weight_hash_is_exact(specs) -> None:
@@ -255,6 +277,36 @@ def test_transformers_source_pins_cannot_be_rewritten_to_match_a_machine(
         load_pinned_asset_specs(modified)
 
 
+def test_rtdetr_loss_source_pin_is_exact(specs) -> None:
+    """Catch omitting or repinning the official labeled-loss implementation."""
+    loss = specs["rtdetr"].source_files["loss/loss_rt_detr.py"]
+
+    assert loss.size == 22_057
+    assert loss.sha256 == (
+        "01c6fe0bdc5965ccf71e7eabfc98a3d05101300bc69dc1773ae3f58ebd7d02e6"
+    )
+
+
+@pytest.mark.parametrize("mutation", ["missing", "altered", "extra"])
+def test_rtdetr_loss_source_inventory_fails_closed(
+    tmp_path: Path, mutation: str
+) -> None:
+    """Catch a missing, changed, or expanded official loss-source inventory."""
+    document = yaml.safe_load(CONFIG_PATH.read_text(encoding="utf-8"))
+    sources = document["transformers"]["source_files"]
+    if mutation == "missing":
+        sources.pop("loss/loss_rt_detr.py", None)
+    elif mutation == "altered":
+        sources.setdefault("loss/loss_rt_detr.py", {})["sha256"] = "0" * 64
+    else:
+        sources["loss/extra.py"] = {"size": 1, "sha256": "0" * 64}
+    modified = tmp_path / "modified.yaml"
+    modified.write_text(yaml.safe_dump(document), encoding="utf-8")
+
+    with pytest.raises(SourceMismatch, match="source pins"):
+        load_pinned_asset_specs(modified)
+
+
 def test_tracked_config_uses_only_logical_external_roots() -> None:
     text = CONFIG_PATH.read_text(encoding="utf-8")
     windows_machine_root = "D:" + chr(92)
@@ -266,9 +318,7 @@ def test_tracked_config_uses_only_logical_external_roots() -> None:
 
 
 def test_dino_license_rejects_noncommercial_card(specs, tmp_path: Path) -> None:
-    root = _snapshot_root(
-        tmp_path, "facebook/dinov2-small", DINO_REVISION
-    )
+    root = _snapshot_root(tmp_path, "facebook/dinov2-small", DINO_REVISION)
     _write_huggingface_metadata(root, specs["dinov2"])
     (root / "README.md").write_text(
         "---\nlicense: cc-by-nc-4.0\n---\n# Historical DINOv2 card\n",
@@ -339,13 +389,7 @@ def test_hf_metadata_with_wrong_etag_is_rejected(specs, tmp_path: Path) -> None:
     spec = specs["rtdetr"]
     root = _snapshot_root(tmp_path, spec.repo_id, spec.revision)
     _write_huggingface_metadata(root, spec)
-    metadata = (
-        root
-        / ".cache"
-        / "huggingface"
-        / "download"
-        / "config.json.metadata"
-    )
+    metadata = root / ".cache" / "huggingface" / "download" / "config.json.metadata"
     lines = metadata.read_text(encoding="utf-8").splitlines()
     lines[1] = "0" * 40
     metadata.write_text("\n".join(lines) + "\n", encoding="utf-8")
@@ -362,9 +406,7 @@ def test_payload_symlink_escape_is_rejected(
     _write_huggingface_metadata(root, spec)
     model_path = root / "model.safetensors"
     model_path.write_bytes(b"outside")
-    (root / "README.md").write_text(
-        "---\nlicense: apache-2.0\n---\n", encoding="utf-8"
-    )
+    (root / "README.md").write_text("---\nlicense: apache-2.0\n---\n", encoding="utf-8")
     (root / "config.json").write_bytes(b"{}")
     (root / "preprocessor_config.json").write_bytes(b"{}")
     original_is_symlink = Path.is_symlink
@@ -469,9 +511,7 @@ def test_model_asset_schema_resolves_nested_file_reference(
     specs, tmp_path: Path
 ) -> None:
     receipt = _valid_model_asset_receipt(specs)
-    del receipt["normative"]["models"]["rtdetr"]["files"]["README.md"][
-        "sha256"
-    ]
+    del receipt["normative"]["models"]["rtdetr"]["files"]["README.md"]["sha256"]
 
     with pytest.raises(ReceiptValidationError, match="sha256"):
         atomic_write_receipt(tmp_path / "receipt.json", receipt)
@@ -522,12 +562,10 @@ def test_model_asset_pass_receipt_binds_license_and_metadata_inventory(
         atomic_write_receipt(tmp_path / "receipt.json", receipt)
 
     receipt = _valid_model_asset_receipt(specs)
-    metadata = receipt["normative"]["models"]["rtdetr"][
-        "huggingface_metadata"
-    ]
-    metadata["inventory"][
-        ".cache/huggingface/download/model.safetensors.metadata"
-    ]["sha256"] = "0" * 64
+    metadata = receipt["normative"]["models"]["rtdetr"]["huggingface_metadata"]
+    metadata["inventory"][".cache/huggingface/download/model.safetensors.metadata"][
+        "sha256"
+    ] = ("0" * 64)
 
     with pytest.raises(ReceiptValidationError, match="metadata inventory"):
         atomic_write_receipt(tmp_path / "receipt.json", receipt)
@@ -567,9 +605,7 @@ def test_cli_failure_writes_fail_receipt_and_exits_two(
     artifact_root = tmp_path.parent / f"assets-{failure_kind}"
     cache_root = artifact_root / "wave0" / "model_cache"
     revision = RTDETR_REVISION if failure_kind != "revision" else "0" * 40
-    root = _snapshot_root(
-        cache_root, "PekingU/rtdetr_r18vd", revision
-    )
+    root = _snapshot_root(cache_root, "PekingU/rtdetr_r18vd", revision)
     _write_huggingface_metadata(root, specs["rtdetr"])
     license_id = "cc-by-nc-4.0" if failure_kind == "license" else "apache-2.0"
     (root / "README.md").write_text(
@@ -590,6 +626,8 @@ def test_cli_failure_writes_fail_receipt_and_exits_two(
             str(cache_root),
             "--output",
             str(output),
+            "--run-id",
+            "run-a",
         ]
     )
 

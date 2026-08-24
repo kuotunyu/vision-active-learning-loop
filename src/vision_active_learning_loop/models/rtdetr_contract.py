@@ -5,7 +5,7 @@ from __future__ import annotations
 import ast
 import math
 import re
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -23,6 +23,9 @@ class ContractUnavailable(RuntimeError):
 @dataclass(frozen=True)
 class RawDetectorOutput:
     logits: torch.Tensor
+    intermediate_logits: torch.Tensor
+    enc_outputs_class: torch.Tensor
+    enc_topk_logits: torch.Tensor
     final_boxes: torch.Tensor
     penultimate_boxes: torch.Tensor
     intermediate_boxes: torch.Tensor
@@ -30,6 +33,28 @@ class RawDetectorOutput:
 
 @dataclass(frozen=True)
 class SourceContractObservation:
+    invariants: Mapping[str, bool]
+
+
+@dataclass(frozen=True)
+class LabeledLossCapture:
+    logits: torch.Tensor
+    outputs_class: torch.Tensor
+    enc_topk_logits: torch.Tensor
+    denoising_meta_values: Mapping[str, Any] | None
+    auxiliary_outputs: Sequence[Mapping[str, torch.Tensor]]
+
+
+@dataclass(frozen=True)
+class LabeledContractObservation:
+    loss_shape: Sequence[int]
+    logits_shape: Sequence[int]
+    intermediate_logits_shape: Sequence[int]
+    enc_outputs_class_shape: Sequence[int]
+    enc_topk_logits_shape: Sequence[int]
+    decoder_auxiliary_shapes: Sequence[Sequence[int]]
+    encoder_auxiliary_shapes: Sequence[Sequence[int]]
+    denoising_auxiliary_shapes: Sequence[Sequence[int]]
     invariants: Mapping[str, bool]
 
 
@@ -160,10 +185,16 @@ def _required_tensor(outputs: Any, name: str) -> torch.Tensor:
 def extract_raw_contract(outputs: Any) -> RawDetectorOutput:
     """Extract raw foreground logits and layer-aligned boxes without postprocessing."""
     logits = _required_tensor(outputs, "logits")
+    intermediate_logits = _required_tensor(outputs, "intermediate_logits")
+    enc_outputs_class = _required_tensor(outputs, "enc_outputs_class")
+    enc_topk_logits = _required_tensor(outputs, "enc_topk_logits")
     final_boxes = _required_tensor(outputs, "pred_boxes")
     intermediate = _required_tensor(outputs, "intermediate_reference_points")
     expected_ranks = (
         ("logits", logits, 3),
+        ("intermediate_logits", intermediate_logits, 4),
+        ("enc_outputs_class", enc_outputs_class, 3),
+        ("enc_topk_logits", enc_topk_logits, 3),
         ("pred_boxes", final_boxes, 3),
         ("intermediate_reference_points", intermediate, 4),
     )
@@ -183,10 +214,18 @@ def extract_raw_contract(outputs: Any) -> RawDetectorOutput:
     if not (
         logits.shape[:2] == final_boxes.shape[:2]
         and logits.shape[:2] == (intermediate.shape[0], intermediate.shape[2])
+        and logits.shape[:2]
+        == (intermediate_logits.shape[0], intermediate_logits.shape[2])
+        and logits.shape[:2] == enc_topk_logits.shape[:2]
+        and logits.shape[0] == enc_outputs_class.shape[0]
+        and intermediate_logits.shape[1] == intermediate.shape[1]
     ):
         raise ContractUnavailable("raw outputs must share batch and query dimensions")
     return RawDetectorOutput(
         logits=logits,
+        intermediate_logits=intermediate_logits,
+        enc_outputs_class=enc_outputs_class,
+        enc_topk_logits=enc_topk_logits,
         final_boxes=final_boxes,
         penultimate_boxes=intermediate[:, -2, :, :],
         intermediate_boxes=intermediate,
@@ -196,6 +235,171 @@ def extract_raw_contract(outputs: Any) -> RawDetectorOutput:
 def foreground_scores(raw: RawDetectorOutput) -> torch.Tensor:
     """Return the four independent focal-loss foreground probabilities."""
     return torch.sigmoid(raw.logits)
+
+
+def run_labeled_contract_forward(
+    model: Any,
+    *,
+    pixel_values: torch.Tensor,
+    pixel_mask: torch.Tensor,
+    labels: Sequence[Mapping[str, torch.Tensor]],
+) -> tuple[Any, LabeledLossCapture]:
+    """Capture the exact tensors consumed by the pinned official labeled loss."""
+    original_loss = model.loss_function
+    capture: LabeledLossCapture | None = None
+
+    def capturing_loss(
+        logits,
+        loss_labels,
+        device,
+        pred_boxes,
+        config,
+        outputs_class=None,
+        outputs_coord=None,
+        enc_topk_logits=None,
+        enc_topk_bboxes=None,
+        denoising_meta_values=None,
+        **kwargs,
+    ):
+        nonlocal capture
+        result = original_loss(
+            logits,
+            loss_labels,
+            device,
+            pred_boxes,
+            config,
+            outputs_class,
+            outputs_coord,
+            enc_topk_logits=enc_topk_logits,
+            enc_topk_bboxes=enc_topk_bboxes,
+            denoising_meta_values=denoising_meta_values,
+            **kwargs,
+        )
+        if not isinstance(outputs_class, torch.Tensor):
+            raise ContractUnavailable("labeled outputs_class is unavailable")
+        if not isinstance(enc_topk_logits, torch.Tensor):
+            raise ContractUnavailable("labeled enc_topk_logits is unavailable")
+        if not isinstance(result, tuple) or len(result) != 3:
+            raise ContractUnavailable("official RT-DETR loss result is unavailable")
+        auxiliary_outputs = result[2]
+        if not isinstance(auxiliary_outputs, Sequence) or isinstance(
+            auxiliary_outputs, (str, bytes)
+        ):
+            raise ContractUnavailable("official auxiliary outputs are unavailable")
+        if any(not isinstance(item, Mapping) for item in auxiliary_outputs):
+            raise ContractUnavailable("official auxiliary output is malformed")
+        capture = LabeledLossCapture(
+            logits=logits,
+            outputs_class=outputs_class,
+            enc_topk_logits=enc_topk_logits,
+            denoising_meta_values=denoising_meta_values,
+            auxiliary_outputs=tuple(auxiliary_outputs),
+        )
+        return result
+
+    model.loss_function = capturing_loss
+    try:
+        outputs = model(
+            pixel_values=pixel_values,
+            pixel_mask=pixel_mask,
+            labels=labels,
+        )
+    finally:
+        model.loss_function = original_loss
+    if capture is None:
+        raise ContractUnavailable("official labeled loss was not called")
+    return outputs, capture
+
+
+def _auxiliary_logits(
+    auxiliary_outputs: Sequence[Mapping[str, torch.Tensor]],
+) -> list[torch.Tensor]:
+    logits: list[torch.Tensor] = []
+    for item in auxiliary_outputs:
+        value = item.get("logits")
+        if not isinstance(value, torch.Tensor) or value.ndim != 3:
+            raise ContractUnavailable("auxiliary logits are unavailable")
+        logits.append(value)
+    return logits
+
+
+def observe_labeled_contract(
+    model: Any, outputs: Any, capture: LabeledLossCapture
+) -> LabeledContractObservation:
+    """Observe every classification tensor reachable by the pinned labeled loss."""
+    _ = model
+    loss = _required_tensor(outputs, "loss")
+    logits = _required_tensor(outputs, "logits")
+    intermediate_logits = _required_tensor(outputs, "intermediate_logits")
+    enc_outputs_class = _required_tensor(outputs, "enc_outputs_class")
+    enc_topk_logits = _required_tensor(outputs, "enc_topk_logits")
+    metadata = capture.denoising_meta_values
+    if not isinstance(metadata, Mapping):
+        raise ContractUnavailable("denoising metadata is unavailable")
+    split = metadata.get("dn_num_split")
+    if (
+        not isinstance(split, Sequence)
+        or isinstance(split, (str, bytes))
+        or len(split) != 2
+        or any(type(value) is not int or value <= 0 for value in split)
+        or sum(split) != capture.outputs_class.shape[2]
+    ):
+        raise ContractUnavailable("dn_num_split is unavailable or malformed")
+    if capture.outputs_class.ndim != 4:
+        raise ContractUnavailable("labeled outputs_class must have rank 4")
+    denoising_class, _ = torch.split(capture.outputs_class, list(split), dim=2)
+    auxiliary_logits = _auxiliary_logits(capture.auxiliary_outputs)
+    decoder_layers = capture.outputs_class.shape[1] - 1
+    if decoder_layers <= 0 or len(auxiliary_logits) != decoder_layers + 1:
+        raise ContractUnavailable("decoder and encoder auxiliaries are incomplete")
+    decoder_auxiliary = auxiliary_logits[:decoder_layers]
+    encoder_auxiliary = auxiliary_logits[decoder_layers:]
+    denoising_auxiliary = [
+        denoising_class[:, index] for index in range(denoising_class.shape[1])
+    ]
+
+    decoder_four = all(tensor.shape[-1] == 4 for tensor in decoder_auxiliary)
+    encoder_four = (
+        all(tensor.shape[-1] == 4 for tensor in encoder_auxiliary)
+        and capture.enc_topk_logits.shape[-1] == 4
+    )
+    denoising_four = all(tensor.shape[-1] == 4 for tensor in denoising_auxiliary)
+    direct_four = all(
+        tensor.shape[-1] == 4
+        for tensor in (
+            logits,
+            intermediate_logits,
+            enc_outputs_class,
+            enc_topk_logits,
+            capture.logits,
+            capture.outputs_class,
+            capture.enc_topk_logits,
+        )
+    )
+    finite_scalar = loss.ndim == 0 and bool(torch.isfinite(loss).item())
+    invariants = {
+        "labeled_logits_four_channels": direct_four,
+        "decoder_auxiliary_logits_four_channels": decoder_four,
+        "encoder_auxiliary_logits_four_channels": encoder_four,
+        "denoising_auxiliary_logits_four_channels": denoising_four,
+        "no_reachable_non_four_class_logits": (
+            direct_four and decoder_four and encoder_four and denoising_four
+        ),
+        "labeled_forward_finite_scalar_loss": finite_scalar,
+    }
+    return LabeledContractObservation(
+        loss_shape=list(loss.shape),
+        logits_shape=list(logits.shape),
+        intermediate_logits_shape=list(intermediate_logits.shape),
+        enc_outputs_class_shape=list(enc_outputs_class.shape),
+        enc_topk_logits_shape=list(enc_topk_logits.shape),
+        decoder_auxiliary_shapes=[list(tensor.shape) for tensor in decoder_auxiliary],
+        encoder_auxiliary_shapes=[list(tensor.shape) for tensor in encoder_auxiliary],
+        denoising_auxiliary_shapes=[
+            list(tensor.shape) for tensor in denoising_auxiliary
+        ],
+        invariants=invariants,
+    )
 
 
 def observe_execution_device(
@@ -301,6 +505,9 @@ def evaluate_raw_contract(
     config_num_labels = int(config.num_labels)
     shapes = {
         "logits": list(raw.logits.shape),
+        "intermediate_logits": list(raw.intermediate_logits.shape),
+        "enc_outputs_class": list(raw.enc_outputs_class.shape),
+        "enc_topk_logits": list(raw.enc_topk_logits.shape),
         "pred_boxes": list(raw.final_boxes.shape),
         "intermediate_reference_points": list(raw.intermediate_boxes.shape),
     }
@@ -314,6 +521,14 @@ def evaluate_raw_contract(
             and all(getattr(head, "out_features", None) == 4 for head in class_heads)
         ),
         "logits_shape": shapes["logits"] == [2, 300, 4],
+        "intermediate_logits_four_channels": shapes["intermediate_logits"]
+        == [2, decoder_layers, 300, 4],
+        "enc_outputs_class_four_channels": (
+            raw.enc_outputs_class.ndim == 3
+            and raw.enc_outputs_class.shape[0] == 2
+            and raw.enc_outputs_class.shape[-1] == 4
+        ),
+        "enc_topk_logits_four_channels": shapes["enc_topk_logits"] == [2, 300, 4],
         "pred_boxes_shape": shapes["pred_boxes"] == [2, 300, 4],
         "intermediate_reference_points_shape": shapes["intermediate_reference_points"]
         == [2, decoder_layers, 300, 4],
@@ -460,5 +675,79 @@ def inspect_rtdetr_source_contract(path: Path) -> SourceContractObservation:
             "source_final_boxes_last_layer": _final_boxes_use_last_layer(
                 detector_forward
             ),
+        }
+    )
+
+
+def inspect_rtdetr_loss_source_contract(path: Path) -> SourceContractObservation:
+    """Prove how the pinned RT-DETR loss constructs every auxiliary branch."""
+    tree = ast.parse(Path(path).read_text(encoding="utf-8"), filename=str(path))
+    loss_function = next(
+        (
+            node
+            for node in tree.body
+            if isinstance(node, ast.FunctionDef)
+            and node.name == "RTDetrForObjectDetectionLoss"
+        ),
+        None,
+    )
+    if loss_function is None:
+        return SourceContractObservation(
+            invariants={
+                "loss_splits_outputs_class_dim_2": False,
+                "loss_builds_decoder_auxiliaries": False,
+                "loss_appends_enc_topk_logits": False,
+                "loss_builds_denoising_auxiliaries": False,
+            }
+        )
+    calls = [node for node in ast.walk(loss_function) if isinstance(node, ast.Call)]
+    split_observed = any(
+        isinstance(call.func, ast.Attribute)
+        and call.func.attr == "split"
+        and call.args
+        and _is_name(call.args[0], "outputs_class")
+        and "dn_num_split" in ast.unparse(call)
+        and any(
+            keyword.arg == "dim"
+            and isinstance(keyword.value, ast.Constant)
+            and keyword.value.value == 2
+            for keyword in call.keywords
+        )
+        for call in calls
+    )
+    decoder_auxiliary_observed = any(
+        (
+            (_is_name(call.func, "_set_aux_loss"))
+            or (
+                isinstance(call.func, ast.Attribute)
+                and call.func.attr == "_set_aux_loss"
+            )
+        )
+        and "outputs_class[:, :-1]" in ast.unparse(call)
+        for call in calls
+    )
+    encoder_auxiliary_observed = any(
+        isinstance(call.func, ast.Attribute)
+        and call.func.attr == "extend"
+        and "enc_topk_logits" in ast.unparse(call)
+        for call in calls
+    )
+    denoising_auxiliary_observed = any(
+        (
+            (_is_name(call.func, "_set_aux_loss"))
+            or (
+                isinstance(call.func, ast.Attribute)
+                and call.func.attr == "_set_aux_loss"
+            )
+        )
+        and "dn_out_class" in ast.unparse(call)
+        for call in calls
+    )
+    return SourceContractObservation(
+        invariants={
+            "loss_splits_outputs_class_dim_2": split_observed,
+            "loss_builds_decoder_auxiliaries": decoder_auxiliary_observed,
+            "loss_appends_enc_topk_logits": encoder_auxiliary_observed,
+            "loss_builds_denoising_auxiliaries": denoising_auxiliary_observed,
         }
     )

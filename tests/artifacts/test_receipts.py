@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-import vision_active_learning_loop.artifacts.receipts as receipts
+from vision_active_learning_loop.artifacts import receipts
 from vision_active_learning_loop.artifacts.digests import canonical_json_sha256
 from vision_active_learning_loop.artifacts.receipts import (
     ReceiptValidationError,
@@ -17,7 +17,6 @@ from vision_active_learning_loop.artifacts.receipts import (
     validate_receipt,
 )
 
-
 HASH = "a" * 64
 MODEL_CONTRACT_INVARIANTS = (
     "aspect_preserving_size",
@@ -25,19 +24,32 @@ MODEL_CONTRACT_INVARIANTS = (
     "bilinear_resize",
     "bottom_right_padding_is_zero",
     "canonical_environment",
+    "class_reset_preserves_structure",
     "config_decoder_layers_3",
     "config_num_labels_4",
     "config_num_queries_300",
     "decoder_class_heads_four_channels",
+    "decoder_auxiliary_logits_four_channels",
     "decoder_layers_at_least_two",
+    "denoising_auxiliary_logits_four_channels",
+    "denoising_class_embed_five_rows_padding_four",
+    "enc_outputs_class_four_channels",
+    "enc_topk_logits_four_channels",
+    "encoder_auxiliary_logits_four_channels",
+    "encoder_score_head_four_channels",
     "expected_valid_mask_rectangles",
+    "exact_rdd_label_mappings",
     "exact_scipy",
     "final_boxes_are_last_layer",
     "foreground_scores_are_sigmoid",
     "four_class_head_reset_seed_17",
+    "four_class_reset_rng_order_seed_17",
     "inputs_on_selected_cuda_device",
     "intermediate_reference_points_shape",
+    "intermediate_logits_four_channels",
     "label_free_model_call",
+    "labeled_forward_finite_scalar_loss",
+    "labeled_model_call",
     "labels_absent",
     "live_snapshot_matches_asset_receipt",
     "live_transformers_source_matches_asset_receipt",
@@ -45,6 +57,7 @@ MODEL_CONTRACT_INVARIANTS = (
     "model_eval_mode",
     "model_on_selected_cuda_device",
     "native_fifth_logit_absent",
+    "no_reachable_non_four_class_logits",
     "normalization_disabled",
     "outputs_on_selected_cuda_device",
     "padding_enabled",
@@ -58,6 +71,7 @@ MODEL_CONTRACT_INVARIANTS = (
     "source_final_boxes_last_layer",
     "source_no_query_permutation",
     "source_stack_axis_one",
+    "synthetic_targets_only",
     "torch_cuda_available",
     "torch_inference_mode",
     "torch_selected_gpu_is_canonical",
@@ -138,7 +152,9 @@ def build_valid_model_contract_receipt() -> dict[str, object]:
             "processor_sha256": HASH,
             "processor_file_sha256": "ffb4b9461a1dad746be8f0f9c8330ed7743a1ba5fba4f75c232cd281b3d4c64a",
             "fixture_sha256": "4e5eddbb21426c00932c34af331ae3e0ef3d30eb9010da7310b7319e91ec6d0f",
-            "probe_sha256": "dd95659c64a60adb459ebecd75ba225281b359fb17d2847596f3705bc4ea43a8",
+            "loss_source_sha256": "01c6fe0bdc5965ccf71e7eabfc98a3d05101300bc69dc1773ae3f58ebd7d02e6",
+            "synthetic_target_sha256": "abffd232b48a8306af8a35e6e2bce3ad0afa92f6380508f47e9c22b90e87d198",
+            "probe_sha256": "42a1df763c5e22cdfdcfc16821ba4c371946a9e81004de2425c369e3e6d5964e",
             "environment_sha256": HASH,
             "environment_receipt_sha256": receipts._stored_receipt_sha256(
                 parent_environment
@@ -153,6 +169,10 @@ def build_valid_model_contract_receipt() -> dict[str, object]:
             },
             "transformers_version": "5.15.0",
             "source_files": {
+                "loss/loss_rt_detr.py": {
+                    "size": 22057,
+                    "sha256": "01c6fe0bdc5965ccf71e7eabfc98a3d05101300bc69dc1773ae3f58ebd7d02e6",
+                },
                 "models/rt_detr/configuration_rt_detr.py": {
                     "size": 9028,
                     "sha256": "22c1b65c1385d35534658cbf1e91afa7174737134cb6a14ffdaffcd7b7a161a6",
@@ -233,11 +253,75 @@ def build_valid_model_contract_receipt() -> dict[str, object]:
             },
             "observed_shapes": {
                 "logits": [2, 300, 4],
+                "intermediate_logits": [2, 3, 300, 4],
+                "enc_outputs_class": [2, 8400, 4],
+                "enc_topk_logits": [2, 300, 4],
                 "pred_boxes": [2, 300, 4],
                 "intermediate_reference_points": [2, 3, 300, 4],
                 "pixel_values": [2, 3, 640, 640],
                 "pixel_mask": [2, 640, 640],
             },
+            "labeled_observed_shapes": {
+                "loss": [],
+                "logits": [2, 300, 4],
+                "intermediate_logits": [2, 3, 300, 4],
+                "enc_outputs_class": [2, 8400, 4],
+                "enc_topk_logits": [2, 300, 4],
+                "decoder_auxiliary_logits": [[2, 300, 4], [2, 300, 4]],
+                "encoder_auxiliary_logits": [[2, 300, 4]],
+                "denoising_auxiliary_logits": [
+                    [2, 200, 4],
+                    [2, 200, 4],
+                    [2, 200, 4],
+                ],
+            },
+            "observed_class_modules": {
+                "decoder_class_heads": [
+                    {
+                        "path": f"model.model.decoder.class_embed[{index}]",
+                        "replaced": True,
+                        "in_features": 256,
+                        "out_features": 4,
+                        "bias": True,
+                        "device": "cuda:0",
+                        "dtype": "torch.float32",
+                    }
+                    for index in range(3)
+                ],
+                "denoising_class_embed": {
+                    "path": "model.model.denoising_class_embed",
+                    "replaced": True,
+                    "embedding_dim": 256,
+                    "num_embeddings": 5,
+                    "padding_idx": 4,
+                    "device": "cuda:0",
+                    "dtype": "torch.float32",
+                },
+                "encoder_score_head": {
+                    "path": "model.model.enc_score_head",
+                    "replaced": True,
+                    "in_features": 256,
+                    "out_features": 4,
+                    "bias": True,
+                    "device": "cuda:0",
+                    "dtype": "torch.float32",
+                },
+                "num_labels": 4,
+                "id2label": {"0": "D00", "1": "D10", "2": "D20", "3": "D40"},
+                "label2id": {"D00": 0, "D10": 1, "D20": 2, "D40": 3},
+                "reset_seed": 17,
+                "replacement_order": [
+                    "model.model.decoder.class_embed[0]",
+                    "model.model.decoder.class_embed[1]",
+                    "model.model.decoder.class_embed[2]",
+                    "model.model.denoising_class_embed",
+                    "model.model.enc_score_head",
+                ],
+                "deterministic_replay": True,
+                "structure_preserved": True,
+                "pretrained_class_rows_reused": False,
+            },
+            "labeled_loss_hex": (3.25).hex(),
             "invariants": {name: True for name in MODEL_CONTRACT_INVARIANTS},
             "status": "PASS",
             "errors": [],
@@ -259,6 +343,98 @@ def build_valid_model_contract_receipt() -> dict[str, object]:
 @pytest.fixture
 def valid_receipt() -> dict[str, object]:
     return build_valid_model_contract_receipt()
+
+
+def test_model_contract_schema_accepts_complete_a2_evidence(
+    tmp_path: Path, valid_receipt: dict[str, object]
+) -> None:
+    """Catch a schema that cannot represent the approved complete A2 proof."""
+    atomic_write_receipt(tmp_path / "model-contract.json", valid_receipt)
+
+
+@pytest.mark.parametrize(
+    ("field", "nested"),
+    [
+        ("loss_source_sha256", None),
+        ("synthetic_target_sha256", None),
+        ("observed_class_modules", None),
+        ("labeled_observed_shapes", None),
+        ("invariants", "encoder_score_head_four_channels"),
+    ],
+)
+def test_model_contract_schema_rejects_missing_a2_evidence(
+    tmp_path: Path,
+    valid_receipt: dict[str, object],
+    field: str,
+    nested: str | None,
+) -> None:
+    """Catch accepting the narrower historical Option A receipt as A2."""
+    normative = valid_receipt["normative"]
+    assert isinstance(normative, dict)
+    if nested is None:
+        del normative[field]
+    else:
+        child = normative[field]
+        assert isinstance(child, dict)
+        del child[nested]
+
+    with pytest.raises(ReceiptValidationError):
+        atomic_write_receipt(tmp_path / "model-contract.json", valid_receipt)
+
+
+def test_model_contract_rejects_self_consistent_eighty_channel_evidence(
+    tmp_path: Path, valid_receipt: dict[str, object]
+) -> None:
+    """Catch a fully re-described COCO-width contract retaining PASS booleans."""
+    normative = valid_receipt["normative"]
+    assert isinstance(normative, dict)
+    for shapes_name in ("observed_shapes", "labeled_observed_shapes"):
+        shapes = normative[shapes_name]
+        assert isinstance(shapes, dict)
+        for name in (
+            "logits",
+            "intermediate_logits",
+            "enc_outputs_class",
+            "enc_topk_logits",
+        ):
+            shapes[name][-1] = 80
+    labeled = normative["labeled_observed_shapes"]
+    assert isinstance(labeled, dict)
+    for name in (
+        "decoder_auxiliary_logits",
+        "encoder_auxiliary_logits",
+        "denoising_auxiliary_logits",
+    ):
+        for shape in labeled[name]:
+            shape[-1] = 80
+    modules = normative["observed_class_modules"]
+    assert isinstance(modules, dict)
+    for head in modules["decoder_class_heads"]:
+        head["out_features"] = 80
+    modules["encoder_score_head"]["out_features"] = 80
+
+    with pytest.raises(ReceiptValidationError, match="four_channels|non_four"):
+        atomic_write_receipt(tmp_path / "model-contract.json", valid_receipt)
+
+
+@pytest.mark.parametrize(
+    ("loss_shape", "loss_hex"),
+    [([1], (3.25).hex()), ([], float("nan").hex()), ([], float("inf").hex())],
+)
+def test_model_contract_rejects_false_finite_scalar_loss_claim(
+    tmp_path: Path,
+    valid_receipt: dict[str, object],
+    loss_shape: list[int],
+    loss_hex: str,
+) -> None:
+    """Catch a finite-scalar invariant detached from the observed labeled loss."""
+    normative = valid_receipt["normative"]
+    assert isinstance(normative, dict)
+    normative["labeled_observed_shapes"]["loss"] = loss_shape
+    normative["labeled_loss_hex"] = loss_hex
+
+    with pytest.raises(ReceiptValidationError, match="finite_scalar"):
+        atomic_write_receipt(tmp_path / "model-contract.json", valid_receipt)
 
 
 def test_invalid_update_preserves_existing_valid_receipt(

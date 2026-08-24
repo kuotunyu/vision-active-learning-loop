@@ -1,18 +1,20 @@
 import copy
-import importlib.util
 import hashlib
+import importlib.util
+import json
 from pathlib import Path
 
 import pytest
 import torch
 from PIL import Image
 
+import vision_active_learning_loop.probes.model_contract as model_contract_probe
 from vision_active_learning_loop.probes.model_contract import (
+    ModelContractInputError,
     build_contract_processor,
     observe_processor_contract,
     prepare_contract_batch,
 )
-
 
 FIXTURE_MANIFEST = (
     Path(__file__).resolve().parents[2]
@@ -27,7 +29,9 @@ FIXTURE_SCRIPT = (
 
 
 def _fixture_generator():
-    spec = importlib.util.spec_from_file_location("wave0_fixture_generator", FIXTURE_SCRIPT)
+    spec = importlib.util.spec_from_file_location(
+        "wave0_fixture_generator", FIXTURE_SCRIPT
+    )
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
@@ -51,6 +55,90 @@ def test_fixture_manifest_binds_exact_pixels() -> None:
 
     observed = [hashlib.sha256(image.tobytes()).hexdigest() for image in fixtures]
     assert observed == [item["pixel_sha256"] for item in manifest["images"]]
+
+
+def test_registered_synthetic_targets_have_exact_digests_and_geometry() -> None:
+    """Catch drift or duplication in the only labels allowed in Wave 0."""
+    fixture = model_contract_probe.load_synthetic_contract_fixture(FIXTURE_MANIFEST)
+
+    assert fixture.input_sha256 == (
+        "4e5eddbb21426c00932c34af331ae3e0ef3d30eb9010da7310b7319e91ec6d0f"
+    )
+    assert fixture.target_sha256 == (
+        "abffd232b48a8306af8a35e6e2bce3ad0afa92f6380508f47e9c22b90e87d198"
+    )
+    assert fixture.annotations == [
+        {
+            "fixture_id": "wide-gradient",
+            "image_id": 1,
+            "annotations": [
+                {
+                    "id": 1,
+                    "image_id": 1,
+                    "category_id": 0,
+                    "bbox": [64.0, 32.0, 192.0, 96.0],
+                    "area": 18432.0,
+                    "iscrowd": 0,
+                }
+            ],
+        },
+        {
+            "fixture_id": "tall-checker",
+            "image_id": 2,
+            "annotations": [
+                {
+                    "id": 2,
+                    "image_id": 2,
+                    "category_id": 3,
+                    "bbox": [32.0, 128.0, 96.0, 256.0],
+                    "area": 24576.0,
+                    "iscrowd": 0,
+                }
+            ],
+        },
+    ]
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "category_out_of_range",
+        "fixture_image_mismatch",
+        "box_outside_image",
+        "wrong_area",
+        "extra_image",
+        "extra_target",
+        "input_digest_drift",
+        "target_digest_drift",
+    ],
+)
+def test_registered_synthetic_target_rejects_invalid_or_drifted_manifest(
+    tmp_path: Path, mutation: str
+) -> None:
+    """Catch malformed or self-consistently edited synthetic target evidence."""
+    document = json.loads(FIXTURE_MANIFEST.read_text(encoding="utf-8"))
+    if mutation == "category_out_of_range":
+        document["targets"][0]["annotations"][0]["category_id"] = 4
+    elif mutation == "fixture_image_mismatch":
+        document["targets"][0]["image_id"] = 2
+    elif mutation == "box_outside_image":
+        document["targets"][0]["annotations"][0]["bbox"] = [600.0, 1.0, 50.0, 2.0]
+    elif mutation == "wrong_area":
+        document["targets"][0]["annotations"][0]["area"] = 1.0
+    elif mutation == "extra_image":
+        document["images"].append(copy.deepcopy(document["images"][0]))
+    elif mutation == "extra_target":
+        document["targets"].append(copy.deepcopy(document["targets"][0]))
+    elif mutation == "input_digest_drift":
+        document["images"][0]["pixel_sha256"] = "0" * 64
+    elif mutation == "target_digest_drift":
+        document["targets"][0]["annotations"][0]["bbox"][0] = 65.0
+        document["targets"][0]["annotations"][0]["area"] = 192.0 * 96.0
+    path = tmp_path / "fixture-manifest.json"
+    path.write_text(json.dumps(document), encoding="utf-8")
+
+    with pytest.raises(ModelContractInputError):
+        model_contract_probe.load_synthetic_contract_fixture(path)
 
 
 def test_fixture_materialization_is_confined_to_wave0(

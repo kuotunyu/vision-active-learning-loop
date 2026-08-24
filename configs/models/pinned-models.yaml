@@ -6,6 +6,9 @@ offline_verification_default: true
 transformers:
   version: 5.15.0
   source_files:
+    loss/loss_rt_detr.py:
+      size: 22057
+      sha256: 01c6fe0bdc5965ccf71e7eabfc98a3d05101300bc69dc1773ae3f58ebd7d02e6
     models/bit/image_processing_bit.py:
       size: 1260
       sha256: 62ad10de9929cb0a5722d9a9c93d90e6a38f7e4c05b50811d8492fb1ed40f2eb

@@ -3,16 +3,33 @@
 from __future__ import annotations
 
 import argparse
-import json
 import hashlib
+import json
 import os
 import sys
-from collections.abc import Sequence
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
 from PIL import Image
+
+_APPROVED_INPUT_SHA256 = (
+    "4e5eddbb21426c00932c34af331ae3e0ef3d30eb9010da7310b7319e91ec6d0f"
+)
+_APPROVED_TARGET_SHA256 = (
+    "abffd232b48a8306af8a35e6e2bce3ad0afa92f6380508f47e9c22b90e87d198"
+)
+
+
+def _canonical_json_sha256(value: Mapping[str, Any]) -> str:
+    payload = json.dumps(
+        value,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+        allow_nan=False,
+    ).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
 
 
 def _is_link_or_junction(path: Path) -> bool:
@@ -24,7 +41,7 @@ def load_manifest(path: Path) -> Mapping[str, Any]:
     """Load the tracked synthetic-fixture description."""
     document = json.loads(Path(path).read_text(encoding="utf-8"))
     if not isinstance(document, Mapping):
-        raise ValueError("fixture manifest must be an object")
+        raise TypeError("fixture manifest must be an object")
     if document.get("schema_version") != 1:
         raise ValueError("fixture manifest schema_version must be 1")
     if document.get("fixture_set") != "wave0-rtdetr-contract":
@@ -32,9 +49,26 @@ def load_manifest(path: Path) -> Mapping[str, Any]:
     images = document.get("images")
     if not isinstance(images, list) or len(images) != 2:
         raise ValueError("fixture manifest requires exactly two images")
+    targets = document.get("targets")
+    if not isinstance(targets, list) or len(targets) != 2:
+        raise ValueError("fixture manifest requires exactly two targets")
+    input_document = {
+        "schema_version": document["schema_version"],
+        "fixture_set": document["fixture_set"],
+        "images": images,
+    }
+    target_document = {
+        "schema_version": document["schema_version"],
+        "fixture_set": document["fixture_set"],
+        "targets": targets,
+    }
+    if _canonical_json_sha256(input_document) != _APPROVED_INPUT_SHA256:
+        raise ValueError("fixture input digest differs")
+    if _canonical_json_sha256(target_document) != _APPROVED_TARGET_SHA256:
+        raise ValueError("fixture target digest differs")
     for item in images:
         if not isinstance(item, Mapping):
-            raise ValueError("fixture image must be an object")
+            raise TypeError("fixture image must be an object")
         filename = item.get("filename")
         if (
             not isinstance(filename, str)
@@ -138,9 +172,7 @@ def _prepare_destination(wave_root: Path, output_root: Path) -> Path:
     return destination
 
 
-def materialize_fixtures(
-    manifest: Mapping[str, Any], output_root: Path
-) -> list[Path]:
+def materialize_fixtures(manifest: Mapping[str, Any], output_root: Path) -> list[Path]:
     """Write exact PPM fixtures only below ``VAL_ARTIFACT_ROOT/wave0``."""
     wave_root = _external_wave_root()
     destination = _prepare_destination(wave_root, output_root)
@@ -163,7 +195,9 @@ def materialize_fixtures(
         else:
             partial = target.with_name(f"{target.name}.partial")
             if partial.exists() or _is_link_or_junction(partial):
-                raise ValueError(f"preexisting fixture partial is forbidden: {partial.name}")
+                raise ValueError(
+                    f"preexisting fixture partial is forbidden: {partial.name}"
+                )
             with partial.open("xb") as handle:
                 handle.write(expected)
                 handle.flush()
@@ -180,13 +214,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     arguments = parser.parse_args(argv)
     output_root = arguments.output_root
     if output_root is None:
-        output_root = (
-            _external_wave_root() / "fixtures" / "synthetic" / "wave0"
-        )
+        output_root = _external_wave_root() / "fixtures" / "synthetic" / "wave0"
     try:
-        generated = materialize_fixtures(
-            load_manifest(arguments.manifest), output_root
-        )
+        generated = materialize_fixtures(load_manifest(arguments.manifest), output_root)
     except (OSError, ValueError, KeyError, json.JSONDecodeError) as error:
         print(error, file=sys.stderr)
         return 2

@@ -10,9 +10,11 @@ from types import SimpleNamespace
 import pytest
 import torch
 from torch import nn
+from transformers.loss.loss_rt_detr import RTDetrForObjectDetectionLoss
 from transformers.models.rt_detr.modeling_rt_detr import RTDetrForObjectDetection
 
 import vision_active_learning_loop.artifacts.receipts as receipt_module
+import vision_active_learning_loop.models.rtdetr_contract as rtdetr_contract_module
 import vision_active_learning_loop.probes.model_contract as model_contract_probe
 from vision_active_learning_loop.artifacts.digests import canonical_json_sha256
 from vision_active_learning_loop.artifacts.receipts import (
@@ -39,6 +41,7 @@ from vision_active_learning_loop.models.rtdetr_contract import (
 )
 from vision_active_learning_loop.probes.model_contract import (
     REQUIRED_MODEL_CONTRACT_INVARIANTS,
+    REQUIRED_MODEL_CONTRACT_SHAPES,
     ModelContractInputError,
     ModelContractReceipt,
     ProcessorContractObservation,
@@ -62,11 +65,23 @@ FIXTURE_MANIFEST = (
 
 def _outputs(*, queries: int = 300, labels: int = 4, decoder_layers: int = 3):
     logits = torch.linspace(-2, 2, 2 * queries * labels).reshape(2, queries, labels)
+    intermediate_logits = torch.linspace(
+        -3,
+        3,
+        2 * decoder_layers * queries * labels,
+    ).reshape(2, decoder_layers, queries, labels)
+    enc_outputs_class = torch.linspace(-1, 1, 2 * 400 * labels).reshape(2, 400, labels)
+    enc_topk_logits = torch.linspace(-1, 1, 2 * queries * labels).reshape(
+        2, queries, labels
+    )
     intermediate = torch.linspace(0, 1, 2 * decoder_layers * queries * 4).reshape(
         2, decoder_layers, queries, 4
     )
     return SimpleNamespace(
         logits=logits,
+        intermediate_logits=intermediate_logits,
+        enc_outputs_class=enc_outputs_class,
+        enc_topk_logits=enc_topk_logits,
         pred_boxes=intermediate[:, -1],
         intermediate_reference_points=intermediate,
     )
@@ -233,6 +248,9 @@ def test_extract_raw_contract_preserves_decoder_layer_and_query_axes() -> None:
 
     assert isinstance(raw, RawDetectorOutput)
     assert torch.equal(raw.logits, outputs.logits)
+    assert torch.equal(raw.intermediate_logits, outputs.intermediate_logits)
+    assert torch.equal(raw.enc_outputs_class, outputs.enc_outputs_class)
+    assert torch.equal(raw.enc_topk_logits, outputs.enc_topk_logits)
     assert torch.equal(raw.final_boxes, outputs.intermediate_reference_points[:, -1])
     assert torch.equal(
         raw.penultimate_boxes, outputs.intermediate_reference_points[:, -2]
@@ -247,6 +265,231 @@ def test_extract_raw_contract_rejects_unobservable_intermediate_boxes() -> None:
 
     with pytest.raises(ContractUnavailable, match="intermediate_reference_points"):
         extract_raw_contract(outputs)
+
+
+@pytest.mark.parametrize(
+    "field",
+    ["intermediate_logits", "enc_outputs_class", "enc_topk_logits"],
+)
+def test_extract_raw_contract_rejects_missing_classification_tensor(field: str) -> None:
+    """Catch a reachable label-free classification tensor becoming unobservable."""
+    outputs = _outputs()
+    setattr(outputs, field, None)
+
+    with pytest.raises(ContractUnavailable, match=field):
+        extract_raw_contract(outputs)
+
+
+@pytest.mark.parametrize(
+    ("field", "width"),
+    [
+        (field, width)
+        for field in ("intermediate_logits", "enc_outputs_class", "enc_topk_logits")
+        for width in (80, 5, 3, 1)
+    ],
+)
+def test_label_free_non_four_class_tensor_fails_contract(
+    field: str, width: int
+) -> None:
+    """Catch an encoder or intermediate tensor escaping four-class validation."""
+    outputs = _outputs()
+    if field == "intermediate_logits":
+        setattr(outputs, field, torch.zeros(2, 3, 300, width))
+    elif field == "enc_outputs_class":
+        setattr(outputs, field, torch.zeros(2, 400, width))
+    else:
+        setattr(outputs, field, torch.zeros(2, 300, width))
+
+    raw = extract_raw_contract(outputs)
+    observation = evaluate_raw_contract(
+        _model(), raw, foreground_scores(raw), _approved_source()
+    )
+
+    assert observation.status == "FAIL"
+    assert observation.invariants[f"{field}_four_channels"] is False
+
+
+def _labeled_observation_inputs(
+    *,
+    decoder_aux_width: int = 4,
+    encoder_aux_width: int = 4,
+    outputs_class_width: int = 4,
+    loss: torch.Tensor | None = None,
+    denoising_meta_values: dict[str, object] | None = None,
+):
+    if loss is None:
+        loss = torch.tensor(1.25)
+    if denoising_meta_values is None:
+        denoising_meta_values = {"dn_num_split": [10, 300], "dn_num_group": 1}
+    auxiliary_outputs = [
+        {"logits": torch.zeros(2, 300, decoder_aux_width)},
+        {"logits": torch.zeros(2, 300, decoder_aux_width)},
+        {"logits": torch.zeros(2, 300, encoder_aux_width)},
+    ]
+    capture = rtdetr_contract_module.LabeledLossCapture(
+        logits=torch.zeros(2, 310, outputs_class_width),
+        outputs_class=torch.zeros(2, 3, 310, outputs_class_width),
+        enc_topk_logits=torch.zeros(2, 300, encoder_aux_width),
+        denoising_meta_values=denoising_meta_values,
+        auxiliary_outputs=auxiliary_outputs,
+    )
+    outputs = SimpleNamespace(
+        loss=loss,
+        logits=torch.zeros(2, 310, 4),
+        intermediate_logits=torch.zeros(2, 3, 310, 4),
+        enc_outputs_class=torch.zeros(2, 400, 4),
+        enc_topk_logits=torch.zeros(2, 300, 4),
+    )
+    return outputs, capture
+
+
+def test_labeled_contract_observes_every_loss_reachable_auxiliary() -> None:
+    """Catch omitting decoder, encoder, or denoising logits from the contract."""
+    outputs, capture = _labeled_observation_inputs()
+
+    observation = rtdetr_contract_module.observe_labeled_contract(
+        object(), outputs, capture
+    )
+
+    assert observation.loss_shape == []
+    assert observation.logits_shape == [2, 310, 4]
+    assert observation.intermediate_logits_shape == [2, 3, 310, 4]
+    assert observation.enc_outputs_class_shape == [2, 400, 4]
+    assert observation.enc_topk_logits_shape == [2, 300, 4]
+    assert observation.decoder_auxiliary_shapes == [[2, 300, 4], [2, 300, 4]]
+    assert observation.encoder_auxiliary_shapes == [[2, 300, 4]]
+    assert observation.denoising_auxiliary_shapes == [
+        [2, 10, 4],
+        [2, 10, 4],
+        [2, 10, 4],
+    ]
+    assert all(observation.invariants.values())
+
+
+@pytest.mark.parametrize(
+    ("attack", "kwargs"),
+    [
+        ("decoder", {"decoder_aux_width": 80}),
+        ("encoder", {"encoder_aux_width": 80}),
+        ("denoising", {"outputs_class_width": 80}),
+    ],
+)
+def test_labeled_reachable_non_four_class_auxiliary_fails(
+    attack: str, kwargs: dict[str, int]
+) -> None:
+    """Catch an 80-class tensor on any official auxiliary-loss branch."""
+    outputs, capture = _labeled_observation_inputs(**kwargs)
+
+    observation = rtdetr_contract_module.observe_labeled_contract(
+        object(), outputs, capture
+    )
+
+    assert observation.invariants["no_reachable_non_four_class_logits"] is False
+    assert observation.invariants[f"{attack}_auxiliary_logits_four_channels"] is False
+
+
+@pytest.mark.parametrize(
+    "loss",
+    [torch.tensor([1.0]), torch.tensor(float("nan")), torch.tensor(float("inf"))],
+    ids=["vector", "nan", "inf"],
+)
+def test_labeled_loss_must_be_finite_scalar(loss: torch.Tensor) -> None:
+    """Catch accepting a vector or non-finite labeled loss."""
+    outputs, capture = _labeled_observation_inputs(loss=loss)
+
+    observation = rtdetr_contract_module.observe_labeled_contract(
+        object(), outputs, capture
+    )
+
+    assert observation.invariants["labeled_forward_finite_scalar_loss"] is False
+    assert observation.invariants["no_reachable_non_four_class_logits"] is True
+
+
+def test_labeled_contract_requires_denoising_metadata() -> None:
+    """Catch silently skipping the approved denoising loss branch."""
+    outputs, capture = _labeled_observation_inputs(denoising_meta_values={})
+
+    with pytest.raises(ContractUnavailable, match="dn_num_split"):
+        rtdetr_contract_module.observe_labeled_contract(object(), outputs, capture)
+
+
+def test_labeled_forward_capture_calls_and_restores_official_loss() -> None:
+    """Catch replacing the official loss or leaving its wrapper installed."""
+    calls: list[tuple[object, ...]] = []
+
+    def official_loss(
+        logits,
+        labels,
+        device,
+        pred_boxes,
+        config,
+        outputs_class=None,
+        outputs_coord=None,
+        enc_topk_logits=None,
+        enc_topk_bboxes=None,
+        denoising_meta_values=None,
+        **kwargs,
+    ):
+        calls.append((logits, labels, outputs_class, enc_topk_logits))
+        auxiliary = [
+            {"logits": torch.zeros(2, 300, 4)},
+            {"logits": torch.zeros(2, 300, 4)},
+            {"logits": enc_topk_logits},
+        ]
+        return torch.tensor(2.0), {"loss": torch.tensor(2.0)}, auxiliary
+
+    class FakeModel:
+        def __init__(self) -> None:
+            self.loss_function = official_loss
+
+        def __call__(self, *, pixel_values, pixel_mask, labels):
+            outputs_class = torch.zeros(2, 3, 310, 4)
+            logits = outputs_class[:, -1]
+            enc_topk_logits = torch.zeros(2, 300, 4)
+            loss, _, auxiliary = self.loss_function(
+                logits,
+                labels,
+                torch.device("cpu"),
+                torch.zeros(2, 310, 4),
+                object(),
+                outputs_class,
+                torch.zeros(2, 3, 310, 4),
+                enc_topk_logits=enc_topk_logits,
+                enc_topk_bboxes=torch.zeros(2, 300, 4),
+                denoising_meta_values={"dn_num_split": [10, 300]},
+            )
+            return SimpleNamespace(loss=loss, auxiliary_outputs=auxiliary)
+
+    model = FakeModel()
+    labels = [{"class_labels": torch.tensor([0]), "boxes": torch.zeros(1, 4)}]
+
+    _, capture = rtdetr_contract_module.run_labeled_contract_forward(
+        model,
+        pixel_values=torch.zeros(2, 3, 8, 8),
+        pixel_mask=torch.ones(2, 8, 8),
+        labels=labels,
+    )
+
+    assert len(calls) == 1
+    assert calls[0][1] is labels
+    assert model.loss_function is official_loss
+    assert capture.outputs_class.shape == (2, 3, 310, 4)
+
+
+def test_pinned_loss_source_proves_all_auxiliary_data_flow() -> None:
+    """Catch source drift invalidating the labeled auxiliary observation model."""
+    source_path = Path(inspect.getfile(RTDetrForObjectDetectionLoss))
+
+    observation = rtdetr_contract_module.inspect_rtdetr_loss_source_contract(
+        source_path
+    )
+
+    assert observation.invariants == {
+        "loss_splits_outputs_class_dim_2": True,
+        "loss_builds_decoder_auxiliaries": True,
+        "loss_appends_enc_topk_logits": True,
+        "loss_builds_denoising_auxiliaries": True,
+    }
 
 
 @pytest.mark.parametrize(
@@ -592,6 +835,10 @@ class RTDetrForObjectDetection:
 
 def _receipt(*, processor_passed: bool = True) -> ModelContractReceipt:
     source_files = {
+        "loss/loss_rt_detr.py": {
+            "size": 22057,
+            "sha256": "01c6fe0bdc5965ccf71e7eabfc98a3d05101300bc69dc1773ae3f58ebd7d02e6",
+        },
         "models/rt_detr/configuration_rt_detr.py": {
             "size": 9028,
             "sha256": "22c1b65c1385d35534658cbf1e91afa7174737134cb6a14ffdaffcd7b7a161a6",
@@ -678,7 +925,9 @@ def _receipt(*, processor_passed: bool = True) -> ModelContractReceipt:
         "processor_sha256": canonical_json_sha256(processor),
         "processor_file_sha256": "ffb4b9461a1dad746be8f0f9c8330ed7743a1ba5fba4f75c232cd281b3d4c64a",
         "fixture_sha256": "4e5eddbb21426c00932c34af331ae3e0ef3d30eb9010da7310b7319e91ec6d0f",
-        "probe_sha256": "dd95659c64a60adb459ebecd75ba225281b359fb17d2847596f3705bc4ea43a8",
+        "loss_source_sha256": "01c6fe0bdc5965ccf71e7eabfc98a3d05101300bc69dc1773ae3f58ebd7d02e6",
+        "synthetic_target_sha256": "abffd232b48a8306af8a35e6e2bce3ad0afa92f6380508f47e9c22b90e87d198",
+        "probe_sha256": "42a1df763c5e22cdfdcfc16821ba4c371946a9e81004de2425c369e3e6d5964e",
         "environment_sha256": canonical_json_sha256(environment),
     }
     parent_observed = {
@@ -721,11 +970,77 @@ def _receipt(*, processor_passed: bool = True) -> ModelContractReceipt:
         processor=processor,
         shapes={
             "logits": [2, 300, 4],
+            "intermediate_logits": [2, 3, 300, 4],
+            "enc_outputs_class": [2, 8400, 4],
+            "enc_topk_logits": [2, 300, 4],
             "pred_boxes": [2, 300, 4],
             "intermediate_reference_points": [2, 3, 300, 4],
             "pixel_values": [2, 3, 640, 640],
             "pixel_mask": [2, 640, 640],
         },
+        labeled_shapes={
+            "loss": [],
+            "logits": [2, 300, 4],
+            "intermediate_logits": [2, 3, 300, 4],
+            "enc_outputs_class": [2, 8400, 4],
+            "enc_topk_logits": [2, 300, 4],
+            "decoder_auxiliary_logits": [[2, 300, 4], [2, 300, 4]],
+            "encoder_auxiliary_logits": [[2, 300, 4]],
+            "denoising_auxiliary_logits": [
+                [2, 200, 4],
+                [2, 200, 4],
+                [2, 200, 4],
+            ],
+        },
+        observed_class_modules={
+            "decoder_class_heads": [
+                {
+                    "path": f"model.model.decoder.class_embed[{index}]",
+                    "replaced": True,
+                    "in_features": 256,
+                    "out_features": 4,
+                    "bias": True,
+                    "device": "cuda:0",
+                    "dtype": "torch.float32",
+                }
+                for index in range(3)
+            ],
+            "denoising_class_embed": {
+                "path": "model.model.denoising_class_embed",
+                "replaced": True,
+                "embedding_dim": 256,
+                "num_embeddings": 5,
+                "padding_idx": 4,
+                "device": "cuda:0",
+                "dtype": "torch.float32",
+            },
+            "encoder_score_head": {
+                "path": "model.model.enc_score_head",
+                "replaced": True,
+                "in_features": 256,
+                "out_features": 4,
+                "bias": True,
+                "device": "cuda:0",
+                "dtype": "torch.float32",
+            },
+            "num_labels": 4,
+            "id2label": {"0": "D00", "1": "D10", "2": "D20", "3": "D40"},
+            "label2id": {"D00": 0, "D10": 1, "D20": 2, "D40": 3},
+            "reset_seed": 17,
+            "replacement_order": [
+                "model.model.decoder.class_embed[0]",
+                "model.model.decoder.class_embed[1]",
+                "model.model.decoder.class_embed[2]",
+                "model.model.denoising_class_embed",
+                "model.model.enc_score_head",
+            ],
+            "deterministic_replay": True,
+            "structure_preserved": True,
+            "pretrained_class_rows_reused": False,
+        },
+        labeled_loss_hex=(3.25).hex(),
+        loss_source_sha256="01c6fe0bdc5965ccf71e7eabfc98a3d05101300bc69dc1773ae3f58ebd7d02e6",
+        synthetic_target_sha256="abffd232b48a8306af8a35e6e2bce3ad0afa92f6380508f47e9c22b90e87d198",
         invariants={
             name: (
                 processor_passed if name == "expected_valid_mask_rectangles" else True
@@ -770,6 +1085,36 @@ def test_model_contract_receipt_is_schema_valid_and_content_addressed(
     assert stored["normative"]["status"] == "PASS"
 
 
+def test_model_contract_receipt_exposes_complete_a2_evidence() -> None:
+    """Catch narrowing A2 back to the historical label-free contract."""
+    normative = _receipt().as_dict()["normative"]
+
+    assert normative["loss_source_sha256"] == (
+        "01c6fe0bdc5965ccf71e7eabfc98a3d05101300bc69dc1773ae3f58ebd7d02e6"
+    )
+    assert normative["synthetic_target_sha256"] == (
+        "abffd232b48a8306af8a35e6e2bce3ad0afa92f6380508f47e9c22b90e87d198"
+    )
+    assert set(normative["observed_shapes"]) == set(REQUIRED_MODEL_CONTRACT_SHAPES)
+    assert set(normative["labeled_observed_shapes"]) == {
+        "loss",
+        "logits",
+        "intermediate_logits",
+        "enc_outputs_class",
+        "enc_topk_logits",
+        "decoder_auxiliary_logits",
+        "encoder_auxiliary_logits",
+        "denoising_auxiliary_logits",
+    }
+    assert normative["observed_class_modules"]["encoder_score_head"]["path"] == (
+        "model.model.enc_score_head"
+    )
+    assert all(
+        normative["invariants"][name] is True
+        for name in REQUIRED_MODEL_CONTRACT_INVARIANTS
+    )
+
+
 @pytest.mark.parametrize(
     "field",
     [
@@ -806,11 +1151,9 @@ def test_model_contract_schema_requires_every_normative_invariant(
 
 
 def test_receipt_hashes_distinguish_raw_files_from_effective_documents(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Catch labeling raw upstream bytes as the effective config/processor hash."""
-    fixture = tmp_path / "fixture.json"
-    fixture.write_text("{}\n", encoding="utf-8")
     asset_model = {
         "files": {
             "model.safetensors": {"sha256": "a" * 64},
@@ -832,8 +1175,12 @@ def test_receipt_hashes_distinguish_raw_files_from_effective_documents(
 
     hashes = _receipt_hashes(
         asset_model,
-        {},
-        fixture,
+        {
+            "loss/loss_rt_detr.py": {
+                "sha256": "01c6fe0bdc5965ccf71e7eabfc98a3d05101300bc69dc1773ae3f58ebd7d02e6"
+            }
+        },
+        FIXTURE_MANIFEST,
         {"status": "PASS"},
         config,
         _processor_document(),
@@ -872,14 +1219,32 @@ def test_fixture_digest_is_canonical_across_line_endings(
         lambda: "d" * 64,
     )
 
+    source_files = {
+        "loss/loss_rt_detr.py": {
+            "sha256": "01c6fe0bdc5965ccf71e7eabfc98a3d05101300bc69dc1773ae3f58ebd7d02e6"
+        }
+    }
     lf_hash = _receipt_hashes(
-        asset_model, {}, lf, {"status": "PASS"}, config, _processor_document()
+        asset_model,
+        source_files,
+        lf,
+        {"status": "PASS"},
+        config,
+        _processor_document(),
     )["fixture_sha256"]
     crlf_hash = _receipt_hashes(
-        asset_model, {}, crlf, {"status": "PASS"}, config, _processor_document()
+        asset_model,
+        source_files,
+        crlf,
+        {"status": "PASS"},
+        config,
+        _processor_document(),
     )["fixture_sha256"]
 
-    assert lf_hash == crlf_hash == canonical_json_sha256(manifest)
+    input_document = {
+        name: manifest[name] for name in ("schema_version", "fixture_set", "images")
+    }
+    assert lf_hash == crlf_hash == canonical_json_sha256(input_document)
 
 
 def test_probe_source_digest_is_canonical_across_line_endings(tmp_path: Path) -> None:
@@ -892,6 +1257,40 @@ def test_probe_source_digest_is_canonical_across_line_endings(tmp_path: Path) ->
     assert model_contract_probe._canonical_source_sha256(
         lf
     ) == model_contract_probe._canonical_source_sha256(crlf)
+
+
+def test_completed_a2_probe_implementation_hash_is_pinned_independently() -> None:
+    """Catch schema/receipt pins drifting away from the tracked A2 implementation."""
+    assert model_contract_probe._probe_hash() == (
+        "42a1df763c5e22cdfdcfc16821ba4c371946a9e81004de2425c369e3e6d5964e"
+    )
+
+
+def test_loss_source_is_included_in_exact_rtdetr_source_inventory() -> None:
+    """Catch hashing only model files while omitting the reachable labeled loss."""
+    source_files = dict(_receipt().source_files)
+    source_files["loss/loss_rt_detr.py"] = {
+        "size": 22057,
+        "sha256": "01c6fe0bdc5965ccf71e7eabfc98a3d05101300bc69dc1773ae3f58ebd7d02e6",
+    }
+    hashes = _receipt_hashes(
+        {
+            "files": {
+                "model.safetensors": {"sha256": "a" * 64},
+                "config.json": {"sha256": "b" * 64},
+                "preprocessor_config.json": {"sha256": "c" * 64},
+            }
+        },
+        source_files,
+        FIXTURE_MANIFEST,
+        {"status": "PASS"},
+        {"num_queries": 300, "num_labels": 4, "decoder_layers": 3},
+        _processor_document(),
+    )
+
+    assert hashes["source_sha256"] == (
+        "8ef5c4fec87fa10ff7ab65f38ad894968f43d0a59ddb86bf8e4da1786c2fe239"
+    )
 
 
 def test_cpu_execution_device_observation_fails_closed(
@@ -1047,6 +1446,11 @@ def test_unobservable_raw_shapes_can_be_published_only_as_fail(
             "pred_boxes_shape": False,
             "intermediate_reference_points_shape": False,
             "native_fifth_logit_absent": False,
+            "intermediate_logits_four_channels": False,
+            "enc_outputs_class_four_channels": False,
+            "enc_topk_logits_four_channels": False,
+            "no_reachable_non_four_class_logits": False,
+            "label_free_model_call": False,
         },
     )
     output = tmp_path / "model-contract.json"
@@ -1144,7 +1548,12 @@ def test_probe_publishes_complete_fail_receipt_for_malformed_intermediate_shape(
     }
     environment = dict(_receipt().environment)
     environment.pop("torch_execution")
-    monkeypatch.setattr(model_contract_probe, "validate_receipt", lambda *args: None)
+    validated_runs: list[str] = []
+    monkeypatch.setattr(
+        model_contract_probe,
+        "validate_receipt_for_run",
+        lambda receipt, schema, run_id: validated_runs.append(run_id),
+    )
     monkeypatch.setattr(model_contract_probe, "_artifact_root", lambda: tmp_path)
     monkeypatch.setattr(model_contract_probe, "_snapshot_root", lambda *args: tmp_path)
     monkeypatch.setattr(
@@ -1190,6 +1599,11 @@ def test_probe_publishes_complete_fail_receipt_for_malformed_intermediate_shape(
         lambda path: _approved_source(),
     )
     monkeypatch.setattr(
+        model_contract_probe,
+        "inspect_rtdetr_loss_source_contract",
+        lambda path: _approved_source(),
+    )
+    monkeypatch.setattr(
         model_contract_probe, "RTDetrForObjectDetection", MalformedModel
     )
     monkeypatch.setattr(torch.cuda, "current_device", lambda: 0)
@@ -1213,6 +1627,7 @@ def test_probe_publishes_complete_fail_receipt_for_malformed_intermediate_shape(
         "intermediate_reference_points" in error
         for error in stored["normative"]["errors"]
     )
+    assert validated_runs == ["run-a", "run-a"]
 
 
 def test_cli_manifest_discovers_model_contract_probe() -> None:

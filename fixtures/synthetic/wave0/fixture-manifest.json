@@ -18,5 +18,35 @@
       "pattern": "tall-checker",
       "pixel_sha256": "cae50465750c24ab2f0d6932bc1d04a22eacaac276e544ad4363cc83bc135851"
     }
+  ],
+  "targets": [
+    {
+      "fixture_id": "wide-gradient",
+      "image_id": 1,
+      "annotations": [
+        {
+          "id": 1,
+          "image_id": 1,
+          "category_id": 0,
+          "bbox": [64.0, 32.0, 192.0, 96.0],
+          "area": 18432.0,
+          "iscrowd": 0
+        }
+      ]
+    },
+    {
+      "fixture_id": "tall-checker",
+      "image_id": 2,
+      "annotations": [
+        {
+          "id": 2,
+          "image_id": 2,
+          "category_id": 3,
+          "bbox": [32.0, 128.0, 96.0, 256.0],
+          "area": 24576.0,
+          "iscrowd": 0
+        }
+      ]
+    }
   ]
 }

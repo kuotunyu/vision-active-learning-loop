@@ -29,6 +29,7 @@
               "files": {
                 "type": "object",
                 "required": [
+                  "loss/loss_rt_detr.py",
                   "models/bit/image_processing_bit.py",
                   "models/dinov2/configuration_dinov2.py",
                   "models/dinov2/modeling_dinov2.py",
@@ -62,6 +63,7 @@
               "type": "object",
               "additionalProperties": false,
               "properties": {
+                "loss/loss_rt_detr.py": {"$ref": "#/$defs/file"},
                 "models/bit/image_processing_bit.py": {"$ref": "#/$defs/file"},
                 "models/dinov2/configuration_dinov2.py": {"$ref": "#/$defs/file"},
                 "models/dinov2/modeling_dinov2.py": {"$ref": "#/$defs/file"},
@@ -95,9 +97,10 @@
     "metadata": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["timestamp"],
+      "required": ["timestamp", "run_id"],
       "properties": {
         "timestamp": {"type": "string"},
+        "run_id": {"type": "string", "pattern": ".*\\S.*"},
         "receipt_content_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
       }
     }

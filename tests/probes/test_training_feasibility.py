@@ -3,6 +3,7 @@ from __future__ import annotations
 import copy
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 import torch
@@ -27,8 +28,8 @@ from vision_active_learning_loop.probes.training_feasibility import (
     resolve_cli_paths,
     validate_live_environment_evidence,
 )
-from ..artifacts.test_receipts import build_valid_model_contract_receipt
 
+from ..artifacts.test_receipts import build_valid_model_contract_receipt
 
 HASH = "a" * 64
 
@@ -174,6 +175,8 @@ def _receipt() -> dict[str, object]:
             "source_sha256": parent_normative["source_sha256"],
             "processor_sha256": parent_normative["processor_sha256"],
             "fixture_sha256": parent_normative["fixture_sha256"],
+            "loss_source_sha256": parent_normative["loss_source_sha256"],
+            "synthetic_target_sha256": parent_normative["synthetic_target_sha256"],
             "probe_sha256": feasibility_probe._probe_hash(),
             "environment_sha256": canonical_json_sha256(environment),
             "parent_environment_sha256": environment["parent_environment_sha256"],
@@ -213,7 +216,7 @@ def _receipt() -> dict[str, object]:
             "state_digests": dict(observation.state_digests),
             "comparison": comparison,
             "step": {
-                "loss_hex": float(3.25).hex(),
+                "loss_hex": (3.25).hex(),
                 "gradient_norm": 0.75,
                 "finite_loss": True,
                 "finite_gradients": True,
@@ -318,7 +321,7 @@ def test_deterministic_comparison_is_exact_and_excludes_timing() -> None:
 
     assert deterministic_comparison(first) == deterministic_comparison(second)
     assert deterministic_comparison(first) != deterministic_comparison(changed)
-    assert deterministic_comparison(first)["ordered_loss_hex"] == [float(3.25).hex()]
+    assert deterministic_comparison(first)["ordered_loss_hex"] == [(3.25).hex()]
 
 
 def test_buffer_only_state_change_cannot_prove_parameter_update() -> None:
@@ -404,9 +407,21 @@ def test_feasibility_receipt_is_schema_valid_and_content_addressed(
         / "schemas"
         / "feasibility-receipt.schema.json",
     )
+    assert (
+        stored["normative"]["loss_source_sha256"]
+        == stored["normative"]["parent_model_contract"]["normative"][
+            "loss_source_sha256"
+        ]
+    )
+    assert (
+        stored["normative"]["synthetic_target_sha256"]
+        == stored["normative"]["parent_model_contract"]["normative"][
+            "synthetic_target_sha256"
+        ]
+    )
     assert stored["normative"]["comparison"]["sha256"] == canonical_json_sha256(
         {
-            "ordered_loss_hex": [float(3.25).hex()],
+            "ordered_loss_hex": [(3.25).hex()],
             "state_digests": stored["normative"]["state_digests"],
         }
     )
@@ -528,6 +543,38 @@ def test_labeled_batch_uses_only_registered_synthetic_fixture_geometry() -> None
     ]
 
 
+def test_labeled_batch_consumes_only_loader_annotations(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Catch reintroducing duplicated inline labels outside the tracked fixture."""
+    original = feasibility_probe.load_synthetic_contract_fixture(
+        feasibility_probe._FIXTURE_MANIFEST
+    )
+    annotations = copy.deepcopy(original.annotations)
+    annotations[0]["annotations"][0]["category_id"] = 2
+    fixture = SimpleNamespace(
+        manifest=original.manifest,
+        images=original.images,
+        annotations=annotations,
+        input_sha256=HASH,
+        target_sha256=HASH,
+    )
+    monkeypatch.setattr(
+        feasibility_probe,
+        "load_synthetic_contract_fixture",
+        lambda path: fixture,
+        raising=False,
+    )
+
+    batch, _, evidence = _prepare_labeled_batch(torch.device("cpu"), HASH)
+
+    assert evidence["class_labels"] == [[2], [3]]
+    assert [label["class_labels"].tolist() for label in batch["labels"]] == [
+        [2],
+        [3],
+    ]
+
+
 def test_cli_paths_reject_data_root_and_noncanonical_locations(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -641,6 +688,8 @@ def test_feasibility_receipt_rejects_consistently_rehashed_parent_bindings(
         "source_sha256",
         "processor_sha256",
         "fixture_sha256",
+        "loss_source_sha256",
+        "synthetic_target_sha256",
         "model_contract_receipt_sha256",
         "parent_environment_sha256",
     ):
@@ -648,7 +697,36 @@ def test_feasibility_receipt_rejects_consistently_rehashed_parent_bindings(
     normative["environment"]["parent_environment_sha256"] = "0" * 64
     normative["environment_sha256"] = canonical_json_sha256(normative["environment"])
 
-    with pytest.raises(ReceiptValidationError, match="parent model-contract"):
+    with pytest.raises(
+        ReceiptValidationError, match="parent model-contract|loss_source_sha256"
+    ):
+        atomic_write_receipt(tmp_path / "feasibility.json", receipt)
+
+
+@pytest.mark.parametrize(
+    ("field", "invariant"),
+    [
+        ("loss_source_sha256", None),
+        ("synthetic_target_sha256", None),
+        (None, "encoder_score_head_four_channels"),
+    ],
+)
+def test_feasibility_rejects_narrower_option_a_parent(
+    tmp_path: Path, field: str | None, invariant: str | None
+) -> None:
+    """Catch historical label-free PASS evidence being promoted to A2."""
+    receipt = _receipt()
+    normative = receipt["normative"]
+    parent = normative["parent_model_contract"]
+    parent_normative = parent["normative"]
+    if field is not None:
+        del parent_normative[field]
+    else:
+        del parent_normative["invariants"][invariant]
+    parent["metadata"]["receipt_content_sha256"] = _receipt_content_sha256(parent)
+    normative["model_contract_receipt_sha256"] = _stored_receipt_sha256(parent)
+
+    with pytest.raises(ReceiptValidationError, match="missing required|invariant"):
         atomic_write_receipt(tmp_path / "feasibility.json", receipt)
 
 

@@ -20,7 +20,6 @@ from ..artifacts.digests import sha256_file
 from ..artifacts.receipts import atomic_write_receipt
 from ..cli_manifest import command
 
-
 RTDETR_REVISION = "cc5b50f32f0100caaa3bd275343e2fb17762c73d"
 DINOV2_REVISION = "ed25f3a31f01632728cabb09d1542f84ab7b0056"
 APPROVED_MODELS = {
@@ -143,9 +142,7 @@ class ModelAssetReceipt:
                         "size": item.size,
                         "sha256": item.sha256,
                     }
-                    for name, item in sorted(
-                        self.huggingface_metadata.files.items()
-                    )
+                    for name, item in sorted(self.huggingface_metadata.files.items())
                 },
                 "inventory": {
                     name: {"size": item.size, "sha256": item.sha256}
@@ -215,6 +212,10 @@ _CANONICAL_MODEL_FILES: dict[str, dict[str, FileSpec]] = {
 }
 
 _CANONICAL_SOURCE_FILES = {
+    "loss/loss_rt_detr.py": FileSpec(
+        22_057,
+        "01c6fe0bdc5965ccf71e7eabfc98a3d05101300bc69dc1773ae3f58ebd7d02e6",
+    ),
     "models/bit/image_processing_bit.py": FileSpec(
         1_260,
         "62ad10de9929cb0a5722d9a9c93d90e6a38f7e4c05b50811d8492fb1ed40f2eb",
@@ -314,9 +315,7 @@ def load_pinned_asset_specs(path: Path) -> dict[str, PinnedAssetSpec]:
         model = _mapping(models[name], f"models.{name}")
         repo_id, revision = identity
         if (model.get("repo_id"), model.get("revision")) != identity:
-            raise RevisionMismatch(
-                f"{name} must be exactly {repo_id}@{revision}"
-            )
+            raise RevisionMismatch(f"{name} must be exactly {repo_id}@{revision}")
         if model.get("license") != _APPROVED_LICENSE:
             raise LicenseMismatch(f"{name} must declare Apache-2.0")
         if model.get("license_evidence") != "README.md":
@@ -375,7 +374,9 @@ def _safe_directory(path: Path, boundary: Path) -> Path:
     if not resolved.is_relative_to(resolved_boundary):
         raise ArtifactBoundaryError(f"directory escapes verified root: {path.name}")
     if not resolved.is_dir():
-        raise ArtifactBoundaryError(f"required directory is not a directory: {path.name}")
+        raise ArtifactBoundaryError(
+            f"required directory is not a directory: {path.name}"
+        )
     return resolved
 
 
@@ -402,10 +403,7 @@ def _metadata_paths(spec: PinnedAssetSpec) -> set[str]:
         ".cache/huggingface/CACHEDIR.TAG",
         f".cache/huggingface/trees/{spec.revision}.json",
     }
-    paths.update(
-        f".cache/huggingface/download/{name}.metadata"
-        for name in spec.files
-    )
+    paths.update(f".cache/huggingface/download/{name}.metadata" for name in spec.files)
     return paths
 
 
@@ -463,13 +461,7 @@ def _verify_huggingface_metadata(
         )
         for relative in sorted(expected_paths)
     }
-    tree_path = (
-        root
-        / ".cache"
-        / "huggingface"
-        / "trees"
-        / f"{spec.revision}.json"
-    )
+    tree_path = root / ".cache" / "huggingface" / "trees" / f"{spec.revision}.json"
     try:
         tree = json.loads(tree_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as error:
@@ -490,7 +482,9 @@ def _verify_huggingface_metadata(
             lines = metadata_path.read_text(encoding="utf-8").splitlines()
             timestamp = float(lines[2])
         except (OSError, ValueError, IndexError) as error:
-            raise RevisionMismatch(f"invalid Hugging Face metadata for {name}") from error
+            raise RevisionMismatch(
+                f"invalid Hugging Face metadata for {name}"
+            ) from error
         if len(lines) != 3 or not math.isfinite(timestamp) or timestamp <= 0:
             raise RevisionMismatch(f"invalid Hugging Face metadata for {name}")
         commit_hash, etag = lines[0], lines[1]
@@ -540,10 +534,7 @@ def _verify_payload_entries(spec: PinnedAssetSpec, root: Path) -> dict[str, Path
         raise AssetMismatch(
             "snapshot payload inventory differs from the four-file allowlist"
         )
-    return {
-        name: _safe_regular_file(entries[name], root)
-        for name in expected_names
-    }
+    return {name: _safe_regular_file(entries[name], root) for name in expected_names}
 
 
 def _verify_snapshot_identity(spec: PinnedAssetSpec, root: Path) -> None:
@@ -561,7 +552,9 @@ def _verify_snapshot_identity(spec: PinnedAssetSpec, root: Path) -> None:
         None,
     )
     if repo_parent is None:
-        raise RevisionMismatch(f"snapshot path does not prove repository {spec.repo_id}")
+        raise RevisionMismatch(
+            f"snapshot path does not prove repository {spec.repo_id}"
+        )
     current = root
     while True:
         if _is_link_or_junction(current):
@@ -583,12 +576,12 @@ def _model_card_license(path: Path) -> str:
         raise LicenseMismatch("Apache-2.0 model-card front matter is missing")
     try:
         end = next(
-            index
-            for index, line in enumerate(lines[1:], 1)
-            if line.strip() == "---"
+            index for index, line in enumerate(lines[1:], 1) if line.strip() == "---"
         )
     except StopIteration as error:
-        raise LicenseMismatch("Apache-2.0 model-card front matter is incomplete") from error
+        raise LicenseMismatch(
+            "Apache-2.0 model-card front matter is incomplete"
+        ) from error
     front_matter = yaml.safe_load("\n".join(lines[1:end]))
     if not isinstance(front_matter, Mapping):
         raise LicenseMismatch("Apache-2.0 model-card front matter is invalid")
@@ -623,9 +616,7 @@ def _load_json_object(path: Path, description: str) -> Mapping[str, object]:
     return value
 
 
-def verify_snapshot(
-    spec: PinnedAssetSpec, snapshot_root: Path
-) -> ModelAssetReceipt:
+def verify_snapshot(spec: PinnedAssetSpec, snapshot_root: Path) -> ModelAssetReceipt:
     """Verify one already-downloaded snapshot without network or model loading."""
     _validate_approved_spec(spec)
     root = Path(snapshot_root)
@@ -720,12 +711,7 @@ def _external_roots(cache_root: Path, output: Path) -> tuple[Path, Path]:
 
 
 def _direct_snapshot_root(cache_root: Path, spec: PinnedAssetSpec) -> Path:
-    return (
-        cache_root
-        / "snapshots"
-        / spec.repo_id.replace("/", "--")
-        / spec.revision
-    )
+    return cache_root / "snapshots" / spec.repo_id.replace("/", "--") / spec.revision
 
 
 def _find_snapshot_root(cache_root: Path, spec: PinnedAssetSpec) -> Path:
@@ -797,6 +783,7 @@ def _receipt_document(
     models: Mapping[str, ModelAssetReceipt],
     source: Mapping[str, object] | None,
     errors: Sequence[str],
+    run_id: str,
 ) -> dict[str, object]:
     passed = not errors
     return {
@@ -819,7 +806,7 @@ def _receipt_document(
             "status": "PASS" if passed else "FAIL",
             "errors": list(errors),
         },
-        "metadata": {"timestamp": datetime.now(UTC).isoformat()},
+        "metadata": {"timestamp": datetime.now(UTC).isoformat(), "run_id": run_id},
     }
 
 
@@ -829,8 +816,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--config", type=Path, required=True)
     parser.add_argument("--cache-root", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--run-id", required=True)
     parser.add_argument("--download", action="store_true")
     arguments = parser.parse_args(argv)
+
+    if not arguments.run_id.strip():
+        print("run_id must be non-empty", file=sys.stderr)
+        return 2
 
     try:
         cache_root, output = _external_roots(arguments.cache_root, arguments.output)
@@ -847,9 +839,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         specs = load_pinned_asset_specs(arguments.config)
         selected = ["rtdetr", "dinov2"]
         source_observations = verify_transformers_source(specs["rtdetr"])
-        source = _source_dict(
-            specs["rtdetr"].transformers_version, source_observations
-        )
+        source = _source_dict(specs["rtdetr"].transformers_version, source_observations)
         for name in selected:
             spec = specs[name]
             snapshot = (
@@ -862,7 +852,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     except (ModelAssetError, OSError, ValueError) as error:
         errors.append(str(error))
 
-    receipt = _receipt_document(models=models, source=source, errors=errors)
+    receipt = _receipt_document(
+        models=models,
+        source=source,
+        errors=errors,
+        run_id=arguments.run_id,
+    )
     atomic_write_receipt(output, receipt)
     print(receipt["normative"]["status"])
     return 2 if errors else 0
