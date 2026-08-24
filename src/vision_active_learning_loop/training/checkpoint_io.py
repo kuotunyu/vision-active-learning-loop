@@ -16,6 +16,10 @@ import numpy as np
 import torch
 
 from ..artifacts.digests import sha256_file
+from ..artifacts.no_clobber import (
+    open_unique_staging_file,
+    publish_staged_file_no_clobber,
+)
 
 
 class CheckpointVerificationError(ValueError):
@@ -124,7 +128,6 @@ def save_checkpoint_atomic(state: CheckpointState, target: Path) -> str:
     """Atomically publish a content-bound checkpoint and return its file digest."""
     _validate_checkpoint_state(state)
     target = Path(target)
-    partial = target.with_name(f"{target.name}.partial")
     envelope = {
         "magic": _CHECKPOINT_MAGIC,
         "schema_version": _CHECKPOINT_SCHEMA_VERSION,
@@ -132,21 +135,25 @@ def save_checkpoint_atomic(state: CheckpointState, target: Path) -> str:
         "state_digests": checkpoint_state_digests(state),
         "state_sha256": checkpoint_state_sha256(state),
     }
+    stage = open_unique_staging_file(target)
     try:
-        target.parent.mkdir(parents=True, exist_ok=True)
-        _unlink_if_present(partial)
-        with partial.open("xb") as output:
-            torch.save(envelope, output)
-            output.flush()
-            os.fsync(output.fileno())
-        digest = sha256_file(partial)
+        try:
+            torch.save(envelope, stage.handle)
+            stage.handle.flush()
+            os.fsync(stage.handle.fileno())
+        finally:
+            stage.handle.close()
+        digest = sha256_file(stage.path)
         _fsync_parent(target.parent)
-        os.replace(partial, target)
-        _fsync_parent(target.parent)
+        publish_staged_file_no_clobber(stage.path, target)
         return digest
-    except Exception:
-        _unlink_if_present(partial)
-        raise
+    finally:
+        if not stage.handle.closed:
+            stage.handle.close()
+        try:
+            stage.path.unlink()
+        except OSError:
+            pass
 
 
 def load_checkpoint_verified(
@@ -528,13 +535,6 @@ def _is_sha256(value: object) -> bool:
         and len(value) == 64
         and all(character in "0123456789abcdef" for character in value)
     )
-
-
-def _unlink_if_present(path: Path) -> None:
-    try:
-        path.unlink()
-    except FileNotFoundError:
-        pass
 
 
 def _fsync_parent(directory: Path) -> None:

@@ -24,6 +24,7 @@ import torch
 from transformers import RTDetrForObjectDetection
 
 from ..artifacts.digests import canonical_json_sha256, sha256_file
+from ..artifacts.no_clobber import create_directory_no_clobber
 from ..artifacts.receipts import atomic_write_receipt, validate_receipt_for_run
 from ..cli_manifest import command
 from ..environment import (
@@ -799,6 +800,10 @@ def _execute_probe(
     output_path: Path,
     run_id: str,
 ) -> dict[str, object]:
+    if _is_link_or_junction(checkpoint_root) or not checkpoint_root.is_dir():
+        raise FeasibilityError(
+            "checkpoint root must be the newly claimed non-link directory"
+        )
     model_contract = _mapping(
         json.loads(model_contract_path.read_text(encoding="utf-8")), "model contract"
     )
@@ -852,7 +857,6 @@ def _execute_probe(
         state = observation.checkpoint_state
         if state is None:
             raise FeasibilityError("checkpoint state was not captured")
-        checkpoint_root.mkdir(parents=True, exist_ok=True)
         checkpoint_target = checkpoint_root / "step-000001.pt"
         state_sha256_before_save = checkpoint_state_sha256(state)
         state_digests_before_save = checkpoint_state_digests(state)
@@ -937,6 +941,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             raise FeasibilityError(
                 "fresh output path is required for each feasibility attempt"
             )
+        create_directory_no_clobber(checkpoint_root)
         receipt = _execute_probe(
             model_contract, checkpoint_root, output, arguments.run_id
         )

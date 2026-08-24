@@ -1,29 +1,38 @@
 from __future__ import annotations
 
 import copy
+import errno
 import hashlib
+import os
 import random
+import subprocess
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from pathlib import Path
+from threading import Barrier
 
 import numpy as np
 import pytest
 import torch
 from torch import nn
 
-import vision_active_learning_loop.training.checkpoint_io as checkpoint_io
+from vision_active_learning_loop.artifacts.no_clobber import (
+    NoClobberError,
+    NoClobberUnsupportedError,
+)
+from vision_active_learning_loop.training import checkpoint_io
 from vision_active_learning_loop.training.checkpoint_io import (
     CheckpointState,
     CheckpointVerificationError,
     capture_rng_state,
     checkpoint_state_digests,
+    checkpoint_state_sha256,
     load_checkpoint_verified,
     restore_checkpoint_state,
     restore_rng_state,
     save_checkpoint_atomic,
     structured_state_sha256,
 )
-
 
 HASH = "a" * 64
 
@@ -171,7 +180,119 @@ def test_invalid_state_is_rejected_without_publication(
     assert not target.with_name(f"{target.name}.partial").exists()
 
 
-def test_atomic_replace_failure_preserves_existing_checkpoint(
+@pytest.mark.parametrize("existing_kind", ["file", "directory", "symlink", "junction"])
+def test_checkpoint_destination_never_replaces_preexisting_path(
+    tmp_path: Path, existing_kind: str
+) -> None:
+    """Catch any exact destination type being overwritten or reused."""
+    target = tmp_path / "step-000001.pt"
+    prior = b"prior-checkpoint-evidence"
+    if existing_kind == "file":
+        target.write_bytes(prior)
+    elif existing_kind == "directory":
+        target.mkdir()
+        (target / "prior.bin").write_bytes(prior)
+    elif existing_kind == "symlink":
+        source = tmp_path / "source.bin"
+        source.write_bytes(prior)
+        try:
+            target.symlink_to(source)
+        except OSError as error:
+            pytest.skip(f"file symlink unavailable: {error}")
+    else:
+        if os.name != "nt":
+            pytest.skip("Windows junction case")
+        source = tmp_path / "source-directory"
+        source.mkdir()
+        (source / "prior.bin").write_bytes(prior)
+        completed = subprocess.run(
+            ["cmd", "/c", "mklink", "/J", str(target), str(source)],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        if completed.returncode != 0:
+            pytest.skip(f"junction unavailable: {completed.stderr}")
+
+    with pytest.raises(NoClobberError):
+        save_checkpoint_atomic(_state(), target)
+
+    if existing_kind == "file":
+        assert target.read_bytes() == prior
+    elif existing_kind in {"directory", "junction"}:
+        assert (target / "prior.bin").read_bytes() == prior
+    else:
+        assert target.read_bytes() == prior
+
+
+def test_two_checkpoint_writers_race_publishes_exactly_one_complete_state(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    target = tmp_path / "step-000001.pt"
+    first = _state()
+    changed_model = copy.deepcopy(dict(first.model_state))
+    first_name = next(iter(changed_model))
+    changed_model[first_name] = changed_model[first_name] + 1
+    second = replace(first, model_state=changed_model)
+    barrier = Barrier(2)
+    original_publish = checkpoint_io.publish_staged_file_no_clobber
+
+    def synchronized_publish(stage: Path, destination: Path) -> None:
+        barrier.wait()
+        original_publish(stage, destination)
+
+    monkeypatch.setattr(
+        checkpoint_io, "publish_staged_file_no_clobber", synchronized_publish
+    )
+
+    def save(state: CheckpointState) -> object:
+        try:
+            return save_checkpoint_atomic(state, target)
+        except NoClobberError as error:
+            return error
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        results = list(executor.map(save, (first, second)))
+
+    digests = [result for result in results if isinstance(result, str)]
+    assert len(digests) == 1
+    assert sum(isinstance(result, NoClobberError) for result in results) == 1
+    loaded = load_checkpoint_verified(target, digests[0])
+    assert checkpoint_state_sha256(loaded) in {
+        checkpoint_state_sha256(first),
+        checkpoint_state_sha256(second),
+    }
+
+
+@pytest.mark.parametrize(
+    "error_code",
+    [
+        errno.EPERM,
+        getattr(errno, "EOPNOTSUPP", errno.EPERM),
+        getattr(errno, "ENOTSUP", errno.EPERM),
+        errno.EXDEV,
+    ],
+)
+def test_checkpoint_publication_rejects_unsupported_link_semantics(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, error_code: int
+) -> None:
+    target = tmp_path / "step-000001.pt"
+    monkeypatch.setattr(
+        checkpoint_io.os,
+        "link",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            OSError(error_code, "unsupported")
+        ),
+    )
+
+    with pytest.raises(NoClobberUnsupportedError):
+        save_checkpoint_atomic(_state(), target)
+
+    assert not target.exists()
+    assert not list(tmp_path.glob("*.staging"))
+
+
+def test_checkpoint_never_calls_replace_or_changes_existing_checkpoint(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Catch a failed publication destroying the last verified checkpoint."""
@@ -179,15 +300,19 @@ def test_atomic_replace_failure_preserves_existing_checkpoint(
     save_checkpoint_atomic(_state(), target)
     original = target.read_bytes()
 
-    monkeypatch.setattr(
-        checkpoint_io.os,
-        "replace",
-        lambda *args: (_ for _ in ()).throw(OSError("injected rename failure")),
-    )
+    replace_called = False
 
-    with pytest.raises(OSError, match="injected rename failure"):
+    def forbidden_replace(*args: object) -> None:
+        nonlocal replace_called
+        replace_called = True
+        raise AssertionError("os.replace is forbidden")
+
+    monkeypatch.setattr(checkpoint_io.os, "replace", forbidden_replace)
+
+    with pytest.raises(NoClobberError):
         save_checkpoint_atomic(_state(), target)
 
+    assert replace_called is False
     assert target.read_bytes() == original
     assert not target.with_name(f"{target.name}.partial").exists()
 
@@ -247,13 +372,13 @@ def test_late_restore_failure_rolls_back_every_live_state() -> None:
     assert after == before
 
 
-def test_checkpoint_fsyncs_parent_after_atomic_replace(
+def test_checkpoint_fsyncs_complete_stage_before_decisive_link(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Catch acknowledging a checkpoint before its renamed directory entry is durable."""
+    """Catch publication before complete staged bytes and parent durability."""
     events: list[str] = []
     parent_descriptor = 999
-    original_replace = checkpoint_io.os.replace
+    original_link = checkpoint_io.os.link
 
     monkeypatch.setattr(
         checkpoint_io.os,
@@ -273,11 +398,13 @@ def test_checkpoint_fsyncs_parent_after_atomic_replace(
         lambda descriptor: events.append("parent-close"),
     )
 
-    def record_replace(source: Path, destination: Path) -> None:
-        events.append("replace")
-        original_replace(source, destination)
+    def record_link(
+        source: Path, destination: Path, *, follow_symlinks: bool = True
+    ) -> None:
+        events.append("link")
+        original_link(source, destination, follow_symlinks=follow_symlinks)
 
-    monkeypatch.setattr(checkpoint_io.os, "replace", record_replace)
+    monkeypatch.setattr(checkpoint_io.os, "link", record_link)
 
     save_checkpoint_atomic(_state(), tmp_path / "step-000001.pt")
 
@@ -286,8 +413,25 @@ def test_checkpoint_fsyncs_parent_after_atomic_replace(
         "parent-open",
         "parent-fsync",
         "parent-close",
-        "replace",
-        "parent-open",
-        "parent-fsync",
-        "parent-close",
+        "link",
     ]
+
+
+def test_stage_cleanup_failure_cannot_invalidate_committed_checkpoint(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Catch best-effort stage cleanup removing or invalidating the winner."""
+    target = tmp_path / "step-000001.pt"
+    original_unlink = Path.unlink
+
+    def fail_stage_cleanup(path: Path, *args: object, **kwargs: object) -> None:
+        if path.suffix == ".staging":
+            raise PermissionError("injected stage cleanup failure")
+        original_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", fail_stage_cleanup)
+
+    digest = save_checkpoint_atomic(_state(), target)
+
+    assert load_checkpoint_verified(target, digest).step == 1
+    assert target.is_file()
