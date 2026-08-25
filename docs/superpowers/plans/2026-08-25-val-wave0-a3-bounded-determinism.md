@@ -24,7 +24,7 @@
 | Area | Exact files | Action |
 |---|---|---|
 | Bounded backward and feasibility v2 | `src/vision_active_learning_loop/probes/training_feasibility.py`; `tests/probes/test_training_feasibility.py`; `schemas/feasibility-receipt.schema.json` | Modify |
-| Receipt-version dispatch and semantic validation | `src/vision_active_learning_loop/artifacts/receipts.py` | Modify |
+| Receipt-version dispatch and semantic validation | `src/vision_active_learning_loop/artifacts/receipts.py`; `tests/artifacts/test_receipts.py` | Modify |
 | Replay comparison | `src/vision_active_learning_loop/gates/numerical_replay.py`; `tests/gates/test_numerical_replay.py` | Create |
 | Aggregate gate v2 | `src/vision_active_learning_loop/gates/wave0.py`; `tests/gates/test_wave0_gate.py`; `schemas/wave0-gate-receipt.schema.json` | Modify |
 
@@ -115,6 +115,7 @@ Expected GREEN: the exact exception passes; every other warning path fails; stri
 - Modify: `src/vision_active_learning_loop/probes/training_feasibility.py`
 - Modify: `schemas/feasibility-receipt.schema.json`
 - Modify: `src/vision_active_learning_loop/artifacts/receipts.py`
+- Modify: `tests/artifacts/test_receipts.py`
 
 **Receipt contract:** `schema_version == 2`; retain all applicable A2 evidence; require `allowlisted_backward`, ordered `parameter_inventory`, `update_groups`, and `exact_comparison`; prohibit the old `deterministic_fallback_absent` interpretation.
 
@@ -335,11 +336,11 @@ Review the complete staged diff from a clean context against specification Secti
 
 - [ ] **Step 4: Verify immutable evidence and file scope**
 
-Hash every pre-existing campaign/evidence file from the preserved baseline inventory and compare it with the pre-change values. Verify `git diff --name-only` contains only the nine A3 files in this plan and that `uv.lock`, pinned-model config, Dockerfiles, specs, older plans, scripts, historical evidence, and all model/data identities are unchanged.
+Hash every pre-existing campaign/evidence file from the preserved baseline inventory and compare it with the pre-change values. Verify `git diff --name-only` contains only the ten A3 files in this plan and that `uv.lock`, pinned-model config, Dockerfiles, specs, older plans, scripts, historical evidence, and all model/data identities are unchanged.
 
 - [ ] **Step 5: Create one append-only implementation commit**
 
-Stage only the nine A3 implementation files. Use exact author and committer identity `kuotunyu <61350295+kuotunyu@users.noreply.github.com>` and do not amend, rebase, squash, or rewrite history.
+Stage only the ten A3 implementation files. Use exact author and committer identity `kuotunyu <61350295+kuotunyu@users.noreply.github.com>` and do not amend, rebase, squash, or rewrite history.
 
 ```powershell
 git commit -m "fix: bound Wave 0 CUDA replay"
