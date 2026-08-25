@@ -439,7 +439,7 @@ def _historical_evidence_absent(
         invariants = normative.get("invariants")
         if (
             any(
-                attempt.documents[stage].get("schema_version") != 2
+                attempt.documents[stage].get("schema_version") != 3
                 for stage in ("feasibility_a", "feasibility_b")
             )
             or normative.get("loss_source_sha256") != _LOSS_SOURCE_SHA256

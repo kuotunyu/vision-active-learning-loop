@@ -22,7 +22,10 @@ from typing import Any
 
 import numpy as np
 import torch
+import transformers
+from torch.nn.attention import SDPBackend, sdpa_kernel
 from transformers import RTDetrForObjectDetection
+from transformers.integrations import sdpa_attention as transformers_sdpa_attention
 
 from ..artifacts.digests import canonical_json_sha256, sha256_file
 from ..artifacts.no_clobber import create_directory_no_clobber
@@ -79,6 +82,27 @@ _ALLOWLISTED_BACKWARD_SOURCE_SHA256 = {
         "fce24c79c8599e52f3648f549502879e9b396cc86f593c3a07baf10c002cead3"
     ),
 }
+_DETERMINISTIC_ATTENTION_SOURCE_HASH_RULE = "python-source-lf-normalized-sha256-v1"
+_DETERMINISTIC_ATTENTION_SOURCE_SHA256 = {
+    "torch_nn_attention": (
+        "56e10b6f965cc050db782dd4dc472097c9b02ec5b5fe3ab2c8b04055c0b0bbe0"
+    ),
+    "transformers_sdpa_attention": (
+        "d334e0b1d0c17ac97964348e49e6df681a4193241c8161f23292817ca39e2098"
+    ),
+}
+_DETERMINISTIC_ATTENTION_BEFORE = {
+    "cudnn": True,
+    "flash": True,
+    "math": True,
+    "memory_efficient": True,
+}
+_DETERMINISTIC_ATTENTION_INSIDE = {
+    "cudnn": False,
+    "flash": False,
+    "math": True,
+    "memory_efficient": False,
+}
 _DETERMINISTIC_WARNING_PATTERN = re.compile(
     r"^([A-Za-z0-9_]+) does not have a deterministic implementation(?:[,.]|$)"
 )
@@ -133,6 +157,19 @@ class DeterminismState:
 
 
 @dataclass(frozen=True)
+class DeterministicAttentionEvidence:
+    attn_implementation: str
+    backend: str
+    scope: str
+    before: Mapping[str, bool]
+    inside: Mapping[str, bool]
+    after: Mapping[str, bool]
+    restored: bool
+    source_hash_rule: str
+    source_sha256: Mapping[str, str]
+
+
+@dataclass(frozen=True)
 class BackwardWarningEvidence:
     operation_identifier: str
     expected_count: int
@@ -171,6 +208,7 @@ class StepObservation:
     bf16_supported: bool
     bf16_autocast_enabled: bool
     allowlisted_backward: BackwardWarningEvidence
+    deterministic_attention: DeterministicAttentionEvidence
     device: str
     live_model_state_digest_after: str
     trainable_parameter_count: int
@@ -358,6 +396,73 @@ def _canonical_python_source_sha256(path: Path) -> str:
     return hashlib.sha256(canonical).hexdigest()
 
 
+def _deterministic_attention_source_locations() -> Mapping[str, tuple[Path, Path]]:
+    torch_source = inspect.getsourcefile(torch.nn.attention)
+    transformers_source = inspect.getsourcefile(transformers_sdpa_attention)
+    torch_package = getattr(torch, "__file__", None)
+    transformers_package = getattr(transformers, "__file__", None)
+    if not isinstance(torch_source, str) or not isinstance(torch_package, str):
+        raise FeasibilityError("pinned PyTorch attention source is unavailable")
+    if not isinstance(transformers_source, str) or not isinstance(
+        transformers_package, str
+    ):
+        raise FeasibilityError("pinned Transformers SDPA source is unavailable")
+    return {
+        "torch_nn_attention": (Path(torch_source), Path(torch_package).parent),
+        "transformers_sdpa_attention": (
+            Path(transformers_source),
+            Path(transformers_package).parent,
+        ),
+    }
+
+
+def _verify_deterministic_attention_sources() -> dict[str, str]:
+    observed: dict[str, str] = {}
+    locations = _deterministic_attention_source_locations()
+    if set(locations) != set(_DETERMINISTIC_ATTENTION_SOURCE_SHA256):
+        raise FeasibilityError("deterministic-attention source inventory mismatch")
+    for name in sorted(locations):
+        path, boundary = locations[name]
+        try:
+            path.relative_to(boundary)
+        except ValueError as error:
+            raise FeasibilityError(
+                f"deterministic-attention source path mismatch: {name}"
+            ) from error
+        if not path.is_file():
+            raise FeasibilityError(
+                f"deterministic-attention source is not a regular file: {name}"
+            )
+        if _path_has_link(path, boundary):
+            raise FeasibilityError(
+                f"deterministic-attention source has a link or junction: {name}"
+            )
+        raw = path.read_bytes()
+        try:
+            raw.decode("utf-8")
+        except UnicodeDecodeError as error:
+            raise FeasibilityError(
+                f"deterministic-attention source is not UTF-8: {name}"
+            ) from error
+        canonical = raw.replace(b"\r\n", b"\n").replace(b"\r", b"\n")
+        digest = hashlib.sha256(canonical).hexdigest()
+        if digest != _DETERMINISTIC_ATTENTION_SOURCE_SHA256[name]:
+            raise FeasibilityError(
+                f"deterministic-attention source hash mismatch: {name}"
+            )
+        observed[name] = digest
+    return observed
+
+
+def _sdpa_backend_state() -> dict[str, bool]:
+    return {
+        "cudnn": bool(torch.backends.cuda.cudnn_sdp_enabled()),
+        "flash": bool(torch.backends.cuda.flash_sdp_enabled()),
+        "math": bool(torch.backends.cuda.math_sdp_enabled()),
+        "memory_efficient": bool(torch.backends.cuda.mem_efficient_sdp_enabled()),
+    }
+
+
 def _verify_allowlisted_backward_sources() -> dict[str, str]:
     observed: dict[str, str] = {}
     paths = _allowlisted_backward_source_paths()
@@ -465,6 +570,93 @@ def run_allowlisted_backward(
             and torch.get_deterministic_debug_mode() == 2
         ),
     )
+
+
+def run_math_only_labeled_forward_backward(
+    model: object,
+    labeled_forward: Callable[[], tuple[torch.Tensor, bool]],
+    *,
+    expected_warning_count: int,
+) -> tuple[
+    torch.Tensor,
+    bool,
+    BackwardWarningEvidence,
+    DeterministicAttentionEvidence,
+]:
+    """Run the labeled forward/backward boundary with only public SDPA Math."""
+    if not callable(labeled_forward):
+        raise FeasibilityError("labeled forward must be callable")
+    if type(expected_warning_count) is not int or expected_warning_count <= 0:
+        raise FeasibilityError("expected backward warning count must be positive")
+    source_sha256 = _verify_deterministic_attention_sources()
+    config = getattr(model, "config", None)
+    if getattr(config, "_attn_implementation", None) != "sdpa":
+        raise FeasibilityError("deterministic attention requires sdpa")
+    if (
+        not torch.are_deterministic_algorithms_enabled()
+        or torch.is_deterministic_algorithms_warn_only_enabled()
+        or torch.get_deterministic_debug_mode() != 2
+    ):
+        raise FeasibilityError("strict deterministic error mode is required")
+    before = _sdpa_backend_state()
+    if before != _DETERMINISTIC_ATTENTION_BEFORE:
+        raise FeasibilityError("deterministic attention entry backend mismatch")
+
+    body_error: BaseException | None = None
+    result: tuple[
+        torch.Tensor,
+        bool,
+        BackwardWarningEvidence,
+        dict[str, bool],
+    ] | None = None
+    try:
+        with sdpa_kernel(SDPBackend.MATH):
+            inside = _sdpa_backend_state()
+            if inside != _DETERMINISTIC_ATTENTION_INSIDE:
+                raise FeasibilityError(
+                    "deterministic attention inside backend mismatch"
+                )
+            loss, autocast_observed = labeled_forward()
+            if not isinstance(loss, torch.Tensor) or loss.numel() != 1:
+                raise FeasibilityError("model did not return a scalar training loss")
+            if not bool(torch.isfinite(loss.detach()).all()):
+                raise FeasibilityError("non-finite loss")
+            warning_evidence = run_allowlisted_backward(
+                loss.backward, expected_count=expected_warning_count
+            )
+            result = (loss, autocast_observed, warning_evidence, inside)
+    except BaseException as error:  # noqa: BLE001 - restoration covers every exit.
+        body_error = error
+
+    after = _sdpa_backend_state()
+    strict_restored = (
+        torch.are_deterministic_algorithms_enabled()
+        and not torch.is_deterministic_algorithms_warn_only_enabled()
+        and torch.get_deterministic_debug_mode() == 2
+    )
+    if after != before or not strict_restored:
+        restoration = FeasibilityError(
+            "deterministic attention backend restoration mismatch"
+        )
+        if body_error is not None:
+            raise restoration from body_error
+        raise restoration
+    if body_error is not None:
+        raise body_error.with_traceback(body_error.__traceback__)
+    assert result is not None
+    loss, autocast_observed, warning_evidence, inside = result
+    evidence = DeterministicAttentionEvidence(
+        attn_implementation="sdpa",
+        backend="MATH",
+        scope="labeled_forward_through_backward",
+        before=before,
+        inside=inside,
+        after=after,
+        restored=True,
+        source_hash_rule=_DETERMINISTIC_ATTENTION_SOURCE_HASH_RULE,
+        source_sha256=source_sha256,
+    )
+    return loss, autocast_observed, warning_evidence, evidence
 
 
 def _expected_grid_sample_warning_count(model: object) -> int:
@@ -743,21 +935,26 @@ def run_one_step_smoke(
     start_event = torch.cuda.Event(enable_timing=True)
     end_event = torch.cuda.Event(enable_timing=True)
     wall_start = time.perf_counter()
-    autocast_observed = False
     start_event.record()
-    with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
-        autocast_observed = bool(torch.is_autocast_enabled("cuda"))
-        outputs = model(**model_batch)
-        loss = getattr(outputs, "loss", None)
-    if not isinstance(loss, torch.Tensor) or loss.numel() != 1:
-        raise FeasibilityError("model did not return a scalar training loss")
-    finite_loss = bool(torch.isfinite(loss.detach()).all())
-    if not finite_loss:
-        raise FeasibilityError("non-finite loss")
-    backward_evidence = run_allowlisted_backward(
-        loss.backward,
-        expected_count=_expected_grid_sample_warning_count(model),
+
+    def labeled_forward() -> tuple[torch.Tensor, bool]:
+        with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
+            autocast_observed = bool(torch.is_autocast_enabled("cuda"))
+            outputs = model(**model_batch)
+            loss = getattr(outputs, "loss", None)
+        return loss, autocast_observed
+
+    (
+        loss,
+        autocast_observed,
+        backward_evidence,
+        deterministic_attention,
+    ) = run_math_only_labeled_forward_backward(
+        model,
+        labeled_forward,
+        expected_warning_count=_expected_grid_sample_warning_count(model),
     )
+    finite_loss = True
     gradients = [
         parameter.grad for parameter in parameters if parameter.grad is not None
     ]
@@ -818,6 +1015,7 @@ def run_one_step_smoke(
         bf16_supported=bool(torch.cuda.is_bf16_supported()),
         bf16_autocast_enabled=autocast_observed,
         allowlisted_backward=backward_evidence,
+        deterministic_attention=deterministic_attention,
         device=str(device),
         live_model_state_digest_after=live_model_state_digest_after,
         trainable_parameter_count=len(parameters),
@@ -829,6 +1027,9 @@ def run_one_step_smoke(
         scheduler_state_before_sha256=scheduler_state_before_sha256,
         sampler_order_digest=sampler_digest,
         input_digests={str(name): str(value) for name, value in input_digests.items()},
+        semantic_input_digests={
+            str(name): str(value) for name, value in semantic_input_digests.items()
+        },
         checkpoint_epoch=0,
         checkpoint_step=1,
         model_state_inventory=model_state_inventory,
@@ -851,6 +1052,10 @@ def evaluate_step_observation(observation: StepObservation) -> StepObservation:
         (
             not _allowlisted_backward_is_valid(observation.allowlisted_backward),
             "allowlisted backward evidence mismatch",
+        ),
+        (
+            not _deterministic_attention_is_valid(observation.deterministic_attention),
+            "deterministic attention evidence mismatch",
         ),
         (
             observation.cuda_matmul_allow_tf32 or observation.cudnn_allow_tf32,
@@ -908,6 +1113,22 @@ def _allowlisted_backward_is_valid(evidence: BackwardWarningEvidence) -> bool:
     )
 
 
+def _deterministic_attention_is_valid(
+    evidence: DeterministicAttentionEvidence,
+) -> bool:
+    return (
+        evidence.attn_implementation == "sdpa"
+        and evidence.backend == "MATH"
+        and evidence.scope == "labeled_forward_through_backward"
+        and dict(evidence.before) == _DETERMINISTIC_ATTENTION_BEFORE
+        and dict(evidence.inside) == _DETERMINISTIC_ATTENTION_INSIDE
+        and dict(evidence.after) == _DETERMINISTIC_ATTENTION_BEFORE
+        and evidence.restored is True
+        and evidence.source_hash_rule == _DETERMINISTIC_ATTENTION_SOURCE_HASH_RULE
+        and dict(evidence.source_sha256) == _DETERMINISTIC_ATTENTION_SOURCE_SHA256
+    )
+
+
 def _allowlisted_backward_document(
     evidence: BackwardWarningEvidence,
 ) -> dict[str, object]:
@@ -921,6 +1142,22 @@ def _allowlisted_backward_document(
         "source_hash_rule": evidence.source_hash_rule,
         "source_sha256": dict(sorted(evidence.source_sha256.items())),
         "strict_mode_restored": evidence.strict_mode_restored,
+    }
+
+
+def _deterministic_attention_document(
+    evidence: DeterministicAttentionEvidence,
+) -> dict[str, object]:
+    return {
+        "attn_implementation": evidence.attn_implementation,
+        "backend": evidence.backend,
+        "scope": evidence.scope,
+        "before": dict(evidence.before),
+        "inside": dict(evidence.inside),
+        "after": dict(evidence.after),
+        "restored": evidence.restored,
+        "source_hash_rule": evidence.source_hash_rule,
+        "source_sha256": dict(sorted(evidence.source_sha256.items())),
     }
 
 
@@ -948,6 +1185,9 @@ def exact_comparison(observation: StepObservation) -> dict[str, object]:
         "state_digests": state_digests,
         "allowlisted_backward": _allowlisted_backward_document(
             observation.allowlisted_backward
+        ),
+        "deterministic_attention": _deterministic_attention_document(
+            observation.deterministic_attention
         ),
     }
     return {
@@ -1108,6 +1348,29 @@ def _build_receipt(
         "cudnn_benchmark_disabled": not observation.cudnn_benchmark,
         "canonical_environment": True,
         "deterministic_algorithms": observation.deterministic_algorithms,
+        "deterministic_attention_math_only": (
+            observation.deterministic_attention.attn_implementation == "sdpa"
+            and observation.deterministic_attention.backend == "MATH"
+            and dict(observation.deterministic_attention.inside)
+            == _DETERMINISTIC_ATTENTION_INSIDE
+        ),
+        "deterministic_attention_scope_verified": (
+            observation.deterministic_attention.scope
+            == "labeled_forward_through_backward"
+        ),
+        "deterministic_attention_source_verified": (
+            observation.deterministic_attention.source_hash_rule
+            == _DETERMINISTIC_ATTENTION_SOURCE_HASH_RULE
+            and dict(observation.deterministic_attention.source_sha256)
+            == _DETERMINISTIC_ATTENTION_SOURCE_SHA256
+        ),
+        "deterministic_attention_backend_restored": (
+            dict(observation.deterministic_attention.before)
+            == _DETERMINISTIC_ATTENTION_BEFORE
+            and dict(observation.deterministic_attention.after)
+            == dict(observation.deterministic_attention.before)
+            and observation.deterministic_attention.restored is True
+        ),
         "allowlisted_backward_verified": _allowlisted_backward_is_valid(
             observation.allowlisted_backward
         ),
@@ -1156,6 +1419,9 @@ def _build_receipt(
         "allowlisted_backward": _allowlisted_backward_document(
             observation.allowlisted_backward
         ),
+        "deterministic_attention": _deterministic_attention_document(
+            observation.deterministic_attention
+        ),
         "parameter_inventory": [dict(item) for item in observation.parameter_inventory],
         "update_groups": {
             name: {"l2_norm": float(observation.update_groups[name])}
@@ -1193,7 +1459,7 @@ def _build_receipt(
     }
     return {
         "receipt_type": "feasibility",
-        "schema_version": 2,
+        "schema_version": 3,
         "normative": normative,
         "metadata": {"timestamp": datetime.now(UTC).isoformat(), "run_id": run_id},
     }

@@ -45,6 +45,38 @@ A4_SOURCE_SHA256 = {
         "fce24c79c8599e52f3648f549502879e9b396cc86f593c3a07baf10c002cead3"
     ),
 }
+A6_BEFORE = {
+    "cudnn": True,
+    "flash": True,
+    "math": True,
+    "memory_efficient": True,
+}
+A6_INSIDE = {
+    "cudnn": False,
+    "flash": False,
+    "math": True,
+    "memory_efficient": False,
+}
+A6_SOURCE_SHA256 = {
+    "torch_nn_attention": (
+        "56e10b6f965cc050db782dd4dc472097c9b02ec5b5fe3ab2c8b04055c0b0bbe0"
+    ),
+    "transformers_sdpa_attention": (
+        "d334e0b1d0c17ac97964348e49e6df681a4193241c8161f23292817ca39e2098"
+    ),
+}
+A5_MEMORY_EFFICIENT_WARNING = (
+    "Memory Efficient attention defaults to a non-deterministic algorithm. "
+    "To explicitly enable determinism call torch.use_deterministic_algorithms("
+    "True, warn_only=False). (Triggered internally at /pytorch/aten/src/ATen/"
+    "native/transformers/cuda/attention_backward.cu:900.)"
+)
+A5_FLASH_WARNING = (
+    "Flash Attention defaults to a non-deterministic algorithm. To explicitly "
+    "enable determinism call torch.use_deterministic_algorithms(True, "
+    "warn_only=False). (Triggered internally at /pytorch/aten/src/ATen/native/"
+    "transformers/cuda/attention_backward.cu:124.)"
+)
 GRID_WARNING = (
     "grid_sampler_2d_backward_cuda does not have a deterministic implementation."
 )
@@ -189,6 +221,61 @@ def _warning_evidence() -> feasibility_probe.BackwardWarningEvidence:
     )
 
 
+def _a6_model() -> SimpleNamespace:
+    return SimpleNamespace(config=SimpleNamespace(_attn_implementation="sdpa"))
+
+
+def _a6_attention_evidence() -> feasibility_probe.DeterministicAttentionEvidence:
+    return feasibility_probe.DeterministicAttentionEvidence(
+        attn_implementation="sdpa",
+        backend="MATH",
+        scope="labeled_forward_through_backward",
+        before=dict(A6_BEFORE),
+        inside=dict(A6_INSIDE),
+        after=dict(A6_BEFORE),
+        restored=True,
+        source_hash_rule=A4_SOURCE_HASH_RULE,
+        source_sha256=dict(A6_SOURCE_SHA256),
+    )
+
+
+def _a6_attention_document() -> dict[str, object]:
+    return {
+        "attn_implementation": "sdpa",
+        "backend": "MATH",
+        "scope": "labeled_forward_through_backward",
+        "before": dict(A6_BEFORE),
+        "inside": dict(A6_INSIDE),
+        "after": dict(A6_BEFORE),
+        "restored": True,
+        "source_hash_rule": A4_SOURCE_HASH_RULE,
+        "source_sha256": dict(A6_SOURCE_SHA256),
+    }
+
+
+def _patch_a6_sources(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        feasibility_probe,
+        "_verify_deterministic_attention_sources",
+        lambda: dict(A6_SOURCE_SHA256),
+    )
+
+
+def _a6_source_fixture(
+    tmp_path: Path,
+) -> tuple[dict[str, tuple[Path, Path]], dict[str, str]]:
+    locations: dict[str, tuple[Path, Path]] = {}
+    digests: dict[str, str] = {}
+    for name in A6_SOURCE_SHA256:
+        boundary = tmp_path / f"{name}-package"
+        source = boundary / "module.py"
+        source.parent.mkdir(parents=True)
+        source.write_text(f"# {name}\n", encoding="utf-8", newline="")
+        locations[name] = (source, boundary)
+        digests[name] = feasibility_probe._canonical_python_source_sha256(source)
+    return locations, digests
+
+
 def _observation(**changes: object) -> StepObservation:
     values: dict[str, object] = {
         "ordered_losses": (3.25,),
@@ -209,6 +296,7 @@ def _observation(**changes: object) -> StepObservation:
         "bf16_supported": True,
         "bf16_autocast_enabled": True,
         "allowlisted_backward": _warning_evidence(),
+        "deterministic_attention": _a6_attention_evidence(),
         "device": "cuda:0",
         "live_model_state_digest_after": "7" * 64,
         "trainable_parameter_count": 2,
@@ -285,13 +373,21 @@ def _observation(**changes: object) -> StepObservation:
 def _receipt() -> dict[str, object]:
     observation = _observation()
     comparison = feasibility_probe.exact_comparison(observation)
+    comparison["deterministic_attention"] = _a6_attention_document()
+    comparison["sha256"] = canonical_json_sha256(
+        {
+            name: value
+            for name, value in comparison.items()
+            if name not in {"rule", "sha256"}
+        }
+    )
     environment = _environment_evidence()
     parent = build_valid_model_contract_receipt()
     parent["metadata"]["receipt_content_sha256"] = _receipt_content_sha256(parent)
     parent_normative = parent["normative"]
     return {
         "receipt_type": "feasibility",
-        "schema_version": 2,
+        "schema_version": 3,
         "normative": {
             "model_sha256": parent_normative["model_sha256"],
             "config_sha256": parent_normative["config_sha256"],
@@ -323,6 +419,10 @@ def _receipt() -> dict[str, object]:
                 "cudnn_benchmark_disabled": True,
                 "canonical_environment": True,
                 "deterministic_algorithms": True,
+                "deterministic_attention_backend_restored": True,
+                "deterministic_attention_math_only": True,
+                "deterministic_attention_scope_verified": True,
+                "deterministic_attention_source_verified": True,
                 "allowlisted_backward_verified": True,
                 "strict_deterministic_error_mode_restored": True,
                 "exact_scipy": True,
@@ -341,6 +441,7 @@ def _receipt() -> dict[str, object]:
             "allowlisted_backward": feasibility_probe._allowlisted_backward_document(
                 observation.allowlisted_backward
             ),
+            "deterministic_attention": _a6_attention_document(),
             "parameter_inventory": [
                 dict(item) for item in observation.parameter_inventory
             ],
@@ -684,6 +785,324 @@ def test_allowlisted_backward_rejects_source_hash_drift_before_callback(
     assert called is False
 
 
+def test_a6_source_verification_precedes_labeled_callback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    configure_determinism(17)
+    callback_called = False
+
+    def fail_sources() -> dict[str, str]:
+        raise FeasibilityError("deterministic-attention source hash mismatch")
+
+    def labeled_forward() -> tuple[torch.Tensor, bool]:
+        nonlocal callback_called
+        callback_called = True
+        return torch.tensor(1.0, requires_grad=True), True
+
+    monkeypatch.setattr(
+        feasibility_probe,
+        "_verify_deterministic_attention_sources",
+        fail_sources,
+        raising=False,
+    )
+    with pytest.raises(FeasibilityError, match="source hash mismatch"):
+        feasibility_probe.run_math_only_labeled_forward_backward(
+            _a6_model(), labeled_forward, expected_warning_count=9
+        )
+    assert callback_called is False
+
+
+@pytest.mark.parametrize(
+    "drift",
+    ["missing", "extra", "renamed", "wrong_path", "wrong_hash"],
+)
+def test_a6_source_inventory_rejects_missing_extra_renamed_wrong_path_or_hash(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, drift: str
+) -> None:
+    locations, expected = _a6_source_fixture(tmp_path)
+    if drift == "missing":
+        locations.pop("torch_nn_attention")
+    elif drift == "extra":
+        locations["extra"] = next(iter(locations.values()))
+    elif drift == "renamed":
+        locations["renamed"] = locations.pop("torch_nn_attention")
+    elif drift == "wrong_path":
+        outside = tmp_path / "outside.py"
+        outside.write_text("# outside\n", encoding="utf-8")
+        boundary = locations["torch_nn_attention"][1]
+        locations["torch_nn_attention"] = (outside, boundary)
+    else:
+        expected["torch_nn_attention"] = "0" * 64
+    monkeypatch.setattr(
+        feasibility_probe,
+        "_deterministic_attention_source_locations",
+        lambda: locations,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        feasibility_probe,
+        "_DETERMINISTIC_ATTENTION_SOURCE_SHA256",
+        expected,
+        raising=False,
+    )
+
+    with pytest.raises(FeasibilityError, match="source (inventory|path|hash)"):
+        feasibility_probe._verify_deterministic_attention_sources()
+
+
+@pytest.mark.parametrize("drift", ["non_utf8", "nonregular", "link", "junction"])
+def test_a6_source_inventory_rejects_non_utf8_nonregular_link_or_junction(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, drift: str
+) -> None:
+    locations, expected = _a6_source_fixture(tmp_path)
+    source, _boundary = locations["torch_nn_attention"]
+    if drift == "non_utf8":
+        source.write_bytes(b"\xff\xfe")
+    elif drift == "nonregular":
+        source.unlink()
+        source.mkdir()
+    else:
+        monkeypatch.setattr(
+            feasibility_probe,
+            "_path_has_link",
+            lambda path, root: path == source,
+        )
+    monkeypatch.setattr(
+        feasibility_probe,
+        "_deterministic_attention_source_locations",
+        lambda: locations,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        feasibility_probe,
+        "_DETERMINISTIC_ATTENTION_SOURCE_SHA256",
+        expected,
+        raising=False,
+    )
+
+    with pytest.raises(
+        FeasibilityError, match="not UTF-8|not a regular file|link or junction"
+    ):
+        feasibility_probe._verify_deterministic_attention_sources()
+
+
+@pytest.mark.parametrize(
+    ("implementation", "entry", "expected"),
+    [
+        ("eager", A6_BEFORE, "requires sdpa"),
+        (
+            "sdpa",
+            {**A6_BEFORE, "flash": False},
+            "entry backend mismatch",
+        ),
+    ],
+)
+def test_a6_requires_sdpa_and_exact_entry_backend_state(
+    monkeypatch: pytest.MonkeyPatch,
+    implementation: str,
+    entry: dict[str, bool],
+    expected: str,
+) -> None:
+    configure_determinism(17)
+    _patch_a6_sources(monkeypatch)
+    monkeypatch.setattr(feasibility_probe, "_sdpa_backend_state", lambda: entry)
+    callback_called = False
+
+    def labeled_forward() -> tuple[torch.Tensor, bool]:
+        nonlocal callback_called
+        callback_called = True
+        return torch.tensor(1.0, requires_grad=True), True
+
+    model = SimpleNamespace(config=SimpleNamespace(_attn_implementation=implementation))
+    with pytest.raises(FeasibilityError, match=expected):
+        feasibility_probe.run_math_only_labeled_forward_backward(
+            model, labeled_forward, expected_warning_count=9
+        )
+    assert callback_called is False
+
+
+def test_a6_math_only_context_covers_forward_and_allowlisted_backward(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    configure_determinism(17)
+    seen: dict[str, dict[str, bool]] = {}
+    _patch_a6_sources(monkeypatch)
+
+    def labeled_forward() -> tuple[torch.Tensor, bool]:
+        seen["forward"] = feasibility_probe._sdpa_backend_state()
+        return torch.tensor(1.0, requires_grad=True), True
+
+    def bounded_backward(
+        callback: object, *, expected_count: int
+    ) -> feasibility_probe.BackwardWarningEvidence:
+        assert expected_count == 9
+        seen["backward"] = feasibility_probe._sdpa_backend_state()
+        assert callable(callback)
+        callback()
+        return _warning_evidence()
+
+    monkeypatch.setattr(feasibility_probe, "run_allowlisted_backward", bounded_backward)
+    (
+        loss,
+        autocast_seen,
+        warnings_seen,
+        attention,
+    ) = feasibility_probe.run_math_only_labeled_forward_backward(
+        _a6_model(), labeled_forward, expected_warning_count=9
+    )
+    assert loss.item() == 1.0
+    assert autocast_seen is True
+    assert warnings_seen == _warning_evidence()
+    assert seen == {"forward": A6_INSIDE, "backward": A6_INSIDE}
+    assert attention.before == A6_BEFORE
+    assert attention.inside == A6_INSIDE
+    assert attention.after == A6_BEFORE
+    assert attention.restored is True
+    assert feasibility_probe._sdpa_backend_state() == A6_BEFORE
+
+
+def test_a6_rejects_inside_backend_state_before_forward(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    configure_determinism(17)
+    _patch_a6_sources(monkeypatch)
+    states = iter((A6_BEFORE, {**A6_INSIDE, "flash": True}, A6_BEFORE))
+    monkeypatch.setattr(feasibility_probe, "_sdpa_backend_state", lambda: next(states))
+    callback_called = False
+
+    def labeled_forward() -> tuple[torch.Tensor, bool]:
+        nonlocal callback_called
+        callback_called = True
+        return torch.tensor(1.0, requires_grad=True), True
+
+    with pytest.raises(FeasibilityError, match="inside backend mismatch"):
+        feasibility_probe.run_math_only_labeled_forward_backward(
+            _a6_model(), labeled_forward, expected_warning_count=9
+        )
+    assert callback_called is False
+
+
+@pytest.mark.parametrize(
+    ("failure", "expected_type", "expected"),
+    [
+        ("forward", RuntimeError, "forward failure"),
+        ("invalid_loss", FeasibilityError, "scalar training loss"),
+        ("nonfinite_loss", FeasibilityError, "non-finite loss"),
+        ("backward", RuntimeError, "backward failure"),
+        ("warning", FeasibilityError, "warning validation failure"),
+    ],
+)
+def test_a6_restores_backends_for_every_body_failure(
+    monkeypatch: pytest.MonkeyPatch,
+    failure: str,
+    expected_type: type[BaseException],
+    expected: str,
+) -> None:
+    configure_determinism(17)
+    _patch_a6_sources(monkeypatch)
+
+    def labeled_forward() -> tuple[torch.Tensor, bool]:
+        if failure == "forward":
+            raise RuntimeError("forward failure")
+        if failure == "invalid_loss":
+            return torch.ones(2, requires_grad=True), True
+        if failure == "nonfinite_loss":
+            return torch.tensor(float("nan"), requires_grad=True), True
+        return torch.tensor(1.0, requires_grad=True), True
+
+    def bounded_backward(
+        callback: object, *, expected_count: int
+    ) -> feasibility_probe.BackwardWarningEvidence:
+        assert expected_count == 9
+        if failure == "backward":
+            raise RuntimeError("backward failure")
+        if failure == "warning":
+            raise FeasibilityError("warning validation failure")
+        assert callable(callback)
+        callback()
+        return _warning_evidence()
+
+    monkeypatch.setattr(feasibility_probe, "run_allowlisted_backward", bounded_backward)
+    with pytest.raises(expected_type, match=expected):
+        feasibility_probe.run_math_only_labeled_forward_backward(
+            _a6_model(), labeled_forward, expected_warning_count=9
+        )
+    assert feasibility_probe._sdpa_backend_state() == A6_BEFORE
+
+
+def test_a6_strict_mode_leak_is_a_restoration_failure_with_cause(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    configure_determinism(17)
+    _patch_a6_sources(monkeypatch)
+
+    def leak_strict_mode(
+        callback: object, *, expected_count: int
+    ) -> feasibility_probe.BackwardWarningEvidence:
+        assert callable(callback)
+        assert expected_count == 9
+        torch.use_deterministic_algorithms(True, warn_only=True)
+        torch.set_deterministic_debug_mode("warn")
+        raise RuntimeError("strict leak")
+
+    monkeypatch.setattr(feasibility_probe, "run_allowlisted_backward", leak_strict_mode)
+    try:
+        with pytest.raises(
+            FeasibilityError,
+            match="deterministic attention backend restoration mismatch",
+        ) as caught:
+            feasibility_probe.run_math_only_labeled_forward_backward(
+                _a6_model(),
+                lambda: (torch.tensor(1.0, requires_grad=True), True),
+                expected_warning_count=9,
+            )
+        assert isinstance(caught.value.__cause__, RuntimeError)
+        assert str(caught.value.__cause__) == "strict leak"
+        assert feasibility_probe._sdpa_backend_state() == A6_BEFORE
+    finally:
+        torch.use_deterministic_algorithms(True, warn_only=False)
+        torch.set_deterministic_debug_mode("error")
+
+
+def test_a6_post_backend_drift_is_a_restoration_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    configure_determinism(17)
+    _patch_a6_sources(monkeypatch)
+    states = iter((A6_BEFORE, A6_INSIDE, {**A6_BEFORE, "flash": False}))
+    monkeypatch.setattr(feasibility_probe, "_sdpa_backend_state", lambda: next(states))
+    monkeypatch.setattr(
+        feasibility_probe,
+        "run_allowlisted_backward",
+        lambda callback, *, expected_count: _warning_evidence(),
+    )
+    with pytest.raises(
+        FeasibilityError, match="deterministic attention backend restoration mismatch"
+    ):
+        feasibility_probe.run_math_only_labeled_forward_backward(
+            _a6_model(),
+            lambda: (torch.tensor(1.0, requires_grad=True), True),
+            expected_warning_count=9,
+        )
+
+
+@pytest.mark.parametrize("message", [A5_MEMORY_EFFICIENT_WARNING, A5_FLASH_WARNING])
+def test_a6_fused_attention_warnings_remain_rejected(
+    monkeypatch: pytest.MonkeyPatch, message: str
+) -> None:
+    configure_determinism(17)
+    monkeypatch.setattr(
+        feasibility_probe,
+        "_verify_allowlisted_backward_sources",
+        lambda: dict(A4_SOURCE_SHA256),
+    )
+    with pytest.raises(FeasibilityError) as caught:
+        feasibility_probe.run_allowlisted_backward(
+            lambda: _emit_warning_messages((message,)), expected_count=9
+        )
+    assert _warning_diagnostic(caught.value)["reason"] == "unparsable_message"
+
+
 def test_grid_sample_warning_count_is_derived_from_pinned_model_config() -> None:
     model = SimpleNamespace(
         config=SimpleNamespace(decoder_layers=3, num_feature_levels=3)
@@ -818,6 +1237,37 @@ def test_deterministic_comparison_is_exact_and_excludes_timing() -> None:
     }
 
 
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("attn_implementation", "eager"),
+        ("backend", "FLASH_ATTENTION"),
+        ("scope", "forward_only"),
+        ("before", {**A6_BEFORE, "flash": False}),
+        ("inside", {**A6_INSIDE, "math": False}),
+        ("after", {**A6_BEFORE, "memory_efficient": False}),
+        ("restored", False),
+        ("source_hash_rule", "raw-file-sha256-v1"),
+        (
+            "source_sha256",
+            {**A6_SOURCE_SHA256, "torch_nn_attention": "0" * 64},
+        ),
+    ],
+)
+def test_a6_deterministic_attention_changes_exact_replay_digest(
+    field: str, value: object
+) -> None:
+    original = feasibility_probe.exact_comparison(_observation())
+    changed_evidence = replace(_a6_attention_evidence(), **{field: value})
+    changed = feasibility_probe.exact_comparison(
+        _observation(deterministic_attention=changed_evidence)
+    )
+
+    assert original["deterministic_attention"] == _a6_attention_document()
+    assert changed["deterministic_attention"] != original["deterministic_attention"]
+    assert changed["sha256"] != original["sha256"]
+
+
 def test_buffer_only_state_change_cannot_prove_parameter_update() -> None:
     """Catch BatchNorm running buffers being mistaken for an AdamW parameter update."""
     model = torch.nn.BatchNorm1d(2)
@@ -920,16 +1370,158 @@ def test_feasibility_receipt_is_schema_valid_and_content_addressed(
     assert exact["sha256"] == canonical_json_sha256(
         {name: value for name, value in exact.items() if name not in {"rule", "sha256"}}
     )
+    assert (
+        exact["deterministic_attention"]
+        == stored["normative"]["deterministic_attention"]
+    )
 
 
-def test_historical_feasibility_schema_version_cannot_satisfy_a3(
+def test_a6_receipt_contract_is_schema_and_semantically_valid() -> None:
+    receipt = _receipt()
+    metadata = receipt["metadata"]
+    normative = receipt["normative"]
+    assert isinstance(metadata, dict)
+    assert isinstance(normative, dict)
+    metadata["receipt_content_sha256"] = _receipt_content_sha256(receipt)
+    schema_path = (
+        Path(__file__).resolve().parents[2]
+        / "schemas"
+        / "feasibility-receipt.schema.json"
+    )
+
+    validate_receipt(receipt, schema_path)
+    _validate_feasibility_consistency(
+        normative, metadata, schema_version=receipt["schema_version"]
+    )
+
+
+def test_historical_feasibility_schema_version_cannot_satisfy_a6(
     tmp_path: Path,
 ) -> None:
     receipt = _receipt()
-    receipt["schema_version"] = 1
+    receipt["schema_version"] = 2
 
     with pytest.raises(ReceiptValidationError, match="unknown receipt type or schema"):
         atomic_write_receipt(tmp_path / "historical.json", receipt)
+
+
+A6_INVARIANTS = (
+    "deterministic_attention_math_only",
+    "deterministic_attention_scope_verified",
+    "deterministic_attention_source_verified",
+    "deterministic_attention_backend_restored",
+)
+A6_RECEIPT_MUTATIONS = (
+    "object_missing",
+    "object_extra",
+    "object_renamed",
+    "attn_implementation",
+    "backend",
+    "scope",
+    *(f"{state}:{key}" for state in ("before", "inside", "after") for key in A6_BEFORE),
+    "backend_key_missing",
+    "backend_key_extra",
+    "restored",
+    "source_rule",
+    "source_missing",
+    "source_extra",
+    "source_renamed",
+    "source_torch_digest",
+    "source_transformers_digest",
+    "schema_version_2",
+    *(f"invariant_missing:{name}" for name in A6_INVARIANTS),
+    "invariant_extra",
+    *(f"invariant_false:{name}" for name in A6_INVARIANTS),
+    "replay_missing",
+    "replay_changed",
+    "replay_rehashed",
+)
+
+
+@pytest.mark.parametrize("case", A6_RECEIPT_MUTATIONS)
+def test_a6_receipt_rejects_every_deterministic_attention_drift(case: str) -> None:
+    receipt = _receipt()
+    normative = receipt["normative"]
+    metadata = receipt["metadata"]
+    assert isinstance(normative, dict)
+    assert isinstance(metadata, dict)
+    attention = normative["deterministic_attention"]
+    invariants = normative["invariants"]
+    replay = normative["exact_comparison"]
+    assert isinstance(attention, dict)
+    assert isinstance(invariants, dict)
+    assert isinstance(replay, dict)
+
+    if case == "object_missing":
+        normative.pop("deterministic_attention")
+    elif case == "object_extra":
+        attention["unexpected"] = True
+    elif case == "object_renamed":
+        attention["implementation"] = attention.pop("attn_implementation")
+    elif case == "attn_implementation":
+        attention["attn_implementation"] = "eager"
+    elif case == "backend":
+        attention["backend"] = "FLASH_ATTENTION"
+    elif case == "scope":
+        attention["scope"] = "forward_only"
+    elif case.startswith(("before:", "inside:", "after:")):
+        state, key = case.split(":", maxsplit=1)
+        attention[state][key] = not attention[state][key]
+    elif case == "backend_key_missing":
+        attention["inside"].pop("flash")
+    elif case == "backend_key_extra":
+        attention["inside"]["efficient"] = False
+    elif case == "restored":
+        attention["restored"] = False
+    elif case == "source_rule":
+        attention["source_hash_rule"] = "raw-file-sha256-v1"
+    elif case == "source_missing":
+        attention["source_sha256"].pop("torch_nn_attention")
+    elif case == "source_extra":
+        attention["source_sha256"]["extra"] = "0" * 64
+    elif case == "source_renamed":
+        sources = attention["source_sha256"]
+        sources["torch_attention"] = sources.pop("torch_nn_attention")
+    elif case == "source_torch_digest":
+        attention["source_sha256"]["torch_nn_attention"] = "0" * 64
+    elif case == "source_transformers_digest":
+        attention["source_sha256"]["transformers_sdpa_attention"] = "0" * 64
+    elif case == "schema_version_2":
+        receipt["schema_version"] = 2
+    elif case.startswith("invariant_missing:"):
+        invariants.pop(case.split(":", maxsplit=1)[1])
+    elif case == "invariant_extra":
+        invariants["deterministic_attention_unexpected"] = True
+    elif case.startswith("invariant_false:"):
+        invariants[case.split(":", maxsplit=1)[1]] = False
+    elif case == "replay_missing":
+        replay.pop("deterministic_attention")
+    else:
+        replay_attention = replay["deterministic_attention"]
+        replay_attention["backend"] = "FLASH_ATTENTION"
+        if case == "replay_rehashed":
+            replay["sha256"] = canonical_json_sha256(
+                {
+                    name: value
+                    for name, value in replay.items()
+                    if name not in {"rule", "sha256"}
+                }
+            )
+
+    metadata["receipt_content_sha256"] = _receipt_content_sha256(receipt)
+    schema_path = (
+        Path(__file__).resolve().parents[2]
+        / "schemas"
+        / "feasibility-receipt.schema.json"
+    )
+    with pytest.raises(ReceiptValidationError):
+        validate_receipt(receipt, schema_path)
+
+    metadata["receipt_content_sha256"] = _receipt_content_sha256(receipt)
+    with pytest.raises(ReceiptValidationError):
+        _validate_feasibility_consistency(
+            normative, metadata, schema_version=receipt["schema_version"]
+        )
 
 
 @pytest.mark.parametrize(
@@ -1042,7 +1634,7 @@ def test_a4_semantic_validator_rejects_source_identity_drift(
     with pytest.raises(
         ReceiptValidationError, match="allowlisted backward identity mismatch"
     ):
-        _validate_feasibility_consistency(normative, metadata, schema_version=2)
+        _validate_feasibility_consistency(normative, metadata, schema_version=3)
 
 
 @pytest.mark.parametrize(
@@ -1262,6 +1854,57 @@ def test_cli_paths_reject_data_root_and_noncanonical_locations(
             checkpoints / "feasibility-a",
             receipts / "feasibility-a.json",
         )
+
+
+def test_a6_cli_restoration_failure_writes_no_receipt_or_checkpoint(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    paths = (tmp_path / "model.json", tmp_path / "checkpoints", tmp_path / "out.json")
+    monkeypatch.setattr(feasibility_probe, "resolve_cli_paths", lambda *args: paths)
+    monkeypatch.setattr(
+        feasibility_probe, "create_directory_no_clobber", lambda path: None
+    )
+    configure_determinism(17)
+    _patch_a6_sources(monkeypatch)
+    states = iter((A6_BEFORE, A6_INSIDE, {**A6_BEFORE, "flash": False}))
+    monkeypatch.setattr(feasibility_probe, "_sdpa_backend_state", lambda: next(states))
+    monkeypatch.setattr(
+        feasibility_probe,
+        "run_allowlisted_backward",
+        lambda callback, *, expected_count: _warning_evidence(),
+    )
+
+    def fail_restoration(*args: object) -> None:
+        feasibility_probe.run_math_only_labeled_forward_backward(
+            _a6_model(),
+            lambda: (torch.tensor(1.0, requires_grad=True), True),
+            expected_warning_count=9,
+        )
+
+    monkeypatch.setattr(feasibility_probe, "_execute_probe", fail_restoration)
+    exit_code = feasibility_probe.main(
+        [
+            "--model-contract",
+            str(paths[0]),
+            "--checkpoint-root",
+            str(paths[1]),
+            "--run-id",
+            "run-a6-restoration-failure",
+            "--output",
+            str(paths[2]),
+        ]
+    )
+
+    captured = capsys.readouterr()
+    assert exit_code == 2
+    assert captured.err.strip() == (
+        "deterministic attention backend restoration mismatch"
+    )
+    assert "Traceback" not in captured.err
+    assert paths[2].exists() is False
+    assert paths[1].exists() is False
 
 
 def test_cli_reports_missing_training_backend_without_traceback(

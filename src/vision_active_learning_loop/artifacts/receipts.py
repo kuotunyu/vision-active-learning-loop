@@ -24,7 +24,7 @@ _SCHEMA_ROOT = Path(__file__).resolve().parents[3] / "schemas"
 _ALLOWED_SCHEMAS = {
     ("environment", 1): _SCHEMA_ROOT / "environment-receipt.schema.json",
     ("model-contract", 1): _SCHEMA_ROOT / "model-contract-receipt.schema.json",
-    ("feasibility", 2): _SCHEMA_ROOT / "feasibility-receipt.schema.json",
+    ("feasibility", 3): _SCHEMA_ROOT / "feasibility-receipt.schema.json",
     ("model-assets", 1): _SCHEMA_ROOT / "model-asset-receipt.schema.json",
     ("wave0-gate", 2): _SCHEMA_ROOT / "wave0-gate-receipt.schema.json",
 }
@@ -91,6 +91,39 @@ _A4_BACKWARD_SOURCE_SHA256 = {
     "transformers_modeling_rt_detr": (
         "fce24c79c8599e52f3648f549502879e9b396cc86f593c3a07baf10c002cead3"
     ),
+}
+_A6_DETERMINISTIC_ATTENTION = {
+    "attn_implementation": "sdpa",
+    "backend": "MATH",
+    "scope": "labeled_forward_through_backward",
+    "before": {
+        "cudnn": True,
+        "flash": True,
+        "math": True,
+        "memory_efficient": True,
+    },
+    "inside": {
+        "cudnn": False,
+        "flash": False,
+        "math": True,
+        "memory_efficient": False,
+    },
+    "after": {
+        "cudnn": True,
+        "flash": True,
+        "math": True,
+        "memory_efficient": True,
+    },
+    "restored": True,
+    "source_hash_rule": "python-source-lf-normalized-sha256-v1",
+    "source_sha256": {
+        "torch_nn_attention": (
+            "56e10b6f965cc050db782dd4dc472097c9b02ec5b5fe3ab2c8b04055c0b0bbe0"
+        ),
+        "transformers_sdpa_attention": (
+            "d334e0b1d0c17ac97964348e49e6df681a4193241c8161f23292817ca39e2098"
+        ),
+    },
 }
 _APPROVED_MODEL_DOCUMENT_HASHES = {
     "rtdetr": {
@@ -1014,8 +1047,8 @@ def _validate_feasibility_consistency(
     schema_version: object,
 ) -> None:
     """Reject feasibility claims that contradict their embedded observations."""
-    if schema_version != 2:
-        raise ReceiptValidationError("A3 requires feasibility schema version 2")
+    if schema_version != 3:
+        raise ReceiptValidationError("A6 requires feasibility schema version 3")
     runtime = normative.get("runtime")
     recipe = normative.get("recipe")
     shapes = normative.get("observed_shapes")
@@ -1030,6 +1063,7 @@ def _validate_feasibility_consistency(
     state_digests = normative.get("state_digests")
     comparison = normative.get("exact_comparison")
     allowlisted_backward = normative.get("allowlisted_backward")
+    deterministic_attention = normative.get("deterministic_attention")
     parameter_inventory = normative.get("parameter_inventory")
     update_groups = normative.get("update_groups")
     if not all(
@@ -1049,6 +1083,7 @@ def _validate_feasibility_consistency(
             state_digests,
             comparison,
             allowlisted_backward,
+            deterministic_attention,
             update_groups,
         )
     ) or not isinstance(parameter_inventory, list):
@@ -1067,6 +1102,7 @@ def _validate_feasibility_consistency(
     assert isinstance(state_digests, Mapping)
     assert isinstance(comparison, Mapping)
     assert isinstance(allowlisted_backward, Mapping)
+    assert isinstance(deterministic_attention, Mapping)
     assert isinstance(parameter_inventory, list)
     assert isinstance(update_groups, Mapping)
 
@@ -1217,6 +1253,8 @@ def _validate_feasibility_consistency(
         or allowlisted_backward.get("source_sha256") != _A4_BACKWARD_SOURCE_SHA256
     ):
         raise ReceiptValidationError("allowlisted backward identity mismatch")
+    if dict(deterministic_attention) != _A6_DETERMINISTIC_ATTENTION:
+        raise ReceiptValidationError("deterministic attention identity mismatch")
     raw_warnings = allowlisted_backward.get("raw_warnings")
     warning_categories = allowlisted_backward.get("warning_categories")
     operation_identifiers = allowlisted_backward.get("operation_identifiers")
@@ -1332,6 +1370,10 @@ def _validate_feasibility_consistency(
         raise ReceiptValidationError("exact comparison state digests mismatch")
     if comparison.get("allowlisted_backward") != allowlisted_backward:
         raise ReceiptValidationError("exact comparison warning evidence mismatch")
+    if comparison.get("deterministic_attention") != deterministic_attention:
+        raise ReceiptValidationError(
+            "exact comparison deterministic attention mismatch"
+        )
     if (
         comparison.get("checkpoint_epoch") != 0
         or comparison.get("checkpoint_step") != 1
@@ -1384,6 +1426,10 @@ def _validate_feasibility_consistency(
         and step.get("trainable_parameter_count", 0) > 0
         and step.get("parameter_digest_before") != step.get("parameter_digest_after")
     )
+    attention_before = deterministic_attention.get("before")
+    attention_inside = deterministic_attention.get("inside")
+    attention_after = deterministic_attention.get("after")
+    attention_sources = deterministic_attention.get("source_sha256")
     expected_evidence = {
         "parameter_changed": parameter_update_observed,
         "adamw_update": parameter_update_observed
@@ -1423,6 +1469,28 @@ def _validate_feasibility_consistency(
         and runtime.get("device") == selected_cuda.get("selected_device"),
         "deterministic_algorithms": runtime.get("deterministic_algorithms") is True
         and runtime.get("deterministic_debug_mode") == 2,
+        "deterministic_attention_math_only": (
+            deterministic_attention.get("attn_implementation") == "sdpa"
+            and deterministic_attention.get("backend") == "MATH"
+            and isinstance(attention_inside, Mapping)
+            and dict(attention_inside) == _A6_DETERMINISTIC_ATTENTION["inside"]
+        ),
+        "deterministic_attention_scope_verified": (
+            deterministic_attention.get("scope") == "labeled_forward_through_backward"
+        ),
+        "deterministic_attention_source_verified": (
+            deterministic_attention.get("source_hash_rule")
+            == "python-source-lf-normalized-sha256-v1"
+            and isinstance(attention_sources, Mapping)
+            and dict(attention_sources) == _A6_DETERMINISTIC_ATTENTION["source_sha256"]
+        ),
+        "deterministic_attention_backend_restored": (
+            isinstance(attention_before, Mapping)
+            and dict(attention_before) == _A6_DETERMINISTIC_ATTENTION["before"]
+            and isinstance(attention_after, Mapping)
+            and dict(attention_after) == dict(attention_before)
+            and deterministic_attention.get("restored") is True
+        ),
         "exact_scipy": observed_environment.get("scipy") == "1.18.0",
         "finite_gradients": step.get("finite_gradients") is True,
         "finite_loss": step.get("finite_loss") is True

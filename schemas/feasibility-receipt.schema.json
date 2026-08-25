@@ -6,7 +6,7 @@
   "required": ["receipt_type", "schema_version", "normative", "metadata"],
   "properties": {
     "receipt_type": {"const": "feasibility"},
-    "schema_version": {"const": 2},
+    "schema_version": {"const": 3},
     "normative": {
       "type": "object",
       "additionalProperties": false,
@@ -17,6 +17,7 @@
         "environment", "model_contract_receipt_sha256", "parent_model_contract",
         "checkpoint_sha256", "checkpoint_state_sha256", "observed_shapes",
         "invariants", "ordered_losses", "state_digests", "allowlisted_backward",
+        "deterministic_attention",
         "parameter_inventory", "update_groups", "exact_comparison", "step",
         "checkpoint", "synthetic_labels", "runtime", "recipe", "timing", "vram",
         "resume_verified", "status", "errors"
@@ -54,7 +55,9 @@
             "bf16_autocast", "bf16_supported", "checkpoint_content_verified",
             "checkpoint_round_trip", "cublas_workspace_configured",
             "cudnn_benchmark_disabled", "canonical_environment",
-            "deterministic_algorithms", "exact_scipy", "finite_gradients",
+            "deterministic_algorithms", "deterministic_attention_backend_restored",
+            "deterministic_attention_math_only", "deterministic_attention_scope_verified",
+            "deterministic_attention_source_verified", "exact_scipy", "finite_gradients",
             "finite_loss", "gradient_clip_0_1", "parameter_changed",
             "peak_allocated_vram_within_22_gib", "resume_state_verified", "seed_17",
             "strict_deterministic_error_mode_restored", "synthetic_labels_only",
@@ -72,6 +75,10 @@
             "cudnn_benchmark_disabled": {"type": "boolean"},
             "canonical_environment": {"type": "boolean"},
             "deterministic_algorithms": {"type": "boolean"},
+            "deterministic_attention_backend_restored": {"type": "boolean"},
+            "deterministic_attention_math_only": {"type": "boolean"},
+            "deterministic_attention_scope_verified": {"type": "boolean"},
+            "deterministic_attention_source_verified": {"type": "boolean"},
             "exact_scipy": {"type": "boolean"},
             "finite_gradients": {"type": "boolean"},
             "finite_loss": {"type": "boolean"},
@@ -88,6 +95,7 @@
         "ordered_losses": {"type": "array", "minItems": 1, "items": {"type": "number"}},
         "state_digests": {"$ref": "#/$defs/state_digests"},
         "allowlisted_backward": {"$ref": "#/$defs/allowlisted_backward"},
+        "deterministic_attention": {"$ref": "#/$defs/deterministic_attention"},
         "parameter_inventory": {
           "type": "array", "minItems": 2, "items": {"$ref": "#/$defs/parameter_inventory_entry"}
         },
@@ -272,6 +280,52 @@
         "strict_mode_restored": {"const": true}
       }
     },
+    "sdpa_backend_state": {
+      "type": "object", "additionalProperties": false,
+      "required": ["cudnn", "flash", "math", "memory_efficient"],
+      "properties": {
+        "cudnn": {"type": "boolean"},
+        "flash": {"type": "boolean"},
+        "math": {"type": "boolean"},
+        "memory_efficient": {"type": "boolean"}
+      }
+    },
+    "deterministic_attention": {
+      "type": "object", "additionalProperties": false,
+      "const": {
+        "attn_implementation": "sdpa",
+        "backend": "MATH",
+        "scope": "labeled_forward_through_backward",
+        "before": {"cudnn": true, "flash": true, "math": true, "memory_efficient": true},
+        "inside": {"cudnn": false, "flash": false, "math": true, "memory_efficient": false},
+        "after": {"cudnn": true, "flash": true, "math": true, "memory_efficient": true},
+        "restored": true,
+        "source_hash_rule": "python-source-lf-normalized-sha256-v1",
+        "source_sha256": {
+          "torch_nn_attention": "56e10b6f965cc050db782dd4dc472097c9b02ec5b5fe3ab2c8b04055c0b0bbe0",
+          "transformers_sdpa_attention": "d334e0b1d0c17ac97964348e49e6df681a4193241c8161f23292817ca39e2098"
+        }
+      },
+      "required": ["attn_implementation", "backend", "scope", "before", "inside", "after", "restored", "source_hash_rule", "source_sha256"],
+      "properties": {
+        "attn_implementation": {"const": "sdpa"},
+        "backend": {"const": "MATH"},
+        "scope": {"const": "labeled_forward_through_backward"},
+        "before": {"$ref": "#/$defs/sdpa_backend_state"},
+        "inside": {"$ref": "#/$defs/sdpa_backend_state"},
+        "after": {"$ref": "#/$defs/sdpa_backend_state"},
+        "restored": {"const": true},
+        "source_hash_rule": {"const": "python-source-lf-normalized-sha256-v1"},
+        "source_sha256": {
+          "type": "object", "additionalProperties": false,
+          "required": ["torch_nn_attention", "transformers_sdpa_attention"],
+          "properties": {
+            "torch_nn_attention": {"const": "56e10b6f965cc050db782dd4dc472097c9b02ec5b5fe3ab2c8b04055c0b0bbe0"},
+            "transformers_sdpa_attention": {"const": "d334e0b1d0c17ac97964348e49e6df681a4193241c8161f23292817ca39e2098"}
+          }
+        }
+      }
+    },
     "replay_state_digests": {
       "type": "object", "additionalProperties": false,
       "required": ["scheduler", "scaler", "rng", "sampler"],
@@ -282,7 +336,7 @@
     },
     "exact_comparison": {
       "type": "object", "additionalProperties": false,
-      "required": ["rule", "parameter_digest_before", "parameter_inventory", "ordered_loss_hex", "optimizer_groups", "scheduler_state_before_sha256", "sampler_order_digest", "semantic_input_digests", "checkpoint_epoch", "checkpoint_step", "model_state_inventory", "state_digests", "allowlisted_backward", "sha256"],
+      "required": ["rule", "parameter_digest_before", "parameter_inventory", "ordered_loss_hex", "optimizer_groups", "scheduler_state_before_sha256", "sampler_order_digest", "semantic_input_digests", "checkpoint_epoch", "checkpoint_step", "model_state_inventory", "state_digests", "allowlisted_backward", "deterministic_attention", "sha256"],
       "properties": {
         "rule": {"const": "wave0-a3-exact-replay-sha256-v1"},
         "parameter_digest_before": {"$ref": "#/$defs/sha256"},
@@ -304,6 +358,7 @@
         "model_state_inventory": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/model_state_inventory_entry"}},
         "state_digests": {"$ref": "#/$defs/replay_state_digests"},
         "allowlisted_backward": {"$ref": "#/$defs/allowlisted_backward"},
+        "deterministic_attention": {"$ref": "#/$defs/deterministic_attention"},
         "sha256": {"$ref": "#/$defs/sha256"}
       }
     },
