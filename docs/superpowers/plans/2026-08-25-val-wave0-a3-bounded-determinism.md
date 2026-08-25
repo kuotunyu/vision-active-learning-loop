@@ -24,10 +24,11 @@
 | Area | Exact files | Action |
 |---|---|---|
 | Bounded backward and feasibility v2 | `src/vision_active_learning_loop/probes/training_feasibility.py`; `tests/probes/test_training_feasibility.py`; `schemas/feasibility-receipt.schema.json` | Modify |
+| Receipt-version dispatch and semantic validation | `src/vision_active_learning_loop/artifacts/receipts.py` | Modify |
 | Replay comparison | `src/vision_active_learning_loop/gates/numerical_replay.py`; `tests/gates/test_numerical_replay.py` | Create |
 | Aggregate gate v2 | `src/vision_active_learning_loop/gates/wave0.py`; `tests/gates/test_wave0_gate.py`; `schemas/wave0-gate-receipt.schema.json` | Modify |
 
-No other tracked file is expected. If implementation requires another tracked file, stop, explain the necessity, and amend this plan/spec before expanding scope.
+No other tracked file is expected. The central receipt validator is required because it owns the allowlisted `(receipt_type, schema_version)` dispatch and semantic consistency checks; editing only a JSON Schema would leave both A3 receipt types unpublishable. If implementation requires another tracked file, stop, explain the necessity, and amend this plan/spec before expanding scope.
 
 ---
 
@@ -113,6 +114,7 @@ Expected GREEN: the exact exception passes; every other warning path fails; stri
 - Modify: `tests/probes/test_training_feasibility.py`
 - Modify: `src/vision_active_learning_loop/probes/training_feasibility.py`
 - Modify: `schemas/feasibility-receipt.schema.json`
+- Modify: `src/vision_active_learning_loop/artifacts/receipts.py`
 
 **Receipt contract:** `schema_version == 2`; retain all applicable A2 evidence; require `allowlisted_backward`, ordered `parameter_inventory`, `update_groups`, and `exact_comparison`; prohibit the old `deterministic_fallback_absent` interpretation.
 
@@ -134,6 +136,8 @@ Before forward, snapshot every trainable parameter to CPU without altering model
 Extend `StepObservation` with structured warning evidence, parameter inventory, update-group norms, and exact-comparison inputs. Keep post-update model/optimizer digests as per-run content identities, but do not put them into the cross-run exact hash.
 
 - [ ] **Step 3: Migrate the feasibility schema and validation tests to v2**
+
+Register `("feasibility", 2)` and, in preparation for Task 4, `("wave0-gate", 2)` as the only current schema versions for those receipt types. Version 1 remains rejected by current A3 code rather than being remapped to the v2 schema. Dispatch semantic validation by the receipt's explicit version so the new field inventory is checked directly and the historical validator cannot silently reinterpret it.
 
 The schema must enumerate every allowed property with `additionalProperties: false`. Define reusable strict objects for:
 
@@ -331,11 +335,11 @@ Review the complete staged diff from a clean context against specification Secti
 
 - [ ] **Step 4: Verify immutable evidence and file scope**
 
-Hash every pre-existing campaign/evidence file from the preserved baseline inventory and compare it with the pre-change values. Verify `git diff --name-only` contains only the eight A3 files in this plan and that `uv.lock`, pinned-model config, Dockerfiles, specs, older plans, scripts, historical evidence, and all model/data identities are unchanged.
+Hash every pre-existing campaign/evidence file from the preserved baseline inventory and compare it with the pre-change values. Verify `git diff --name-only` contains only the nine A3 files in this plan and that `uv.lock`, pinned-model config, Dockerfiles, specs, older plans, scripts, historical evidence, and all model/data identities are unchanged.
 
 - [ ] **Step 5: Create one append-only implementation commit**
 
-Stage only the eight A3 implementation files. Use exact author and committer identity `kuotunyu <61350295+kuotunyu@users.noreply.github.com>` and do not amend, rebase, squash, or rewrite history.
+Stage only the nine A3 implementation files. Use exact author and committer identity `kuotunyu <61350295+kuotunyu@users.noreply.github.com>` and do not amend, rebase, squash, or rewrite history.
 
 ```powershell
 git commit -m "fix: bound Wave 0 CUDA replay"
