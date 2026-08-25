@@ -82,6 +82,17 @@ _ALLOWLISTED_BACKWARD_SOURCE_SHA256 = {
 _DETERMINISTIC_WARNING_PATTERN = re.compile(
     r"^([A-Za-z0-9_]+) does not have a deterministic implementation(?:[,.]|$)"
 )
+_WARNING_CONTRACT_DIAGNOSTIC_PREFIX = (
+    "deterministic backward warning contract failure; diagnostic="
+)
+_WARNING_CONTRACT_DIAGNOSTIC_REASONS = frozenset(
+    {
+        "unparsable_message",
+        "unexpected_category",
+        "count_mismatch",
+        "unexpected_operation",
+    }
+)
 _FIXTURE_MANIFEST = (
     _project_root() / "fixtures" / "synthetic" / "wave0" / "fixture-manifest.json"
 )
@@ -365,6 +376,30 @@ def _verify_allowlisted_backward_sources() -> dict[str, str]:
     return observed
 
 
+def _warning_contract_error(
+    reason: str,
+    raw_warnings: tuple[str, ...],
+    warning_categories: tuple[str, ...],
+) -> FeasibilityError:
+    if reason not in _WARNING_CONTRACT_DIAGNOSTIC_REASONS:
+        raise ValueError("unknown warning diagnostic reason")
+    warning_inventory = [
+        {"category": category, "index": index, "message": message}
+        for index, (message, category) in enumerate(
+            zip(raw_warnings, warning_categories, strict=True)
+        )
+    ]
+    diagnostic = {
+        "reason": reason,
+        "schema_version": 1,
+        "warnings": warning_inventory,
+    }
+    encoded = json.dumps(
+        diagnostic, ensure_ascii=True, sort_keys=True, separators=(",", ":")
+    )
+    return FeasibilityError(_WARNING_CONTRACT_DIAGNOSTIC_PREFIX + encoded)
+
+
 def run_allowlisted_backward(
     backward: Callable[[], None], *, expected_count: int
 ) -> BackwardWarningEvidence:
@@ -395,18 +430,26 @@ def run_allowlisted_backward(
     for message, category in zip(raw_warnings, warning_categories, strict=True):
         match = _DETERMINISTIC_WARNING_PATTERN.match(message)
         if match is None:
-            raise FeasibilityError("unparsable deterministic backward warning")
+            raise _warning_contract_error(
+                "unparsable_message", raw_warnings, warning_categories
+            )
         if category != "UserWarning":
-            raise FeasibilityError("unexpected deterministic warning category")
+            raise _warning_contract_error(
+                "unexpected_category", raw_warnings, warning_categories
+            )
         identifiers.append(match.group(1))
     operation_identifiers = tuple(identifiers)
     if len(operation_identifiers) != expected_count:
-        raise FeasibilityError("allowlisted backward warning count mismatch")
+        raise _warning_contract_error(
+            "count_mismatch", raw_warnings, warning_categories
+        )
     if any(
         identifier != _ALLOWLISTED_BACKWARD_OPERATION
         for identifier in operation_identifiers
     ):
-        raise FeasibilityError("unexpected deterministic backward operation")
+        raise _warning_contract_error(
+            "unexpected_operation", raw_warnings, warning_categories
+        )
     return BackwardWarningEvidence(
         operation_identifier=_ALLOWLISTED_BACKWARD_OPERATION,
         expected_count=expected_count,

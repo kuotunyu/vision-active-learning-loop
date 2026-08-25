@@ -48,6 +48,18 @@ A4_SOURCE_SHA256 = {
 GRID_WARNING = (
     "grid_sampler_2d_backward_cuda does not have a deterministic implementation."
 )
+WARNING_DIAGNOSTIC_PREFIX = (
+    "deterministic backward warning contract failure; diagnostic="
+)
+
+
+def _warning_diagnostic(error: BaseException) -> dict[str, object]:
+    text = str(error)
+    assert text.startswith(WARNING_DIAGNOSTIC_PREFIX)
+    document = json.loads(text.removeprefix(WARNING_DIAGNOSTIC_PREFIX))
+    assert set(document) == {"reason", "schema_version", "warnings"}
+    assert document["schema_version"] == 1
+    return document
 
 
 def _emit_grid_sample_warnings(count: int) -> None:
@@ -531,39 +543,39 @@ def test_allowlisted_backward_rejects_link_or_junction_before_callback(
 
 
 @pytest.mark.parametrize(
-    ("messages", "category", "expected"),
+    ("messages", "category", "expected_reason"),
     [
-        ((), UserWarning, "count mismatch"),
+        ((), UserWarning, "count_mismatch"),
         (
             (GRID_WARNING,) * 8,
             UserWarning,
-            "count mismatch",
+            "count_mismatch",
         ),
         (
             (GRID_WARNING,) * 10,
             UserWarning,
-            "count mismatch",
+            "count_mismatch",
         ),
         (
             ("other_backward_cuda does not have a deterministic implementation.",) * 9,
             UserWarning,
-            "unexpected deterministic backward operation",
+            "unexpected_operation",
         ),
         (
             (GRID_WARNING,) * 8
             + ("other_backward_cuda does not have a deterministic implementation.",),
             UserWarning,
-            "unexpected deterministic backward operation",
+            "unexpected_operation",
         ),
         (
             ("deterministic warning without an operation identifier",),
             UserWarning,
-            "unparsable",
+            "unparsable_message",
         ),
         (
             (GRID_WARNING,) * 9,
             RuntimeWarning,
-            "unexpected deterministic warning category",
+            "unexpected_category",
         ),
     ],
     ids=[
@@ -577,18 +589,52 @@ def test_allowlisted_backward_rejects_link_or_junction_before_callback(
     ],
 )
 def test_allowlisted_backward_rejects_every_inventory_drift(
-    messages: tuple[str, ...], category: type[Warning], expected: str
+    messages: tuple[str, ...], category: type[Warning], expected_reason: str
 ) -> None:
     configure_determinism(seed=17)
 
-    with pytest.raises(FeasibilityError, match=expected):
+    with pytest.raises(FeasibilityError) as caught:
         feasibility_probe.run_allowlisted_backward(
             lambda: _emit_warning_messages(messages, category), expected_count=9
         )
 
+    diagnostic = _warning_diagnostic(caught.value)
+    assert diagnostic["reason"] == expected_reason
+    assert diagnostic["warnings"] == [
+        {"category": category.__name__, "index": index, "message": message}
+        for index, message in enumerate(messages)
+    ]
     assert torch.are_deterministic_algorithms_enabled() is True
     assert torch.is_deterministic_algorithms_warn_only_enabled() is False
     assert torch.get_deterministic_debug_mode() == 2
+
+
+def test_warning_diagnostic_preserves_complete_special_character_inventory() -> None:
+    configure_determinism(seed=17)
+    special = (
+        "other_backward_cuda does not have a deterministic implementation, "
+        'details="quoted"\\path\n雪'
+    )
+    messages = (GRID_WARNING,) * 8 + (special,)
+
+    with pytest.raises(FeasibilityError) as caught:
+        feasibility_probe.run_allowlisted_backward(
+            lambda: _emit_warning_messages(messages), expected_count=9
+        )
+
+    diagnostic = _warning_diagnostic(caught.value)
+    assert diagnostic == {
+        "reason": "unexpected_operation",
+        "schema_version": 1,
+        "warnings": [
+            {"category": "UserWarning", "index": index, "message": message}
+            for index, message in enumerate(messages)
+        ],
+    }
+    expected_json = json.dumps(
+        diagnostic, ensure_ascii=True, sort_keys=True, separators=(",", ":")
+    )
+    assert str(caught.value) == WARNING_DIAGNOSTIC_PREFIX + expected_json
 
 
 def test_allowlisted_backward_requires_strict_error_mode_on_entry() -> None:
@@ -1249,6 +1295,58 @@ def test_cli_reports_missing_training_backend_without_traceback(
     assert exit_code == 2
     assert captured.err.strip() == "SciPy is required"
     assert "Traceback" not in captured.err
+
+
+def test_cli_reports_warning_diagnostic_without_receipt_or_traceback(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    paths = (tmp_path / "model.json", tmp_path / "checkpoints", tmp_path / "out.json")
+    monkeypatch.setattr(feasibility_probe, "resolve_cli_paths", lambda *args: paths)
+    configure_determinism(seed=17)
+
+    def fail_with_warning(*args: object) -> None:
+        feasibility_probe.run_allowlisted_backward(
+            lambda: _emit_warning_messages(
+                ("deterministic warning without an operation identifier",)
+            ),
+            expected_count=9,
+        )
+
+    monkeypatch.setattr(feasibility_probe, "_execute_probe", fail_with_warning)
+
+    exit_code = feasibility_probe.main(
+        [
+            "--model-contract",
+            str(paths[0]),
+            "--checkpoint-root",
+            str(paths[1]),
+            "--run-id",
+            "run-a",
+            "--output",
+            str(paths[2]),
+        ]
+    )
+
+    captured = capsys.readouterr()
+    assert exit_code == 2
+    diagnostic = _warning_diagnostic(FeasibilityError(captured.err.strip()))
+    assert diagnostic == {
+        "reason": "unparsable_message",
+        "schema_version": 1,
+        "warnings": [
+            {
+                "category": "UserWarning",
+                "index": 0,
+                "message": "deterministic warning without an operation identifier",
+            }
+        ],
+    }
+    assert "Traceback" not in captured.err
+    assert paths[2].exists() is False
+    assert paths[1].is_dir()
+    assert list(paths[1].iterdir()) == []
 
 
 @pytest.mark.parametrize(
