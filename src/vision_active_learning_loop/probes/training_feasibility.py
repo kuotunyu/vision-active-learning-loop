@@ -991,9 +991,6 @@ def run_one_step_smoke(
         sampler_order_digest=sampler_digest,
         rng_state=capture_rng_state(),
         input_digests={str(name): str(value) for name, value in input_digests.items()},
-        semantic_input_digests={
-            str(name): str(value) for name, value in semantic_input_digests.items()
-        },
     )
     digests = checkpoint_state_digests(state)
     observation = StepObservation(

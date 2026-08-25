@@ -522,6 +522,191 @@ def _receipt() -> dict[str, object]:
     }
 
 
+def test_run_one_step_keeps_semantic_digests_out_of_checkpoint_state(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Catch passing replay-only semantic digests into the real checkpoint type."""
+
+    class FakeParameter:
+        requires_grad = True
+        device = torch.device("cuda:0")
+        grad = torch.ones(1)
+
+    class FakeModel:
+        def __init__(self) -> None:
+            self.parameter = FakeParameter()
+
+        def parameters(self):
+            return iter((self.parameter,))
+
+        def train(self) -> None:
+            return None
+
+    class FakeOptimizer:
+        def zero_grad(self, *, set_to_none: bool) -> None:
+            assert set_to_none is True
+
+        def step(self) -> None:
+            return None
+
+        def state_dict(self) -> dict[str, object]:
+            return {}
+
+    class FakeScheduler:
+        def step(self) -> None:
+            return None
+
+        def state_dict(self) -> dict[str, object]:
+            return {}
+
+    class FakeEvent:
+        def __init__(self, *, enable_timing: bool) -> None:
+            assert enable_timing is True
+
+        def record(self) -> None:
+            return None
+
+        def elapsed_time(self, other: object) -> float:
+            assert isinstance(other, FakeEvent)
+            return 1.0
+
+    semantic_digests = {
+        "fixture_sha256": "1" * 64,
+        "synthetic_target_sha256": "2" * 64,
+    }
+    batch = {
+        "pixel_values": torch.empty((2, 3, 640, 640), device="meta"),
+        "pixel_mask": torch.empty((2, 640, 640), device="meta"),
+        "labels": [{}, {}],
+        "_val_item_ids": ["wide-gradient", "tall-checker"],
+        "_val_input_digests": {"model_contract_receipt": "3" * 64},
+        "_val_semantic_input_digests": semantic_digests,
+    }
+    digest_values = iter(("4" * 64, "5" * 64))
+    state_digests = {
+        "model": "6" * 64,
+        "optimizer": "7" * 64,
+        "scheduler": "8" * 64,
+        "scaler": "9" * 64,
+        "rng": "a" * 64,
+        "sampler": "b" * 64,
+    }
+    monkeypatch.setattr(
+        feasibility_probe,
+        "configure_determinism",
+        lambda seed: feasibility_probe.DeterminismState(
+            seed=seed,
+            cuda_matmul_allow_tf32=False,
+            cudnn_allow_tf32=False,
+            cudnn_benchmark=False,
+            deterministic_algorithms=True,
+            deterministic_debug_mode=2,
+            cublas_workspace_config=":4096:8",
+            bf16_supported=True,
+        ),
+    )
+    monkeypatch.setattr(
+        feasibility_probe, "build_optimizer", lambda model: FakeOptimizer()
+    )
+    monkeypatch.setattr(
+        feasibility_probe, "build_scheduler", lambda optimizer: FakeScheduler()
+    )
+    monkeypatch.setattr(
+        feasibility_probe,
+        "_optimizer_group_evidence",
+        lambda optimizer: (
+            {"group_name": "detector", "learning_rate": 1e-4, "weight_decay": 1e-4},
+            {"group_name": "backbone", "learning_rate": 1e-5, "weight_decay": 1e-4},
+        ),
+    )
+    monkeypatch.setattr(
+        feasibility_probe, "structured_state_sha256", lambda state: "c" * 64
+    )
+    monkeypatch.setattr(
+        feasibility_probe,
+        "_capture_parameter_baseline",
+        lambda model: feasibility_probe.ParameterBaseline(
+            inventory=(
+                {
+                    "name": "detector.weight",
+                    "group_name": "detector",
+                    "shape": [1],
+                    "dtype": "float32",
+                },
+            ),
+            values=(torch.zeros(1),),
+        ),
+    )
+    monkeypatch.setattr(
+        feasibility_probe,
+        "trainable_parameter_sha256",
+        lambda model: next(digest_values),
+    )
+    monkeypatch.setattr(
+        feasibility_probe,
+        "run_math_only_labeled_forward_backward",
+        lambda model, labeled_forward, *, expected_warning_count: (
+            torch.tensor(1.0),
+            True,
+            _warning_evidence(),
+            _a6_attention_evidence(),
+        ),
+    )
+    monkeypatch.setattr(
+        feasibility_probe, "_expected_grid_sample_warning_count", lambda model: 9
+    )
+    monkeypatch.setattr(
+        torch.nn.utils,
+        "clip_grad_norm_",
+        lambda parameters, max_norm: torch.tensor(0.5),
+    )
+    monkeypatch.setattr(
+        feasibility_probe,
+        "_measure_parameter_update_groups",
+        lambda model, baseline: {"detector": 0.25, "backbone": 0.125},
+    )
+    monkeypatch.setattr(
+        feasibility_probe,
+        "_model_state_inventory",
+        lambda model: (
+            {
+                "name": "detector.weight",
+                "shape": [1],
+                "dtype": "float32",
+                "trainable": True,
+            },
+        ),
+    )
+    monkeypatch.setattr(
+        feasibility_probe,
+        "_capture_checkpoint_model_state",
+        lambda model: ({"detector.weight": torch.ones(1)}, "d" * 64),
+    )
+    monkeypatch.setattr(
+        feasibility_probe,
+        "capture_rng_state",
+        lambda: {"python": {}, "numpy": {}, "torch_cpu": [], "torch_cuda": []},
+    )
+    monkeypatch.setattr(
+        feasibility_probe, "checkpoint_state_digests", lambda state: state_digests
+    )
+    monkeypatch.setattr(
+        feasibility_probe, "evaluate_step_observation", lambda observation: observation
+    )
+    monkeypatch.setattr(torch.cuda, "reset_peak_memory_stats", lambda device: None)
+    monkeypatch.setattr(torch.cuda, "synchronize", lambda device: None)
+    monkeypatch.setattr(torch.cuda, "Event", FakeEvent)
+    monkeypatch.setattr(torch.cuda, "max_memory_allocated", lambda device: 0)
+    monkeypatch.setattr(torch.cuda, "max_memory_reserved", lambda device: 0)
+    monkeypatch.setattr(torch.cuda, "is_bf16_supported", lambda: True)
+
+    observation = feasibility_probe.run_one_step_smoke(FakeModel(), batch, seed=17)
+
+    assert isinstance(observation.checkpoint_state, feasibility_probe.CheckpointState)
+    assert not hasattr(observation.checkpoint_state, "semantic_input_digests")
+    assert observation.semantic_input_digests == semantic_digests
+
+
 def test_tf32_is_disabled_and_runtime_controls_are_exact(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
