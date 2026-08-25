@@ -1,4 +1,4 @@
-"""Aggregate immutable Wave 0 A2 evidence without starting Wave 1."""
+"""Aggregate immutable Wave 0 A3 evidence without starting Wave 1."""
 
 from __future__ import annotations
 
@@ -11,7 +11,6 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
-from ..artifacts.digests import canonical_json_sha256
 from ..artifacts.no_clobber import NoClobberError, NoClobberUnsupportedError
 from ..artifacts.receipts import (
     ReceiptValidationError,
@@ -19,6 +18,12 @@ from ..artifacts.receipts import (
     validate_receipt,
 )
 from ..cli_manifest import command
+from ..training.checkpoint_io import (
+    CheckpointState,
+    CheckpointVerificationError,
+    load_checkpoint_verified,
+)
+from .numerical_replay import compare_replay
 
 _SCHEMA_ROOT = Path(__file__).resolve().parents[3] / "schemas"
 _RECEIPT_FILENAMES = {
@@ -35,7 +40,6 @@ _SCHEMA_FILENAMES = {
     "feasibility_a": "feasibility-receipt.schema.json",
     "feasibility_b": "feasibility-receipt.schema.json",
 }
-_ATTEMPT_NAMES = ("primary", "clean_a", "clean_b")
 _LOSS_SOURCE_SHA256 = "01c6fe0bdc5965ccf71e7eabfc98a3d05101300bc69dc1773ae3f58ebd7d02e6"
 _SYNTHETIC_TARGET_SHA256 = (
     "abffd232b48a8306af8a35e6e2bce3ad0afa92f6380508f47e9c22b90e87d198"
@@ -55,8 +59,10 @@ WAVE0_GATE_INVARIANTS = (
     "parameter_update_passed",
     "vram_limit_passed",
     "checkpoint_round_trips_passed",
-    "feasibility_ab_deterministic",
-    "clean_replays_deterministic",
+    "allowlisted_backward_verified",
+    "feasibility_ab_exact_fields_match",
+    "clean_replays_exact_fields_match",
+    "numerical_replays_within_bounds",
     "data_root_unset",
     "fresh_evidence_chain",
     "historical_evidence_not_used",
@@ -81,6 +87,8 @@ class ReplayReceiptPaths:
     model_contract: Path
     feasibility_a: Path
     feasibility_b: Path
+    checkpoint_a: Path
+    checkpoint_b: Path
 
 
 @dataclass(frozen=True)
@@ -95,28 +103,34 @@ class Wave0Inputs:
 class Wave0GateReceipt:
     run_id: str
     parent_receipts: Mapping[str, Mapping[str, str]]
-    deterministic_comparisons: Mapping[str, str]
+    exact_comparisons: Mapping[str, Mapping[str, object]]
+    numerical_replay_comparisons: Mapping[str, Mapping[str, object]]
     invariants: Mapping[str, bool]
     errors: Sequence[str]
 
     def as_dict(self) -> dict[str, object]:
         passed = not self.errors and all(self.invariants.values())
         interpretation = (
-            "WAVE0_A2_PASS / WAVE1_NOT_STARTED"
+            "WAVE0_A3_PASS / WAVE1_NOT_STARTED"
             if passed
-            else "WAVE0_A2_NORMATIVE_FAIL / WAVE1_FORBIDDEN"
+            else "WAVE0_A3_NORMATIVE_FAIL / WAVE1_FORBIDDEN"
         )
         return {
             "receipt_type": "wave0-gate",
-            "schema_version": 1,
+            "schema_version": 2,
             "normative": {
                 "parent_receipts": {
                     name: dict(values)
                     for name, values in sorted(self.parent_receipts.items())
                 },
-                "deterministic_comparisons": dict(
-                    sorted(self.deterministic_comparisons.items())
-                ),
+                "exact_comparisons": {
+                    name: dict(value)
+                    for name, value in sorted(self.exact_comparisons.items())
+                },
+                "numerical_replay_comparisons": {
+                    name: dict(value)
+                    for name, value in sorted(self.numerical_replay_comparisons.items())
+                },
                 "invariants": dict(sorted(self.invariants.items())),
                 "status": "PASS" if passed else "FAIL",
                 "errors": list(self.errors),
@@ -130,12 +144,16 @@ class Wave0GateReceipt:
 class _AttemptEvidence:
     documents: Mapping[str, Mapping[str, object]]
     stored_hashes: Mapping[str, str]
+    checkpoints: Mapping[str, CheckpointState]
 
 
 def _paths_from_root(root: Path) -> ReplayReceiptPaths:
     receipts = Path(root) / "wave0" / "receipts"
+    checkpoints = Path(root) / "wave0" / "checkpoints"
     return ReplayReceiptPaths(
-        **{name: receipts / filename for name, filename in _RECEIPT_FILENAMES.items()}
+        **{name: receipts / filename for name, filename in _RECEIPT_FILENAMES.items()},
+        checkpoint_a=checkpoints / "feasibility-a" / "step-000001.pt",
+        checkpoint_b=checkpoints / "feasibility-b" / "step-000001.pt",
     )
 
 
@@ -144,6 +162,7 @@ def _load_attempt(
 ) -> _AttemptEvidence | None:
     documents: dict[str, Mapping[str, object]] = {}
     stored_hashes: dict[str, str] = {}
+    checkpoints: dict[str, CheckpointState] = {}
     for stage in _RECEIPT_FILENAMES:
         path = getattr(paths, stage)
         try:
@@ -162,7 +181,32 @@ def _load_attempt(
             return None
         documents[stage] = document
         stored_hashes[stage] = hashlib.sha256(raw).hexdigest()
-    return _AttemptEvidence(documents=documents, stored_hashes=stored_hashes)
+    for suffix in ("a", "b"):
+        stage = f"feasibility_{suffix}"
+        checkpoint_name = f"checkpoint_{suffix}"
+        normative = _normative(documents[stage])
+        digest = normative.get("checkpoint_sha256")
+        parent_digest = normative.get("model_contract_receipt_sha256")
+        try:
+            if not isinstance(digest, str) or not isinstance(parent_digest, str):
+                raise CheckpointVerificationError(
+                    "checkpoint receipt binding is incomplete"
+                )
+            checkpoint = load_checkpoint_verified(
+                getattr(paths, checkpoint_name),
+                digest,
+                expected_input_digests={"model_contract_receipt": parent_digest},
+            )
+        except (OSError, CheckpointVerificationError, ValueError) as error:
+            errors.append(f"{name}.{checkpoint_name}: {error}")
+            return None
+        checkpoints[suffix] = checkpoint
+        stored_hashes[checkpoint_name] = digest
+    return _AttemptEvidence(
+        documents=documents,
+        stored_hashes=stored_hashes,
+        checkpoints=checkpoints,
+    )
 
 
 def _normative(document: Mapping[str, object]) -> Mapping[str, object]:
@@ -334,55 +378,54 @@ def _data_root_is_unset(attempts: Mapping[str, _AttemptEvidence | None]) -> bool
     return True
 
 
-def _feasibility_snapshot(document: Mapping[str, object]) -> Mapping[str, object]:
-    normative = _normative(document)
-    return {
-        "ordered_losses": normative.get("ordered_losses"),
-        "state_digests": normative.get("state_digests"),
-        "comparison": normative.get("comparison"),
-        "checkpoint_state_sha256": normative.get("checkpoint_state_sha256"),
-    }
-
-
-def _attempt_snapshot(attempt: _AttemptEvidence) -> Mapping[str, object]:
-    model = _normative(attempt.documents["model_contract"])
-    return {
-        "model_contract": {
-            name: model.get(name)
-            for name in (
-                "model_sha256",
-                "config_sha256",
-                "source_sha256",
-                "processor_sha256",
-                "fixture_sha256",
-                "loss_source_sha256",
-                "synthetic_target_sha256",
-                "probe_sha256",
-                "observed_shapes",
-                "labeled_observed_shapes",
-                "observed_class_modules",
-                "labeled_loss_hex",
-            )
-        },
-        "feasibility": _feasibility_snapshot(attempt.documents["feasibility_a"]),
-    }
-
-
-def _comparison_hashes(
+def _semantic_environment_identities_match(
     attempts: Mapping[str, _AttemptEvidence | None]
-) -> dict[str, str]:
-    values: dict[str, str] = {}
-    for name, attempt in attempts.items():
-        if attempt is None:
-            continue
-        values[f"{name}_feasibility_a"] = canonical_json_sha256(
-            _feasibility_snapshot(attempt.documents["feasibility_a"])
+) -> bool:
+    if any(attempt is None for attempt in attempts.values()):
+        return False
+    observations: list[Mapping[str, object]] = []
+    for attempt in attempts.values():
+        assert attempt is not None
+        observed = _normative(attempt.documents["environment"]).get("observed")
+        if not isinstance(observed, Mapping):
+            return False
+        observations.append(observed)
+    return bool(observations) and all(
+        dict(observed) == dict(observations[0]) for observed in observations[1:]
+    )
+
+
+def _a3_comparisons(
+    attempts: Mapping[str, _AttemptEvidence | None], errors: list[str]
+) -> tuple[dict[str, Mapping[str, object]], dict[str, Mapping[str, object]]]:
+    if any(attempt is None for attempt in attempts.values()):
+        return {}, {}
+    primary = attempts["primary"]
+    assert primary is not None
+    canonical_receipt = primary.documents["feasibility_a"]
+    canonical_state = primary.checkpoints["a"]
+    targets = {
+        "primary_b": ("primary", "b"),
+        "clean_a_a": ("clean_a", "a"),
+        "clean_a_b": ("clean_a", "b"),
+        "clean_b_a": ("clean_b", "a"),
+        "clean_b_b": ("clean_b", "b"),
+    }
+    exact: dict[str, Mapping[str, object]] = {}
+    numerical: dict[str, Mapping[str, object]] = {}
+    for comparison_name, (attempt_name, suffix) in targets.items():
+        attempt = attempts[attempt_name]
+        assert attempt is not None
+        result = compare_replay(
+            canonical_receipt,
+            canonical_state,
+            attempt.documents[f"feasibility_{suffix}"],
+            attempt.checkpoints[suffix],
         )
-        values[f"{name}_feasibility_b"] = canonical_json_sha256(
-            _feasibility_snapshot(attempt.documents["feasibility_b"])
-        )
-        values[f"{name}_replay"] = canonical_json_sha256(_attempt_snapshot(attempt))
-    return values
+        exact[comparison_name] = dict(result.exact)
+        numerical[comparison_name] = dict(result.numerical)
+        errors.extend(f"{comparison_name}: {message}" for message in result.errors)
+    return exact, numerical
 
 
 def _historical_evidence_absent(
@@ -395,7 +438,11 @@ def _historical_evidence_absent(
         normative = _normative(attempt.documents["model_contract"])
         invariants = normative.get("invariants")
         if (
-            normative.get("loss_source_sha256") != _LOSS_SOURCE_SHA256
+            any(
+                attempt.documents[stage].get("schema_version") != 2
+                for stage in ("feasibility_a", "feasibility_b")
+            )
+            or normative.get("loss_source_sha256") != _LOSS_SOURCE_SHA256
             or normative.get("synthetic_target_sha256") != _SYNTHETIC_TARGET_SHA256
             or not isinstance(normative.get("observed_class_modules"), Mapping)
             or not isinstance(normative.get("labeled_observed_shapes"), Mapping)
@@ -407,7 +454,7 @@ def _historical_evidence_absent(
 
 
 def evaluate_wave0(inputs: Wave0Inputs) -> Wave0GateReceipt:
-    """Validate three complete A2 chains and return their aggregate gate receipt."""
+    """Validate three complete A3 chains and return their aggregate gate receipt."""
     input_errors: list[str] = []
     paths = {
         "primary": inputs.primary,
@@ -417,14 +464,19 @@ def evaluate_wave0(inputs: Wave0Inputs) -> Wave0GateReceipt:
     attempts = {
         name: _load_attempt(name, value, input_errors) for name, value in paths.items()
     }
-    comparisons = _comparison_hashes(attempts)
+    exact_comparisons, numerical_comparisons = _a3_comparisons(attempts, input_errors)
     all_paths = [
         getattr(receipt_paths, stage).absolute()
         for receipt_paths in paths.values()
         for stage in _RECEIPT_FILENAMES
+    ] + [
+        getattr(receipt_paths, stage).absolute()
+        for receipt_paths in paths.values()
+        for stage in ("checkpoint_a", "checkpoint_b")
     ]
     all_bindings = all(_parent_bindings_match(value) for value in attempts.values())
     run_ids_match = _all_run_ids_match(attempts, inputs.run_id)
+    semantic_environments_match = _semantic_environment_identities_match(attempts)
     loss_hashes = _all_normative_values(
         attempts,
         ("model_contract", "feasibility_a", "feasibility_b"),
@@ -435,15 +487,14 @@ def evaluate_wave0(inputs: Wave0Inputs) -> Wave0GateReceipt:
         ("model_contract", "feasibility_a", "feasibility_b"),
         "synthetic_target_sha256",
     )
-    ab_pairs = [
-        (
-            comparisons.get(f"{name}_feasibility_a"),
-            comparisons.get(f"{name}_feasibility_b"),
-        )
-        for name in _ATTEMPT_NAMES
-    ]
-    replay_hashes = [comparisons.get(f"{name}_replay") for name in _ATTEMPT_NAMES]
     historical_evidence_not_used = _historical_evidence_absent(attempts)
+    exact_passes = {
+        name: value.get("passed") is True for name, value in exact_comparisons.items()
+    }
+    numerical_passes = {
+        name: value.get("passed") is True
+        for name, value in numerical_comparisons.items()
+    }
     invariants = {
         "primary_complete_pass": _attempt_is_complete_pass(attempts["primary"]),
         "clean_a_complete_pass": _attempt_is_complete_pass(attempts["clean_a"]),
@@ -474,15 +525,25 @@ def evaluate_wave0(inputs: Wave0Inputs) -> Wave0GateReceipt:
             "checkpoint_round_trip",
             "resume_state_verified",
         ),
-        "feasibility_ab_deterministic": len(ab_pairs) == 3
-        and all(first is not None and first == second for first, second in ab_pairs),
-        "clean_replays_deterministic": len(replay_hashes) == 3
-        and replay_hashes[0] is not None
-        and len(set(replay_hashes)) == 1,
+        "allowlisted_backward_verified": _feasibility_invariant(
+            attempts,
+            "allowlisted_backward_verified",
+            "strict_deterministic_error_mode_restored",
+        ),
+        "feasibility_ab_exact_fields_match": len(exact_passes) == 5
+        and all(exact_passes.values()),
+        "clean_replays_exact_fields_match": len(exact_passes) == 5
+        and all(
+            exact_passes.get(name) is True
+            for name in ("clean_a_a", "clean_a_b", "clean_b_a", "clean_b_b")
+        ),
+        "numerical_replays_within_bounds": len(numerical_passes) == 5
+        and all(numerical_passes.values()),
         "data_root_unset": _data_root_is_unset(attempts),
         "fresh_evidence_chain": len(set(all_paths)) == len(all_paths)
         and run_ids_match
-        and all_bindings,
+        and all_bindings
+        and semantic_environments_match,
         "historical_evidence_not_used": historical_evidence_not_used,
     }
     errors = sorted(
@@ -496,7 +557,8 @@ def evaluate_wave0(inputs: Wave0Inputs) -> Wave0GateReceipt:
     return Wave0GateReceipt(
         run_id=inputs.run_id,
         parent_receipts=parent_receipts,
-        deterministic_comparisons=comparisons,
+        exact_comparisons=exact_comparisons,
+        numerical_replay_comparisons=numerical_comparisons,
         invariants=invariants,
         errors=errors,
     )

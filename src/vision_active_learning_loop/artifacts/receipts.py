@@ -24,9 +24,9 @@ _SCHEMA_ROOT = Path(__file__).resolve().parents[3] / "schemas"
 _ALLOWED_SCHEMAS = {
     ("environment", 1): _SCHEMA_ROOT / "environment-receipt.schema.json",
     ("model-contract", 1): _SCHEMA_ROOT / "model-contract-receipt.schema.json",
-    ("feasibility", 1): _SCHEMA_ROOT / "feasibility-receipt.schema.json",
+    ("feasibility", 2): _SCHEMA_ROOT / "feasibility-receipt.schema.json",
     ("model-assets", 1): _SCHEMA_ROOT / "model-asset-receipt.schema.json",
-    ("wave0-gate", 1): _SCHEMA_ROOT / "wave0-gate-receipt.schema.json",
+    ("wave0-gate", 2): _SCHEMA_ROOT / "wave0-gate-receipt.schema.json",
 }
 _APPROVED_ENVIRONMENT_CONTRACT = {
     "schema_version": 1,
@@ -82,6 +82,14 @@ _APPROVED_RTDETR_SOURCE_FILES = {
         "size": 15986,
         "sha256": "fc13ccc6ba1e57862e4c129c9e74bb97f091012186c1104974b92d5ec7b4019c",
     },
+}
+_A3_BACKWARD_OPERATION = "grid_sampler_2d_backward_cuda"
+_A3_BACKWARD_SOURCE_SHA256 = {
+    "torch_init": "b508de5a66ebc368fc8fa2161b1e0e88ae0034d9d9540e7c020460237a5464a9",
+    "torch_nn_functional": "e409a97896241e0dfb8c23fbf1f09967ecf5e65ec9626aec0d97d9cc5d727d50",
+    "transformers_modeling_rt_detr": (
+        "fce24c79c8599e52f3648f549502879e9b396cc86f593c3a07baf10c002cead3"
+    ),
 }
 _APPROVED_MODEL_DOCUMENT_HASHES = {
     "rtdetr": {
@@ -218,7 +226,9 @@ def _validate_receipt(
     elif receipt_type == "model-contract":
         _validate_model_contract_consistency(normative, metadata)
     elif receipt_type == "feasibility":
-        _validate_feasibility_consistency(normative, metadata)
+        _validate_feasibility_consistency(
+            normative, metadata, schema_version=receipt.get("schema_version")
+        )
     elif receipt_type == "model-assets":
         _validate_model_assets_consistency(normative)
     elif receipt_type == "wave0-gate":
@@ -344,9 +354,9 @@ def _validate_wave0_gate_consistency(normative: Mapping[str, object]) -> None:
     if status != expected_status:
         raise ReceiptValidationError("wave0 gate status contradicts its evidence")
     expected_interpretation = (
-        "WAVE0_A2_PASS / WAVE1_NOT_STARTED"
+        "WAVE0_A3_PASS / WAVE1_NOT_STARTED"
         if expected_status == "PASS"
-        else "WAVE0_A2_NORMATIVE_FAIL / WAVE1_FORBIDDEN"
+        else "WAVE0_A3_NORMATIVE_FAIL / WAVE1_FORBIDDEN"
     )
     if interpretation != expected_interpretation:
         raise ReceiptValidationError(
@@ -354,7 +364,8 @@ def _validate_wave0_gate_consistency(normative: Mapping[str, object]) -> None:
         )
     if expected_status == "PASS":
         parent_receipts = normative.get("parent_receipts")
-        comparisons = normative.get("deterministic_comparisons")
+        exact_comparisons = normative.get("exact_comparisons")
+        numerical_comparisons = normative.get("numerical_replay_comparisons")
         expected_attempts = {"primary", "clean_a", "clean_b"}
         expected_stages = {
             "environment",
@@ -362,11 +373,15 @@ def _validate_wave0_gate_consistency(normative: Mapping[str, object]) -> None:
             "model_contract",
             "feasibility_a",
             "feasibility_b",
+            "checkpoint_a",
+            "checkpoint_b",
         }
         expected_comparisons = {
-            f"{attempt}_{suffix}"
-            for attempt in expected_attempts
-            for suffix in ("feasibility_a", "feasibility_b", "replay")
+            "primary_b",
+            "clean_a_a",
+            "clean_a_b",
+            "clean_b_a",
+            "clean_b_b",
         }
         if (
             not isinstance(parent_receipts, Mapping)
@@ -380,12 +395,101 @@ def _validate_wave0_gate_consistency(normative: Mapping[str, object]) -> None:
                 "PASS wave0 gate requires every registered parent receipt"
             )
         if (
-            not isinstance(comparisons, Mapping)
-            or set(comparisons) != expected_comparisons
+            not isinstance(exact_comparisons, Mapping)
+            or set(exact_comparisons) != expected_comparisons
         ):
             raise ReceiptValidationError(
-                "PASS wave0 gate requires every deterministic comparison"
+                "PASS wave0 gate requires every exact comparison"
             )
+        if (
+            not isinstance(numerical_comparisons, Mapping)
+            or set(numerical_comparisons) != expected_comparisons
+        ):
+            raise ReceiptValidationError(
+                "PASS wave0 gate requires every numerical replay comparison"
+            )
+        if any(
+            not isinstance(value, Mapping)
+            or value.get("passed") is not True
+            or value.get("errors") != []
+            for value in exact_comparisons.values()
+        ):
+            raise ReceiptValidationError(
+                "PASS wave0 gate has a failed exact comparison"
+            )
+        expected_thresholds = {
+            "gradient_rel_tol": 1e-5,
+            "gradient_abs_tol": 1e-7,
+            "vector_relative_l2_max": 1e-3,
+            "vector_cosine_min": 0.99999,
+        }
+        if any(
+            not isinstance(value, Mapping)
+            or value.get("passed") is not True
+            or value.get("errors") != []
+            or value.get("thresholds") != expected_thresholds
+            or not _complete_numerical_replay_evidence(value)
+            for value in numerical_comparisons.values()
+        ):
+            raise ReceiptValidationError(
+                "PASS wave0 gate has incomplete numerical replay evidence"
+            )
+
+
+def _complete_numerical_replay_evidence(value: Mapping[str, object]) -> bool:
+    gradient = value.get("gradient_norm")
+    model_updates = value.get("model_updates")
+    optimizer_states = value.get("optimizer_states")
+    if not isinstance(gradient, Mapping) or set(gradient) != {
+        "canonical",
+        "replay",
+        "rel_tol",
+        "abs_tol",
+        "passed",
+    }:
+        return False
+    if gradient.get("passed") is not True:
+        return False
+    if not isinstance(model_updates, Mapping) or set(model_updates) != {
+        "detector",
+        "backbone",
+    }:
+        return False
+    if not isinstance(optimizer_states, Mapping) or set(optimizer_states) != {
+        "detector",
+        "backbone",
+    }:
+        return False
+    expected_metric_fields = {
+        "canonical_l2",
+        "replay_l2",
+        "difference_l2",
+        "relative_l2",
+        "relative_l2_max",
+        "cosine",
+        "cosine_min",
+        "passed",
+    }
+    for group_name in ("detector", "backbone"):
+        model_metric = model_updates.get(group_name)
+        optimizer_group = optimizer_states.get(group_name)
+        if (
+            not isinstance(model_metric, Mapping)
+            or set(model_metric) != expected_metric_fields
+            or model_metric.get("passed") is not True
+            or not isinstance(optimizer_group, Mapping)
+            or set(optimizer_group) != {"exp_avg", "exp_avg_sq"}
+        ):
+            return False
+        for moment_name in ("exp_avg", "exp_avg_sq"):
+            moment_metric = optimizer_group.get(moment_name)
+            if (
+                not isinstance(moment_metric, Mapping)
+                or set(moment_metric) != expected_metric_fields
+                or moment_metric.get("passed") is not True
+            ):
+                return False
+    return True
 
 
 def _validate_model_assets_pass_evidence(normative: Mapping[str, object]) -> None:
@@ -903,9 +1007,14 @@ def _validate_model_contract_consistency(
 
 
 def _validate_feasibility_consistency(
-    normative: Mapping[str, object], metadata: Mapping[str, object]
+    normative: Mapping[str, object],
+    metadata: Mapping[str, object],
+    *,
+    schema_version: object,
 ) -> None:
     """Reject feasibility claims that contradict their embedded observations."""
+    if schema_version != 2:
+        raise ReceiptValidationError("A3 requires feasibility schema version 2")
     runtime = normative.get("runtime")
     recipe = normative.get("recipe")
     shapes = normative.get("observed_shapes")
@@ -918,7 +1027,10 @@ def _validate_feasibility_consistency(
     parent_model_contract = normative.get("parent_model_contract")
     invariants = normative.get("invariants")
     state_digests = normative.get("state_digests")
-    comparison = normative.get("comparison")
+    comparison = normative.get("exact_comparison")
+    allowlisted_backward = normative.get("allowlisted_backward")
+    parameter_inventory = normative.get("parameter_inventory")
+    update_groups = normative.get("update_groups")
     if not all(
         isinstance(value, Mapping)
         for value in (
@@ -935,8 +1047,10 @@ def _validate_feasibility_consistency(
             invariants,
             state_digests,
             comparison,
+            allowlisted_backward,
+            update_groups,
         )
-    ):
+    ) or not isinstance(parameter_inventory, list):
         raise ReceiptValidationError("feasibility evidence must be objects")
     assert isinstance(runtime, Mapping)
     assert isinstance(recipe, Mapping)
@@ -951,6 +1065,9 @@ def _validate_feasibility_consistency(
     assert isinstance(invariants, Mapping)
     assert isinstance(state_digests, Mapping)
     assert isinstance(comparison, Mapping)
+    assert isinstance(allowlisted_backward, Mapping)
+    assert isinstance(parameter_inventory, list)
+    assert isinstance(update_groups, Mapping)
 
     _validate_receipt(
         parent_model_contract,
@@ -1090,16 +1207,149 @@ def _validate_feasibility_consistency(
     ]
     if len(expected_loss_hex) != len(ordered_losses):
         expected_loss_hex = [float(value).hex() for value in ordered_losses]
-    comparison_preimage = {
-        "ordered_loss_hex": expected_loss_hex,
-        "state_digests": dict(state_digests),
+    if (
+        allowlisted_backward.get("operation_identifier") != _A3_BACKWARD_OPERATION
+        or allowlisted_backward.get("expected_count") != 9
+        or allowlisted_backward.get("observed_count") != 9
+        or allowlisted_backward.get("strict_mode_restored") is not True
+        or allowlisted_backward.get("source_sha256") != _A3_BACKWARD_SOURCE_SHA256
+    ):
+        raise ReceiptValidationError("allowlisted backward identity mismatch")
+    raw_warnings = allowlisted_backward.get("raw_warnings")
+    warning_categories = allowlisted_backward.get("warning_categories")
+    operation_identifiers = allowlisted_backward.get("operation_identifiers")
+    if (
+        not isinstance(raw_warnings, list)
+        or len(raw_warnings) != 9
+        or any(
+            not isinstance(message, str)
+            or not message.startswith(
+                f"{_A3_BACKWARD_OPERATION} does not have a deterministic implementation"
+            )
+            for message in raw_warnings
+        )
+        or warning_categories != ["UserWarning"] * 9
+        or operation_identifiers != [_A3_BACKWARD_OPERATION] * 9
+    ):
+        raise ReceiptValidationError("allowlisted backward warning inventory mismatch")
+
+    if not parameter_inventory or len(parameter_inventory) != step.get(
+        "trainable_parameter_count"
+    ):
+        raise ReceiptValidationError("parameter inventory count mismatch")
+    parameter_names: list[str] = []
+    observed_groups: set[str] = set()
+    for entry in parameter_inventory:
+        if not isinstance(entry, Mapping):
+            raise ReceiptValidationError("parameter inventory entry must be an object")
+        name = entry.get("name")
+        group_name = entry.get("group_name")
+        shape = entry.get("shape")
+        dtype = entry.get("dtype")
+        if (
+            not isinstance(name, str)
+            or not name
+            or group_name not in {"detector", "backbone"}
+            or not isinstance(shape, list)
+            or any(type(item) is not int or item < 0 for item in shape)
+            or not isinstance(dtype, str)
+            or not dtype
+        ):
+            raise ReceiptValidationError("parameter inventory entry is invalid")
+        parameter_names.append(name)
+        observed_groups.add(str(group_name))
+    if len(set(parameter_names)) != len(parameter_names) or observed_groups != {
+        "detector",
+        "backbone",
+    }:
+        raise ReceiptValidationError("parameter inventory is duplicate or incomplete")
+
+    if set(update_groups) != {"detector", "backbone"}:
+        raise ReceiptValidationError("update group inventory mismatch")
+    for group_name, value in update_groups.items():
+        if (
+            not isinstance(value, Mapping)
+            or set(value) != {"l2_norm"}
+            or type(value.get("l2_norm")) not in (int, float)
+            or not math.isfinite(float(value["l2_norm"]))
+            or float(value["l2_norm"]) <= 0.0
+        ):
+            raise ReceiptValidationError(f"{group_name} update norm is invalid")
+
+    exact_state_digests = {
+        name: state_digests.get(name)
+        for name in ("scheduler", "scaler", "rng", "sampler")
     }
+    expected_optimizer_groups = [
+        {
+            "group_name": "detector",
+            "learning_rate": 1e-4,
+            "weight_decay": 1e-4,
+        },
+        {
+            "group_name": "backbone",
+            "learning_rate": 1e-5,
+            "weight_decay": 1e-4,
+        },
+    ]
+    model_state_inventory = comparison.get("model_state_inventory")
+    if not isinstance(model_state_inventory, list) or not model_state_inventory:
+        raise ReceiptValidationError("model state inventory is incomplete")
+    model_state_names = [
+        entry.get("name") if isinstance(entry, Mapping) else None
+        for entry in model_state_inventory
+    ]
+    if any(not isinstance(name, str) or not name for name in model_state_names) or len(
+        set(model_state_names)
+    ) != len(model_state_names):
+        raise ReceiptValidationError("model state inventory is invalid")
+    if not all(
+        isinstance(entry, Mapping)
+        and set(entry) == {"name", "shape", "dtype", "trainable"}
+        and isinstance(entry.get("shape"), list)
+        and all(type(item) is int and item >= 0 for item in entry["shape"])
+        and isinstance(entry.get("dtype"), str)
+        and bool(entry.get("dtype"))
+        and type(entry.get("trainable")) is bool
+        for entry in model_state_inventory
+    ):
+        raise ReceiptValidationError("model state inventory entry is invalid")
+    if comparison.get("rule") != "wave0-a3-exact-replay-sha256-v1":
+        raise ReceiptValidationError("exact comparison rule mismatch")
+    if comparison.get("parameter_digest_before") != step.get("parameter_digest_before"):
+        raise ReceiptValidationError("exact comparison parameter digest mismatch")
+    if comparison.get("parameter_inventory") != parameter_inventory:
+        raise ReceiptValidationError("exact comparison parameter inventory mismatch")
     if comparison.get("ordered_loss_hex") != expected_loss_hex:
-        raise ReceiptValidationError("comparison ordered losses mismatch")
-    if comparison.get("state_digests") != state_digests:
-        raise ReceiptValidationError("comparison state digests mismatch")
+        raise ReceiptValidationError("exact comparison ordered losses mismatch")
+    if comparison.get("optimizer_groups") != expected_optimizer_groups:
+        raise ReceiptValidationError("exact comparison optimizer groups mismatch")
+    if comparison.get("sampler_order_digest") != state_digests.get("sampler"):
+        raise ReceiptValidationError("exact comparison sampler digest mismatch")
+    if comparison.get("state_digests") != exact_state_digests:
+        raise ReceiptValidationError("exact comparison state digests mismatch")
+    if comparison.get("allowlisted_backward") != allowlisted_backward:
+        raise ReceiptValidationError("exact comparison warning evidence mismatch")
+    if (
+        comparison.get("checkpoint_epoch") != 0
+        or comparison.get("checkpoint_step") != 1
+    ):
+        raise ReceiptValidationError("exact comparison progress mismatch")
+    if not isinstance(comparison.get("scheduler_state_before_sha256"), str):
+        raise ReceiptValidationError("scheduler-before digest is missing")
+    input_digests = comparison.get("semantic_input_digests")
+    if not isinstance(input_digests, Mapping) or dict(input_digests) != {
+        "fixture_sha256": normative.get("fixture_sha256"),
+        "synthetic_target_sha256": normative.get("synthetic_target_sha256"),
+    }:
+        raise ReceiptValidationError("exact comparison semantic input digests mismatch")
+    comparison_preimage = {
+        name: value
+        for name, value in comparison.items()
+        if name not in {"rule", "sha256"}
+    }
     if comparison.get("sha256") != canonical_json_sha256(comparison_preimage):
-        raise ReceiptValidationError("comparison digest mismatch")
+        raise ReceiptValidationError("exact comparison digest mismatch")
 
     peak_allocated = vram.get("peak_allocated_bytes")
     peak_reserved = vram.get("peak_reserved_bytes")
@@ -1135,7 +1385,17 @@ def _validate_feasibility_consistency(
     expected_evidence = {
         "parameter_changed": parameter_update_observed,
         "adamw_update": parameter_update_observed
-        and recipe.get("optimizer") == "AdamW",
+        and recipe.get("optimizer") == "AdamW"
+        and all(
+            isinstance(update_groups.get(name), Mapping)
+            and float(update_groups[name].get("l2_norm", 0.0)) > 0.0
+            for name in ("detector", "backbone")
+        ),
+        "allowlisted_backward_verified": runtime.get("allowlisted_grid_sample_backward")
+        is True
+        and dict(allowlisted_backward.get("source_sha256", {}))
+        == _A3_BACKWARD_SOURCE_SHA256
+        and allowlisted_backward.get("observed_count") == 9,
         "batch_size_two": shapes.get("pixel_values") == [2, 3, 640, 640]
         and shapes.get("pixel_mask") == [2, 640, 640],
         "bf16_autocast": runtime.get("bf16_autocast_enabled") is True,
@@ -1159,8 +1419,6 @@ def _validate_feasibility_consistency(
         and runtime.get("device") == selected_cuda.get("selected_device"),
         "deterministic_algorithms": runtime.get("deterministic_algorithms") is True
         and runtime.get("deterministic_debug_mode") == 2,
-        "deterministic_fallback_absent": runtime.get("deterministic_fallback_detected")
-        is False,
         "exact_scipy": observed_environment.get("scipy") == "1.18.0",
         "finite_gradients": step.get("finite_gradients") is True,
         "finite_loss": step.get("finite_loss") is True
@@ -1176,6 +1434,11 @@ def _validate_feasibility_consistency(
         "resume_state_verified": normative.get("resume_verified") is True
         and checkpoint.get("state_digests_after_restore") == state_digests,
         "seed_17": runtime.get("seed") == 17 and recipe.get("seed") == 17,
+        "strict_deterministic_error_mode_restored": runtime.get(
+            "strict_deterministic_error_mode_restored"
+        )
+        is True
+        and allowlisted_backward.get("strict_mode_restored") is True,
         "synthetic_labels_only": recipe.get("fixture_set") == "wave0-rtdetr-contract"
         and dict(synthetic_labels)
         == {

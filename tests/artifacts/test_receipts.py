@@ -1137,17 +1137,72 @@ def test_wave0_gate_receipt_requires_complete_parent_and_comparison_inventory(
         "model_contract",
         "feasibility_a",
         "feasibility_b",
+        "checkpoint_a",
+        "checkpoint_b",
     )
     attempts = ("primary", "clean_a", "clean_b")
+    comparison_names = (
+        "primary_b",
+        "clean_a_a",
+        "clean_a_b",
+        "clean_b_a",
+        "clean_b_b",
+    )
+    vector_metric = {
+        "canonical_l2": 1.0,
+        "replay_l2": 1.0,
+        "difference_l2": 0.0,
+        "relative_l2": 0.0,
+        "relative_l2_max": 1e-3,
+        "cosine": 1.0,
+        "cosine_min": 0.99999,
+        "passed": True,
+    }
+    numerical = {
+        "rule": "wave0-a3-same-host-float64-bounds-v1",
+        "thresholds": {
+            "gradient_rel_tol": 1e-5,
+            "gradient_abs_tol": 1e-7,
+            "vector_relative_l2_max": 1e-3,
+            "vector_cosine_min": 0.99999,
+        },
+        "gradient_norm": {
+            "canonical": 0.75,
+            "replay": 0.75,
+            "rel_tol": 1e-5,
+            "abs_tol": 1e-7,
+            "passed": True,
+        },
+        "model_updates": {
+            name: copy.deepcopy(vector_metric) for name in ("detector", "backbone")
+        },
+        "optimizer_states": {
+            group: {
+                state: copy.deepcopy(vector_metric)
+                for state in ("exp_avg", "exp_avg_sq")
+            }
+            for group in ("detector", "backbone")
+        },
+        "passed": True,
+        "errors": [],
+    }
     receipt = Wave0GateReceipt(
         run_id="run-a",
         parent_receipts={
             attempt: {stage: "a" * 64 for stage in stages} for attempt in attempts
         },
-        deterministic_comparisons={
-            f"{attempt}_{suffix}": "b" * 64
-            for attempt in attempts
-            for suffix in ("feasibility_a", "feasibility_b", "replay")
+        exact_comparisons={
+            name: {
+                "rule": "wave0-a3-exact-checkpoint-fields-v1",
+                "canonical_exact_sha256": "b" * 64,
+                "replay_exact_sha256": "b" * 64,
+                "passed": True,
+                "errors": [],
+            }
+            for name in comparison_names
+        },
+        numerical_replay_comparisons={
+            name: copy.deepcopy(numerical) for name in comparison_names
         },
         invariants={name: True for name in WAVE0_GATE_INVARIANTS},
         errors=[],
@@ -1159,7 +1214,11 @@ def test_wave0_gate_receipt_requires_complete_parent_and_comparison_inventory(
     stored = json.loads(output.read_text(encoding="utf-8"))
     validate_receipt(stored, _schema_path("wave0-gate-receipt.schema.json"))
 
-    for field in ("parent_receipts", "deterministic_comparisons"):
+    for field in (
+        "parent_receipts",
+        "exact_comparisons",
+        "numerical_replay_comparisons",
+    ):
         forged = receipt.as_dict()
         normative = forged["normative"]
         assert isinstance(normative, dict)
@@ -1168,6 +1227,19 @@ def test_wave0_gate_receipt_requires_complete_parent_and_comparison_inventory(
         value.pop(next(iter(value)))
         with pytest.raises(ReceiptValidationError, match="requires every"):
             atomic_write_receipt(tmp_path / f"forged-{field}.json", forged)
+
+    forged = receipt.as_dict()
+    normative = forged["normative"]
+    assert isinstance(normative, dict)
+    comparisons = normative["numerical_replay_comparisons"]
+    assert isinstance(comparisons, dict)
+    comparison = comparisons["primary_b"]
+    assert isinstance(comparison, dict)
+    comparison["gradient_norm"] = {}
+    comparison["model_updates"] = {}
+    comparison["optimizer_states"] = {}
+    with pytest.raises(ReceiptValidationError, match="numerical replay evidence"):
+        atomic_write_receipt(tmp_path / "forged-empty-numerical.json", forged)
 
 
 def test_volatile_only_differences_do_not_change_normative_digest(

@@ -6,41 +6,20 @@
   "required": ["receipt_type", "schema_version", "normative", "metadata"],
   "properties": {
     "receipt_type": {"const": "feasibility"},
-    "schema_version": {"const": 1},
+    "schema_version": {"const": 2},
     "normative": {
       "type": "object",
       "additionalProperties": false,
       "required": [
-        "model_sha256",
-        "config_sha256",
-        "source_sha256",
-        "processor_sha256",
-        "fixture_sha256",
-        "loss_source_sha256",
-        "synthetic_target_sha256",
-        "probe_sha256",
-        "environment_sha256",
-        "parent_environment_sha256",
-        "environment",
-        "model_contract_receipt_sha256",
-        "parent_model_contract",
-        "checkpoint_sha256",
-        "checkpoint_state_sha256",
-        "observed_shapes",
-        "invariants",
-        "ordered_losses",
-        "state_digests",
-        "comparison",
-        "step",
-        "checkpoint",
-        "synthetic_labels",
-        "runtime",
-        "recipe",
-        "timing",
-        "vram",
-        "resume_verified",
-        "status",
-        "errors"
+        "model_sha256", "config_sha256", "source_sha256", "processor_sha256",
+        "fixture_sha256", "loss_source_sha256", "synthetic_target_sha256",
+        "probe_sha256", "environment_sha256", "parent_environment_sha256",
+        "environment", "model_contract_receipt_sha256", "parent_model_contract",
+        "checkpoint_sha256", "checkpoint_state_sha256", "observed_shapes",
+        "invariants", "ordered_losses", "state_digests", "allowlisted_backward",
+        "parameter_inventory", "update_groups", "exact_comparison", "step",
+        "checkpoint", "synthetic_labels", "runtime", "recipe", "timing", "vram",
+        "resume_verified", "status", "errors"
       ],
       "properties": {
         "model_sha256": {"$ref": "#/$defs/sha256"},
@@ -63,38 +42,27 @@
           "additionalProperties": false,
           "required": ["pixel_values", "pixel_mask"],
           "properties": {
-            "pixel_values": {"type": "array", "minItems": 4, "items": {"type": "integer"}},
-            "pixel_mask": {"type": "array", "minItems": 3, "items": {"type": "integer"}}
+            "pixel_values": {"type": "array", "minItems": 4, "maxItems": 4, "items": {"type": "integer"}},
+            "pixel_mask": {"type": "array", "minItems": 3, "maxItems": 3, "items": {"type": "integer"}}
           }
         },
         "invariants": {
           "type": "object",
           "additionalProperties": false,
           "required": [
-            "adamw_update",
-            "batch_size_two",
-            "bf16_autocast",
-            "bf16_supported",
-            "checkpoint_content_verified",
-            "checkpoint_round_trip",
-            "cublas_workspace_configured",
-            "cudnn_benchmark_disabled",
-            "canonical_environment",
-            "deterministic_algorithms",
-            "deterministic_fallback_absent",
-            "exact_scipy",
-            "finite_gradients",
-            "finite_loss",
-            "gradient_clip_0_1",
-            "parameter_changed",
-            "peak_allocated_vram_within_22_gib",
-            "resume_state_verified",
-            "seed_17",
-            "synthetic_labels_only",
+            "adamw_update", "allowlisted_backward_verified", "batch_size_two",
+            "bf16_autocast", "bf16_supported", "checkpoint_content_verified",
+            "checkpoint_round_trip", "cublas_workspace_configured",
+            "cudnn_benchmark_disabled", "canonical_environment",
+            "deterministic_algorithms", "exact_scipy", "finite_gradients",
+            "finite_loss", "gradient_clip_0_1", "parameter_changed",
+            "peak_allocated_vram_within_22_gib", "resume_state_verified", "seed_17",
+            "strict_deterministic_error_mode_restored", "synthetic_labels_only",
             "tf32_disabled"
           ],
           "properties": {
             "adamw_update": {"type": "boolean"},
+            "allowlisted_backward_verified": {"type": "boolean"},
             "batch_size_two": {"type": "boolean"},
             "bf16_autocast": {"type": "boolean"},
             "bf16_supported": {"type": "boolean"},
@@ -104,7 +72,6 @@
             "cudnn_benchmark_disabled": {"type": "boolean"},
             "canonical_environment": {"type": "boolean"},
             "deterministic_algorithms": {"type": "boolean"},
-            "deterministic_fallback_absent": {"type": "boolean"},
             "exact_scipy": {"type": "boolean"},
             "finite_gradients": {"type": "boolean"},
             "finite_loss": {"type": "boolean"},
@@ -113,23 +80,19 @@
             "peak_allocated_vram_within_22_gib": {"type": "boolean"},
             "resume_state_verified": {"type": "boolean"},
             "seed_17": {"type": "boolean"},
+            "strict_deterministic_error_mode_restored": {"type": "boolean"},
             "synthetic_labels_only": {"type": "boolean"},
             "tf32_disabled": {"type": "boolean"}
           }
         },
         "ordered_losses": {"type": "array", "minItems": 1, "items": {"type": "number"}},
         "state_digests": {"$ref": "#/$defs/state_digests"},
-        "comparison": {
-          "type": "object",
-          "additionalProperties": false,
-          "required": ["rule", "ordered_loss_hex", "state_digests", "sha256"],
-          "properties": {
-            "rule": {"const": "float-hex-and-state-digests-sha256-v1"},
-            "ordered_loss_hex": {"type": "array", "minItems": 1, "items": {"type": "string"}},
-            "state_digests": {"$ref": "#/$defs/state_digests"},
-            "sha256": {"$ref": "#/$defs/sha256"}
-          }
+        "allowlisted_backward": {"$ref": "#/$defs/allowlisted_backward"},
+        "parameter_inventory": {
+          "type": "array", "minItems": 2, "items": {"$ref": "#/$defs/parameter_inventory_entry"}
         },
+        "update_groups": {"$ref": "#/$defs/update_groups"},
+        "exact_comparison": {"$ref": "#/$defs/exact_comparison"},
         "step": {
           "type": "object",
           "additionalProperties": false,
@@ -140,7 +103,7 @@
             "finite_loss": {"type": "boolean"},
             "finite_gradients": {"type": "boolean"},
             "parameter_digest_rule": {"const": "ordered-trainable-named-parameters-sha256-v1"},
-            "trainable_parameter_count": {"type": "integer"},
+            "trainable_parameter_count": {"type": "integer", "minimum": 1},
             "parameter_digest_before": {"$ref": "#/$defs/sha256"},
             "parameter_digest_after": {"$ref": "#/$defs/sha256"}
           }
@@ -148,17 +111,7 @@
         "checkpoint": {
           "type": "object",
           "additionalProperties": false,
-          "required": [
-            "file_sha256",
-            "verified_file_sha256",
-            "live_model_state_sha256_after_step",
-            "state_sha256_before_save",
-            "state_sha256_after_load",
-            "state_digests_before_save",
-            "state_digests_after_load",
-            "state_digests_after_restore",
-            "input_digests_verified"
-          ],
+          "required": ["file_sha256", "verified_file_sha256", "live_model_state_sha256_after_step", "state_sha256_before_save", "state_sha256_after_load", "state_digests_before_save", "state_digests_after_load", "state_digests_after_restore", "input_digests_verified"],
           "properties": {
             "file_sha256": {"$ref": "#/$defs/sha256"},
             "verified_file_sha256": {"$ref": "#/$defs/sha256"},
@@ -177,11 +130,7 @@
           "required": ["item_ids", "class_labels", "boxes_per_image", "source"],
           "properties": {
             "item_ids": {"type": "array", "minItems": 2, "items": {"type": "string"}},
-            "class_labels": {
-              "type": "array",
-              "minItems": 2,
-              "items": {"type": "array", "minItems": 1, "items": {"type": "integer"}}
-            },
+            "class_labels": {"type": "array", "minItems": 2, "items": {"type": "array", "minItems": 1, "items": {"type": "integer"}}},
             "boxes_per_image": {"type": "array", "minItems": 2, "items": {"type": "integer"}},
             "source": {"type": "string"}
           }
@@ -189,35 +138,22 @@
         "runtime": {
           "type": "object",
           "additionalProperties": false,
-          "required": [
-            "seed",
-            "device",
-            "precision",
-            "tf32",
-            "cuda_matmul_allow_tf32",
-            "cudnn_allow_tf32",
-            "cudnn_benchmark",
-            "deterministic_algorithms",
-            "deterministic_debug_mode",
-            "cublas_workspace_config",
-            "bf16_supported",
-            "bf16_autocast_enabled",
-            "deterministic_fallback_detected"
-          ],
+          "required": ["seed", "device", "precision", "tf32", "cuda_matmul_allow_tf32", "cudnn_allow_tf32", "cudnn_benchmark", "deterministic_algorithms", "deterministic_debug_mode", "cublas_workspace_config", "bf16_supported", "bf16_autocast_enabled", "allowlisted_grid_sample_backward", "strict_deterministic_error_mode_restored"],
           "properties": {
-            "seed": {"type": "integer"},
+            "seed": {"const": 17},
             "device": {"type": "string", "pattern": "^cuda:[0-9]+$"},
             "precision": {"const": "bfloat16"},
-            "tf32": {"type": "boolean"},
-            "cuda_matmul_allow_tf32": {"type": "boolean"},
-            "cudnn_allow_tf32": {"type": "boolean"},
-            "cudnn_benchmark": {"type": "boolean"},
-            "deterministic_algorithms": {"type": "boolean"},
-            "deterministic_debug_mode": {"type": "integer"},
-            "cublas_workspace_config": {"type": "string"},
-            "bf16_supported": {"type": "boolean"},
-            "bf16_autocast_enabled": {"type": "boolean"},
-            "deterministic_fallback_detected": {"type": "boolean"}
+            "tf32": {"const": false},
+            "cuda_matmul_allow_tf32": {"const": false},
+            "cudnn_allow_tf32": {"const": false},
+            "cudnn_benchmark": {"const": false},
+            "deterministic_algorithms": {"const": true},
+            "deterministic_debug_mode": {"const": 2},
+            "cublas_workspace_config": {"const": ":4096:8"},
+            "bf16_supported": {"const": true},
+            "bf16_autocast_enabled": {"const": true},
+            "allowlisted_grid_sample_backward": {"const": true},
+            "strict_deterministic_error_mode_restored": {"const": true}
           }
         },
         "recipe": {
@@ -225,30 +161,26 @@
           "additionalProperties": false,
           "required": ["seed", "batch_size", "optimizer", "detector_learning_rate", "backbone_learning_rate", "weight_decay", "gradient_clip_norm", "fixture_set"],
           "properties": {
-            "seed": {"type": "integer"},
-            "batch_size": {"type": "integer"},
-            "optimizer": {"type": "string"},
-            "detector_learning_rate": {"type": "number"},
-            "backbone_learning_rate": {"type": "number"},
-            "weight_decay": {"type": "number"},
-            "gradient_clip_norm": {"type": "number"},
-            "fixture_set": {"type": "string"}
+            "seed": {"const": 17},
+            "batch_size": {"const": 2},
+            "optimizer": {"const": "AdamW"},
+            "detector_learning_rate": {"const": 0.0001},
+            "backbone_learning_rate": {"const": 0.00001},
+            "weight_decay": {"const": 0.0001},
+            "gradient_clip_norm": {"const": 0.1},
+            "fixture_set": {"const": "wave0-rtdetr-contract"}
           }
         },
         "timing": {
-          "type": "object",
-          "additionalProperties": false,
+          "type": "object", "additionalProperties": false,
           "required": ["wall_seconds", "gpu_seconds", "checkpoint_write_seconds", "checkpoint_load_seconds"],
           "properties": {
-            "wall_seconds": {"type": "number"},
-            "gpu_seconds": {"type": "number"},
-            "checkpoint_write_seconds": {"type": "number"},
-            "checkpoint_load_seconds": {"type": "number"}
+            "wall_seconds": {"type": "number"}, "gpu_seconds": {"type": "number"},
+            "checkpoint_write_seconds": {"type": "number"}, "checkpoint_load_seconds": {"type": "number"}
           }
         },
         "vram": {
-          "type": "object",
-          "additionalProperties": false,
+          "type": "object", "additionalProperties": false,
           "required": ["peak_allocated_bytes", "peak_reserved_bytes", "allocated_limit_bytes"],
           "properties": {
             "peak_allocated_bytes": {"type": "integer"},
@@ -262,8 +194,7 @@
       }
     },
     "metadata": {
-      "type": "object",
-      "additionalProperties": false,
+      "type": "object", "additionalProperties": false,
       "required": ["timestamp", "run_id"],
       "properties": {
         "timestamp": {"type": "string"},
@@ -274,65 +205,144 @@
   },
   "$defs": {
     "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "string_hash_map": {"type": "object", "additionalProperties": {"$ref": "#/$defs/sha256"}},
+    "shape": {"type": "array", "items": {"type": "integer"}},
+    "parameter_inventory_entry": {
+      "type": "object", "additionalProperties": false,
+      "required": ["name", "group_name", "shape", "dtype"],
+      "properties": {
+        "name": {"type": "string", "pattern": ".*\\S.*"},
+        "group_name": {"enum": ["detector", "backbone"]},
+        "shape": {"$ref": "#/$defs/shape"},
+        "dtype": {"type": "string", "pattern": ".*\\S.*"}
+      }
+    },
+    "model_state_inventory_entry": {
+      "type": "object", "additionalProperties": false,
+      "required": ["name", "shape", "dtype", "trainable"],
+      "properties": {
+        "name": {"type": "string", "pattern": ".*\\S.*"},
+        "shape": {"$ref": "#/$defs/shape"},
+        "dtype": {"type": "string", "pattern": ".*\\S.*"},
+        "trainable": {"type": "boolean"}
+      }
+    },
+    "optimizer_group": {
+      "type": "object", "additionalProperties": false,
+      "required": ["group_name", "learning_rate", "weight_decay"],
+      "properties": {
+        "group_name": {"enum": ["detector", "backbone"]},
+        "learning_rate": {"type": "number"},
+        "weight_decay": {"type": "number"}
+      }
+    },
+    "update_group": {
+      "type": "object", "additionalProperties": false,
+      "required": ["l2_norm"],
+      "properties": {"l2_norm": {"type": "number", "exclusiveMinimum": 0}}
+    },
+    "update_groups": {
+      "type": "object", "additionalProperties": false,
+      "required": ["detector", "backbone"],
+      "properties": {
+        "detector": {"$ref": "#/$defs/update_group"},
+        "backbone": {"$ref": "#/$defs/update_group"}
+      }
+    },
+    "allowlisted_backward": {
+      "type": "object", "additionalProperties": false,
+      "required": ["operation_identifier", "expected_count", "observed_count", "raw_warnings", "warning_categories", "operation_identifiers", "source_sha256", "strict_mode_restored"],
+      "properties": {
+        "operation_identifier": {"const": "grid_sampler_2d_backward_cuda"},
+        "expected_count": {"const": 9},
+        "observed_count": {"const": 9},
+        "raw_warnings": {"type": "array", "minItems": 9, "maxItems": 9, "items": {"type": "string", "pattern": "^grid_sampler_2d_backward_cuda does not have a deterministic implementation.*"}},
+        "warning_categories": {"type": "array", "minItems": 9, "maxItems": 9, "items": {"const": "UserWarning"}},
+        "operation_identifiers": {"type": "array", "minItems": 9, "maxItems": 9, "items": {"const": "grid_sampler_2d_backward_cuda"}},
+        "source_sha256": {
+          "type": "object", "additionalProperties": false,
+          "required": ["torch_init", "torch_nn_functional", "transformers_modeling_rt_detr"],
+          "properties": {
+            "torch_init": {"const": "b508de5a66ebc368fc8fa2161b1e0e88ae0034d9d9540e7c020460237a5464a9"},
+            "torch_nn_functional": {"const": "e409a97896241e0dfb8c23fbf1f09967ecf5e65ec9626aec0d97d9cc5d727d50"},
+            "transformers_modeling_rt_detr": {"const": "fce24c79c8599e52f3648f549502879e9b396cc86f593c3a07baf10c002cead3"}
+          }
+        },
+        "strict_mode_restored": {"const": true}
+      }
+    },
+    "replay_state_digests": {
+      "type": "object", "additionalProperties": false,
+      "required": ["scheduler", "scaler", "rng", "sampler"],
+      "properties": {
+        "scheduler": {"$ref": "#/$defs/sha256"}, "scaler": {"$ref": "#/$defs/sha256"},
+        "rng": {"$ref": "#/$defs/sha256"}, "sampler": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "exact_comparison": {
+      "type": "object", "additionalProperties": false,
+      "required": ["rule", "parameter_digest_before", "parameter_inventory", "ordered_loss_hex", "optimizer_groups", "scheduler_state_before_sha256", "sampler_order_digest", "semantic_input_digests", "checkpoint_epoch", "checkpoint_step", "model_state_inventory", "state_digests", "allowlisted_backward", "sha256"],
+      "properties": {
+        "rule": {"const": "wave0-a3-exact-replay-sha256-v1"},
+        "parameter_digest_before": {"$ref": "#/$defs/sha256"},
+        "parameter_inventory": {"type": "array", "minItems": 2, "items": {"$ref": "#/$defs/parameter_inventory_entry"}},
+        "ordered_loss_hex": {"type": "array", "minItems": 1, "items": {"type": "string"}},
+        "optimizer_groups": {"type": "array", "minItems": 2, "maxItems": 2, "items": {"$ref": "#/$defs/optimizer_group"}},
+        "scheduler_state_before_sha256": {"$ref": "#/$defs/sha256"},
+        "sampler_order_digest": {"$ref": "#/$defs/sha256"},
+        "semantic_input_digests": {
+          "type": "object", "additionalProperties": false,
+          "required": ["fixture_sha256", "synthetic_target_sha256"],
+          "properties": {
+            "fixture_sha256": {"$ref": "#/$defs/sha256"},
+            "synthetic_target_sha256": {"$ref": "#/$defs/sha256"}
+          }
+        },
+        "checkpoint_epoch": {"const": 0},
+        "checkpoint_step": {"const": 1},
+        "model_state_inventory": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/model_state_inventory_entry"}},
+        "state_digests": {"$ref": "#/$defs/replay_state_digests"},
+        "allowlisted_backward": {"$ref": "#/$defs/allowlisted_backward"},
+        "sha256": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "state_digests": {
+      "type": "object", "additionalProperties": false,
+      "required": ["model", "optimizer", "scheduler", "scaler", "rng", "sampler"],
+      "properties": {
+        "model": {"$ref": "#/$defs/sha256"}, "optimizer": {"$ref": "#/$defs/sha256"},
+        "scheduler": {"$ref": "#/$defs/sha256"}, "scaler": {"$ref": "#/$defs/sha256"},
+        "rng": {"$ref": "#/$defs/sha256"}, "sampler": {"$ref": "#/$defs/sha256"}
+      }
+    },
     "environment_evidence": {
-      "type": "object",
-      "additionalProperties": false,
+      "type": "object", "additionalProperties": false,
       "required": ["observed", "selected_cuda", "parent_environment_sha256"],
       "properties": {
         "observed": {
-          "type": "object",
-          "additionalProperties": false,
+          "type": "object", "additionalProperties": false,
           "required": ["schema_version", "python", "uv", "scipy", "torch", "torchvision", "transformers", "pycocotools", "cuda_runtime", "gpu_name", "gpu_uuid", "driver", "os", "wsl", "container_image_digest", "runtime_image_digest", "tf32", "deterministic_algorithms", "bf16_supported", "data_root_unset"],
           "properties": {
-            "schema_version": {"const": 1},
-            "python": {"type": "string"},
-            "uv": {"type": "string"},
-            "scipy": {"type": "string"},
-            "torch": {"type": "string"},
-            "torchvision": {"type": "string"},
-            "transformers": {"type": "string"},
-            "pycocotools": {"type": "string"},
-            "cuda_runtime": {"type": "string"},
-            "gpu_name": {"type": "string"},
-            "gpu_uuid": {"type": "string"},
-            "driver": {"type": "string"},
-            "os": {"type": "string"},
-            "wsl": {"type": "boolean"},
-            "container_image_digest": {"type": "string"},
-            "runtime_image_digest": {"type": "string"},
-            "tf32": {"type": "boolean"},
-            "deterministic_algorithms": {"type": "boolean"},
-            "bf16_supported": {"type": "boolean"},
+            "schema_version": {"const": 1}, "python": {"type": "string"}, "uv": {"type": "string"},
+            "scipy": {"type": "string"}, "torch": {"type": "string"}, "torchvision": {"type": "string"},
+            "transformers": {"type": "string"}, "pycocotools": {"type": "string"}, "cuda_runtime": {"type": "string"},
+            "gpu_name": {"type": "string"}, "gpu_uuid": {"type": "string"}, "driver": {"type": "string"},
+            "os": {"type": "string"}, "wsl": {"type": "boolean"}, "container_image_digest": {"type": "string"},
+            "runtime_image_digest": {"type": "string"}, "tf32": {"type": "boolean"},
+            "deterministic_algorithms": {"type": "boolean"}, "bf16_supported": {"type": "boolean"},
             "data_root_unset": {"type": "boolean"}
           }
         },
         "selected_cuda": {
-          "type": "object",
-          "additionalProperties": false,
+          "type": "object", "additionalProperties": false,
           "required": ["cuda_available", "device_count", "selected_index", "selected_name", "selected_uuid", "selected_device"],
           "properties": {
-            "cuda_available": {"type": "boolean"},
-            "device_count": {"type": "integer", "minimum": 0},
-            "selected_index": {"type": "integer", "minimum": 0},
-            "selected_name": {"type": "string"},
-            "selected_uuid": {"type": "string"},
-            "selected_device": {"type": "string"}
+            "cuda_available": {"type": "boolean"}, "device_count": {"type": "integer"},
+            "selected_index": {"type": "integer"}, "selected_name": {"type": "string"},
+            "selected_uuid": {"type": "string"}, "selected_device": {"type": "string"}
           }
         },
         "parent_environment_sha256": {"$ref": "#/$defs/sha256"}
-      }
-    },
-    "state_digests": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["model", "optimizer", "scheduler", "scaler", "rng", "sampler"],
-      "properties": {
-        "model": {"$ref": "#/$defs/sha256"},
-        "optimizer": {"$ref": "#/$defs/sha256"},
-        "scheduler": {"$ref": "#/$defs/sha256"},
-        "scaler": {"$ref": "#/$defs/sha256"},
-        "rng": {"$ref": "#/$defs/sha256"},
-        "sampler": {"$ref": "#/$defs/sha256"}
       }
     }
   }

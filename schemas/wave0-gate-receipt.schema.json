@@ -6,47 +6,33 @@
   "required": ["receipt_type", "schema_version", "normative", "metadata"],
   "properties": {
     "receipt_type": {"const": "wave0-gate"},
-    "schema_version": {"const": 1},
+    "schema_version": {"const": 2},
     "normative": {
       "type": "object",
       "additionalProperties": false,
-      "required": [
-        "parent_receipts",
-        "deterministic_comparisons",
-        "invariants",
-        "status",
-        "errors",
-        "interpretation"
-      ],
+      "required": ["parent_receipts", "exact_comparisons", "numerical_replay_comparisons", "invariants", "status", "errors", "interpretation"],
       "properties": {
         "parent_receipts": {
-          "type": "object",
-          "additionalProperties": {"$ref": "#/$defs/hash_map"}
+          "type": "object", "additionalProperties": false,
+          "properties": {
+            "primary": {"$ref": "#/$defs/attempt_hashes"},
+            "clean_a": {"$ref": "#/$defs/attempt_hashes"},
+            "clean_b": {"$ref": "#/$defs/attempt_hashes"}
+          }
         },
-        "deterministic_comparisons": {"$ref": "#/$defs/hash_map"},
+        "exact_comparisons": {"$ref": "#/$defs/exact_comparison_map"},
+        "numerical_replay_comparisons": {"$ref": "#/$defs/numerical_comparison_map"},
         "invariants": {
-          "type": "object",
-          "additionalProperties": false,
+          "type": "object", "additionalProperties": false,
           "required": [
-            "primary_complete_pass",
-            "clean_a_complete_pass",
-            "clean_b_complete_pass",
-            "all_run_ids_match",
-            "all_parent_bindings_match",
-            "loss_source_hash_matches",
-            "synthetic_target_hash_matches",
-            "all_classification_tensors_four_channels",
-            "labeled_losses_finite_scalar",
-            "bf16_backward_passed",
-            "finite_gradients_passed",
-            "parameter_update_passed",
-            "vram_limit_passed",
-            "checkpoint_round_trips_passed",
-            "feasibility_ab_deterministic",
-            "clean_replays_deterministic",
-            "data_root_unset",
-            "fresh_evidence_chain",
-            "historical_evidence_not_used"
+            "primary_complete_pass", "clean_a_complete_pass", "clean_b_complete_pass",
+            "all_run_ids_match", "all_parent_bindings_match", "loss_source_hash_matches",
+            "synthetic_target_hash_matches", "all_classification_tensors_four_channels",
+            "labeled_losses_finite_scalar", "bf16_backward_passed", "finite_gradients_passed",
+            "parameter_update_passed", "vram_limit_passed", "checkpoint_round_trips_passed",
+            "allowlisted_backward_verified", "feasibility_ab_exact_fields_match",
+            "clean_replays_exact_fields_match", "numerical_replays_within_bounds",
+            "data_root_unset", "fresh_evidence_chain", "historical_evidence_not_used"
           ],
           "properties": {
             "primary_complete_pass": {"type": "boolean"},
@@ -63,8 +49,10 @@
             "parameter_update_passed": {"type": "boolean"},
             "vram_limit_passed": {"type": "boolean"},
             "checkpoint_round_trips_passed": {"type": "boolean"},
-            "feasibility_ab_deterministic": {"type": "boolean"},
-            "clean_replays_deterministic": {"type": "boolean"},
+            "allowlisted_backward_verified": {"type": "boolean"},
+            "feasibility_ab_exact_fields_match": {"type": "boolean"},
+            "clean_replays_exact_fields_match": {"type": "boolean"},
+            "numerical_replays_within_bounds": {"type": "boolean"},
             "data_root_unset": {"type": "boolean"},
             "fresh_evidence_chain": {"type": "boolean"},
             "historical_evidence_not_used": {"type": "boolean"}
@@ -74,27 +62,127 @@
         "errors": {"type": "array", "items": {"type": "string"}},
         "interpretation": {
           "enum": [
-            "WAVE0_A2_PASS / WAVE1_NOT_STARTED",
-            "WAVE0_A2_NORMATIVE_FAIL / WAVE1_FORBIDDEN"
+            "WAVE0_A3_PASS / WAVE1_NOT_STARTED",
+            "WAVE0_A3_NORMATIVE_FAIL / WAVE1_FORBIDDEN"
           ]
         }
       }
     },
     "metadata": {
-      "type": "object",
-      "additionalProperties": false,
+      "type": "object", "additionalProperties": false,
       "required": ["run_id"],
       "properties": {
-        "run_id": {"type": "string", "minLength": 1},
+        "run_id": {"type": "string", "pattern": ".*\\S.*"},
         "receipt_content_sha256": {"$ref": "#/$defs/sha256"}
       }
     }
   },
   "$defs": {
     "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
-    "hash_map": {
-      "type": "object",
-      "additionalProperties": {"$ref": "#/$defs/sha256"}
+    "attempt_hashes": {
+      "type": "object", "additionalProperties": false,
+      "required": ["environment", "model_assets", "model_contract", "feasibility_a", "feasibility_b", "checkpoint_a", "checkpoint_b"],
+      "properties": {
+        "environment": {"$ref": "#/$defs/sha256"},
+        "model_assets": {"$ref": "#/$defs/sha256"},
+        "model_contract": {"$ref": "#/$defs/sha256"},
+        "feasibility_a": {"$ref": "#/$defs/sha256"},
+        "feasibility_b": {"$ref": "#/$defs/sha256"},
+        "checkpoint_a": {"$ref": "#/$defs/sha256"},
+        "checkpoint_b": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "exact_comparison_map": {
+      "type": "object", "additionalProperties": false,
+      "properties": {
+        "primary_b": {"$ref": "#/$defs/exact_comparison"},
+        "clean_a_a": {"$ref": "#/$defs/exact_comparison"},
+        "clean_a_b": {"$ref": "#/$defs/exact_comparison"},
+        "clean_b_a": {"$ref": "#/$defs/exact_comparison"},
+        "clean_b_b": {"$ref": "#/$defs/exact_comparison"}
+      }
+    },
+    "exact_comparison": {
+      "type": "object", "additionalProperties": false,
+      "required": ["rule", "canonical_exact_sha256", "replay_exact_sha256", "passed", "errors"],
+      "properties": {
+        "rule": {"const": "wave0-a3-exact-checkpoint-fields-v1"},
+        "canonical_exact_sha256": {"$ref": "#/$defs/sha256"},
+        "replay_exact_sha256": {"$ref": "#/$defs/sha256"},
+        "passed": {"type": "boolean"},
+        "errors": {"type": "array", "items": {"type": "string"}}
+      }
+    },
+    "numerical_comparison_map": {
+      "type": "object", "additionalProperties": false,
+      "properties": {
+        "primary_b": {"$ref": "#/$defs/numerical_comparison"},
+        "clean_a_a": {"$ref": "#/$defs/numerical_comparison"},
+        "clean_a_b": {"$ref": "#/$defs/numerical_comparison"},
+        "clean_b_a": {"$ref": "#/$defs/numerical_comparison"},
+        "clean_b_b": {"$ref": "#/$defs/numerical_comparison"}
+      }
+    },
+    "numerical_comparison": {
+      "type": "object", "additionalProperties": false,
+      "required": ["rule", "thresholds", "gradient_norm", "model_updates", "optimizer_states", "passed", "errors"],
+      "properties": {
+        "rule": {"const": "wave0-a3-same-host-float64-bounds-v1"},
+        "thresholds": {"$ref": "#/$defs/thresholds"},
+        "gradient_norm": {
+          "type": "object", "additionalProperties": false,
+          "properties": {
+            "canonical": {"type": "number"}, "replay": {"type": "number"},
+            "rel_tol": {"const": 0.00001}, "abs_tol": {"const": 0.0000001},
+            "passed": {"type": "boolean"}
+          }
+        },
+        "model_updates": {"$ref": "#/$defs/group_vector_metrics"},
+        "optimizer_states": {"$ref": "#/$defs/optimizer_metrics"},
+        "passed": {"type": "boolean"},
+        "errors": {"type": "array", "items": {"type": "string"}}
+      }
+    },
+    "thresholds": {
+      "type": "object", "additionalProperties": false,
+      "required": ["gradient_rel_tol", "gradient_abs_tol", "vector_relative_l2_max", "vector_cosine_min"],
+      "properties": {
+        "gradient_rel_tol": {"const": 0.00001},
+        "gradient_abs_tol": {"const": 0.0000001},
+        "vector_relative_l2_max": {"const": 0.001},
+        "vector_cosine_min": {"const": 0.99999}
+      }
+    },
+    "vector_metric": {
+      "type": "object", "additionalProperties": false,
+      "required": ["canonical_l2", "replay_l2", "difference_l2", "relative_l2", "relative_l2_max", "cosine", "cosine_min", "passed"],
+      "properties": {
+        "canonical_l2": {"type": "number"}, "replay_l2": {"type": "number"},
+        "difference_l2": {"type": "number"}, "relative_l2": {"type": "number"},
+        "relative_l2_max": {"const": 0.001}, "cosine": {"type": "number"},
+        "cosine_min": {"const": 0.99999}, "passed": {"type": "boolean"}
+      }
+    },
+    "group_vector_metrics": {
+      "type": "object", "additionalProperties": false,
+      "properties": {
+        "detector": {"$ref": "#/$defs/vector_metric"},
+        "backbone": {"$ref": "#/$defs/vector_metric"}
+      }
+    },
+    "optimizer_group_metrics": {
+      "type": "object", "additionalProperties": false,
+      "properties": {
+        "exp_avg": {"$ref": "#/$defs/vector_metric"},
+        "exp_avg_sq": {"$ref": "#/$defs/vector_metric"}
+      }
+    },
+    "optimizer_metrics": {
+      "type": "object", "additionalProperties": false,
+      "properties": {
+        "detector": {"$ref": "#/$defs/optimizer_group_metrics"},
+        "backbone": {"$ref": "#/$defs/optimizer_group_metrics"}
+      }
     }
   }
 }

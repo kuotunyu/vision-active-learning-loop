@@ -10,10 +10,11 @@ import json
 import math
 import os
 import random
+import re
 import sys
 import time
 import warnings
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -69,10 +70,20 @@ SEED = 17
 VRAM_LIMIT_BYTES = 22 * 1024**3
 _CUBLAS_WORKSPACE_CONFIG = ":4096:8"
 _PARAMETER_DIGEST_RULE = "ordered-trainable-named-parameters-sha256-v1"
+_ALLOWLISTED_BACKWARD_OPERATION = "grid_sampler_2d_backward_cuda"
+_ALLOWLISTED_BACKWARD_SOURCE_SHA256 = {
+    "torch_init": "b508de5a66ebc368fc8fa2161b1e0e88ae0034d9d9540e7c020460237a5464a9",
+    "torch_nn_functional": "e409a97896241e0dfb8c23fbf1f09967ecf5e65ec9626aec0d97d9cc5d727d50",
+    "transformers_modeling_rt_detr": (
+        "fce24c79c8599e52f3648f549502879e9b396cc86f593c3a07baf10c002cead3"
+    ),
+}
+_DETERMINISTIC_WARNING_PATTERN = re.compile(
+    r"^([A-Za-z0-9_]+) does not have a deterministic implementation(?:[,.]|$)"
+)
 _FIXTURE_MANIFEST = (
     _project_root() / "fixtures" / "synthetic" / "wave0" / "fixture-manifest.json"
 )
-_STATE_DIGEST_KEYS = ("model", "optimizer", "scheduler", "scaler", "rng", "sampler")
 _ENVIRONMENT_COMPARISON_FIELDS = (
     "schema_version",
     "python",
@@ -110,6 +121,24 @@ class DeterminismState:
 
 
 @dataclass(frozen=True)
+class BackwardWarningEvidence:
+    operation_identifier: str
+    expected_count: int
+    observed_count: int
+    raw_warnings: tuple[str, ...]
+    warning_categories: tuple[str, ...]
+    operation_identifiers: tuple[str, ...]
+    source_sha256: Mapping[str, str]
+    strict_mode_restored: bool
+
+
+@dataclass(frozen=True)
+class ParameterBaseline:
+    inventory: tuple[Mapping[str, object], ...]
+    values: tuple[torch.Tensor, ...]
+
+
+@dataclass(frozen=True)
 class StepObservation:
     ordered_losses: tuple[float, ...]
     finite_loss: bool
@@ -128,12 +157,22 @@ class StepObservation:
     cublas_workspace_config: str
     bf16_supported: bool
     bf16_autocast_enabled: bool
-    deterministic_fallback_detected: bool
+    allowlisted_backward: BackwardWarningEvidence
     device: str
     live_model_state_digest_after: str
     trainable_parameter_count: int
     parameter_digest_before: str
     parameter_digest_after: str
+    parameter_inventory: tuple[Mapping[str, object], ...]
+    update_groups: Mapping[str, float]
+    optimizer_groups: tuple[Mapping[str, object], ...]
+    scheduler_state_before_sha256: str
+    sampler_order_digest: str
+    input_digests: Mapping[str, str]
+    semantic_input_digests: Mapping[str, str]
+    checkpoint_epoch: int
+    checkpoint_step: int
+    model_state_inventory: tuple[Mapping[str, object], ...]
     state_digests: Mapping[str, str]
     checkpoint_state: CheckpointState | None
 
@@ -285,6 +324,113 @@ def configure_determinism(seed: int) -> DeterminismState:
     )
 
 
+def _allowlisted_backward_source_paths() -> Mapping[str, Path]:
+    transformers_source = inspect.getsourcefile(RTDetrForObjectDetection)
+    if transformers_source is None:
+        raise FeasibilityError("pinned Transformers RT-DETR source is unavailable")
+    torch_init = getattr(torch, "__file__", None)
+    torch_functional = getattr(torch.nn.functional, "__file__", None)
+    if not isinstance(torch_init, str) or not isinstance(torch_functional, str):
+        raise FeasibilityError("pinned PyTorch source is unavailable")
+    return {
+        "torch_init": Path(torch_init),
+        "torch_nn_functional": Path(torch_functional),
+        "transformers_modeling_rt_detr": Path(transformers_source),
+    }
+
+
+def _verify_allowlisted_backward_sources() -> dict[str, str]:
+    observed: dict[str, str] = {}
+    paths = _allowlisted_backward_source_paths()
+    if set(paths) != set(_ALLOWLISTED_BACKWARD_SOURCE_SHA256):
+        raise FeasibilityError("bounded-backward source inventory mismatch")
+    for name in sorted(paths):
+        path = paths[name]
+        if not path.is_file() or path.is_symlink():
+            raise FeasibilityError(
+                f"bounded-backward source is not a regular file: {name}"
+            )
+        digest = sha256_file(path)
+        if digest != _ALLOWLISTED_BACKWARD_SOURCE_SHA256[name]:
+            raise FeasibilityError(f"bounded-backward source hash mismatch: {name}")
+        observed[name] = digest
+    return observed
+
+
+def run_allowlisted_backward(
+    backward: Callable[[], None], *, expected_count: int
+) -> BackwardWarningEvidence:
+    """Run only backward in deterministic warn mode and verify its exact warnings."""
+    if not callable(backward):
+        raise FeasibilityError("backward must be callable")
+    if type(expected_count) is not int or expected_count <= 0:
+        raise FeasibilityError("expected backward warning count must be positive")
+    if (
+        not torch.are_deterministic_algorithms_enabled()
+        or torch.is_deterministic_algorithms_warn_only_enabled()
+        or torch.get_deterministic_debug_mode() != 2
+    ):
+        raise FeasibilityError("strict deterministic error mode is required")
+    source_sha256 = _verify_allowlisted_backward_sources()
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        try:
+            torch.use_deterministic_algorithms(True, warn_only=True)
+            torch.set_deterministic_debug_mode("warn")
+            backward()
+        finally:
+            torch.use_deterministic_algorithms(True, warn_only=False)
+            torch.set_deterministic_debug_mode("error")
+    raw_warnings = tuple(str(item.message) for item in caught)
+    warning_categories = tuple(item.category.__name__ for item in caught)
+    identifiers: list[str] = []
+    for message, category in zip(raw_warnings, warning_categories, strict=True):
+        match = _DETERMINISTIC_WARNING_PATTERN.match(message)
+        if match is None:
+            raise FeasibilityError("unparsable deterministic backward warning")
+        if category != "UserWarning":
+            raise FeasibilityError("unexpected deterministic warning category")
+        identifiers.append(match.group(1))
+    operation_identifiers = tuple(identifiers)
+    if len(operation_identifiers) != expected_count:
+        raise FeasibilityError("allowlisted backward warning count mismatch")
+    if any(
+        identifier != _ALLOWLISTED_BACKWARD_OPERATION
+        for identifier in operation_identifiers
+    ):
+        raise FeasibilityError("unexpected deterministic backward operation")
+    return BackwardWarningEvidence(
+        operation_identifier=_ALLOWLISTED_BACKWARD_OPERATION,
+        expected_count=expected_count,
+        observed_count=len(operation_identifiers),
+        raw_warnings=raw_warnings,
+        warning_categories=warning_categories,
+        operation_identifiers=operation_identifiers,
+        source_sha256=source_sha256,
+        strict_mode_restored=(
+            torch.are_deterministic_algorithms_enabled()
+            and not torch.is_deterministic_algorithms_warn_only_enabled()
+            and torch.get_deterministic_debug_mode() == 2
+        ),
+    )
+
+
+def _expected_grid_sample_warning_count(model: object) -> int:
+    config = getattr(model, "config", None)
+    decoder_layers = getattr(config, "decoder_layers", None)
+    feature_levels = getattr(config, "num_feature_levels", None)
+    if (
+        type(decoder_layers) is not int
+        or type(feature_levels) is not int
+        or decoder_layers != 3
+        or feature_levels != 3
+    ):
+        raise FeasibilityError(
+            "pinned RT-DETR deformable-attention configuration mismatch"
+        )
+    return decoder_layers * feature_levels
+
+
 def build_optimizer(model: torch.nn.Module) -> torch.optim.AdamW:
     """Build the approved detector/backbone AdamW parameter groups."""
     backbone: list[torch.nn.Parameter] = []
@@ -299,12 +445,136 @@ def build_optimizer(model: torch.nn.Module) -> torch.optim.AdamW:
         )
     return torch.optim.AdamW(
         [
-            {"params": detector, "lr": 1e-4},
-            {"params": backbone, "lr": 1e-5},
+            {"params": detector, "lr": 1e-4, "group_name": "detector"},
+            {"params": backbone, "lr": 1e-5, "group_name": "backbone"},
         ],
         lr=1e-4,
         weight_decay=1e-4,
     )
+
+
+def _parameter_group_name(name: str) -> str:
+    return "backbone" if name.startswith("model.backbone") else "detector"
+
+
+def _capture_parameter_baseline(model: torch.nn.Module) -> ParameterBaseline:
+    inventory: list[Mapping[str, object]] = []
+    values: list[torch.Tensor] = []
+    groups: set[str] = set()
+    for name, parameter in model.named_parameters():
+        if not parameter.requires_grad:
+            continue
+        group_name = _parameter_group_name(name)
+        groups.add(group_name)
+        inventory.append(
+            {
+                "name": name,
+                "group_name": group_name,
+                "shape": list(parameter.shape),
+                "dtype": str(parameter.dtype).removeprefix("torch."),
+            }
+        )
+        values.append(parameter.detach().cpu().clone())
+    if not inventory or groups != {"detector", "backbone"}:
+        raise FeasibilityError("detector/backbone parameter inventory is incomplete")
+    return ParameterBaseline(inventory=tuple(inventory), values=tuple(values))
+
+
+def _measure_parameter_update_groups(
+    model: torch.nn.Module, baseline: ParameterBaseline
+) -> dict[str, float]:
+    current = tuple(
+        (name, parameter)
+        for name, parameter in model.named_parameters()
+        if parameter.requires_grad
+    )
+    if len(current) != len(baseline.inventory) or len(current) != len(baseline.values):
+        raise FeasibilityError("trainable parameter inventory changed during update")
+    squared = {"detector": 0.0, "backbone": 0.0}
+    for (name, parameter), entry, before in zip(
+        current, baseline.inventory, baseline.values, strict=True
+    ):
+        expected = {
+            "name": name,
+            "group_name": _parameter_group_name(name),
+            "shape": list(parameter.shape),
+            "dtype": str(parameter.dtype).removeprefix("torch."),
+        }
+        if dict(entry) != expected or list(before.shape) != list(parameter.shape):
+            raise FeasibilityError(
+                "trainable parameter inventory changed during update"
+            )
+        difference = parameter.detach().cpu().to(torch.float64) - before.to(
+            torch.float64
+        )
+        if not bool(torch.isfinite(difference).all()):
+            raise FeasibilityError("non-finite parameter update")
+        squared[expected["group_name"]] += float(torch.sum(difference * difference))
+    norms = {name: math.sqrt(value) for name, value in squared.items()}
+    if any(not math.isfinite(value) or value <= 0.0 for value in norms.values()):
+        raise FeasibilityError("zero or non-finite parameter update group")
+    return norms
+
+
+def _optimizer_group_evidence(
+    optimizer: torch.optim.Optimizer,
+) -> tuple[Mapping[str, object], ...]:
+    evidence: list[Mapping[str, object]] = []
+    for group in optimizer.param_groups:
+        name = group.get("group_name")
+        learning_rate = group.get("lr")
+        weight_decay = group.get("weight_decay")
+        if (
+            name not in {"detector", "backbone"}
+            or type(learning_rate) not in (int, float)
+            or type(weight_decay) not in (int, float)
+        ):
+            raise FeasibilityError("optimizer parameter-group evidence is incomplete")
+        evidence.append(
+            {
+                "group_name": str(name),
+                "learning_rate": float(learning_rate),
+                "weight_decay": float(weight_decay),
+            }
+        )
+    expected = (
+        {
+            "group_name": "detector",
+            "learning_rate": 1e-4,
+            "weight_decay": 1e-4,
+        },
+        {
+            "group_name": "backbone",
+            "learning_rate": 1e-5,
+            "weight_decay": 1e-4,
+        },
+    )
+    if tuple(evidence) != expected:
+        raise FeasibilityError("optimizer parameter-group evidence mismatch")
+    return tuple(evidence)
+
+
+def _model_state_inventory(
+    model: torch.nn.Module,
+) -> tuple[Mapping[str, object], ...]:
+    trainable_names = {
+        name for name, parameter in model.named_parameters() if parameter.requires_grad
+    }
+    inventory: list[Mapping[str, object]] = []
+    for name, value in model.state_dict().items():
+        if not isinstance(value, torch.Tensor):
+            raise FeasibilityError("model state inventory contains a non-tensor")
+        inventory.append(
+            {
+                "name": name,
+                "shape": list(value.shape),
+                "dtype": str(value.dtype).removeprefix("torch."),
+                "trainable": name in trainable_names,
+            }
+        )
+    if not inventory or not trainable_names:
+        raise FeasibilityError("model state inventory is incomplete")
+    return tuple(inventory)
 
 
 def build_scheduler(
@@ -369,6 +639,7 @@ def run_one_step_smoke(
 
     item_ids = batch.get("_val_item_ids")
     input_digests = batch.get("_val_input_digests")
+    semantic_input_digests = batch.get("_val_semantic_input_digests")
     if (
         not isinstance(item_ids, (list, tuple))
         or len(item_ids) != 2
@@ -377,6 +648,10 @@ def run_one_step_smoke(
         raise FeasibilityError("synthetic batch requires exactly two ordered item IDs")
     if not isinstance(input_digests, Mapping):
         raise FeasibilityError("training input digests are required")
+    if not isinstance(semantic_input_digests, Mapping) or set(
+        semantic_input_digests
+    ) != {"fixture_sha256", "synthetic_target_sha256"}:
+        raise FeasibilityError("semantic training input digests are required")
     model_batch = {
         name: value for name, value in batch.items() if not name.startswith("_val_")
     }
@@ -401,11 +676,14 @@ def run_one_step_smoke(
 
     optimizer = build_optimizer(model)
     scheduler = build_scheduler(optimizer)
+    optimizer_groups = _optimizer_group_evidence(optimizer)
+    scheduler_state_before_sha256 = structured_state_sha256(scheduler.state_dict())
     sampler_digest = hashlib.sha256(
         json.dumps(list(item_ids), separators=(",", ":")).encode("utf-8")
     ).hexdigest()
     model.train()
     optimizer.zero_grad(set_to_none=True)
+    parameter_baseline = _capture_parameter_baseline(model)
     parameter_digest_before = trainable_parameter_sha256(model)
 
     torch.cuda.reset_peak_memory_stats(device)
@@ -413,44 +691,43 @@ def run_one_step_smoke(
     start_event = torch.cuda.Event(enable_timing=True)
     end_event = torch.cuda.Event(enable_timing=True)
     wall_start = time.perf_counter()
-    fallback_detected = False
     autocast_observed = False
-    with warnings.catch_warnings(record=True) as caught:
-        warnings.simplefilter("always")
-        start_event.record()
-        with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
-            autocast_observed = bool(torch.is_autocast_enabled("cuda"))
-            outputs = model(**model_batch)
-            loss = getattr(outputs, "loss", None)
-        if not isinstance(loss, torch.Tensor) or loss.numel() != 1:
-            raise FeasibilityError("model did not return a scalar training loss")
-        finite_loss = bool(torch.isfinite(loss.detach()).all())
-        if not finite_loss:
-            raise FeasibilityError("non-finite loss")
-        loss.backward()
-        gradients = [
-            parameter.grad for parameter in parameters if parameter.grad is not None
-        ]
-        finite_gradients = bool(gradients) and all(
-            bool(torch.isfinite(gradient).all()) for gradient in gradients
-        )
-        if not finite_gradients:
-            raise FeasibilityError("non-finite gradients")
-        gradient_norm_tensor = torch.nn.utils.clip_grad_norm_(parameters, max_norm=0.1)
-        gradient_norm = float(gradient_norm_tensor.detach().float().cpu())
-        if not math.isfinite(gradient_norm):
-            raise FeasibilityError("non-finite gradient norm")
-        optimizer.step()
-        scheduler.step()
-        end_event.record()
-        torch.cuda.synchronize(device)
-        fallback_detected = any(
-            "determin" in str(item.message).lower() for item in caught
-        )
+    start_event.record()
+    with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
+        autocast_observed = bool(torch.is_autocast_enabled("cuda"))
+        outputs = model(**model_batch)
+        loss = getattr(outputs, "loss", None)
+    if not isinstance(loss, torch.Tensor) or loss.numel() != 1:
+        raise FeasibilityError("model did not return a scalar training loss")
+    finite_loss = bool(torch.isfinite(loss.detach()).all())
+    if not finite_loss:
+        raise FeasibilityError("non-finite loss")
+    backward_evidence = run_allowlisted_backward(
+        loss.backward,
+        expected_count=_expected_grid_sample_warning_count(model),
+    )
+    gradients = [
+        parameter.grad for parameter in parameters if parameter.grad is not None
+    ]
+    finite_gradients = bool(gradients) and all(
+        bool(torch.isfinite(gradient).all()) for gradient in gradients
+    )
+    if not finite_gradients:
+        raise FeasibilityError("non-finite gradients")
+    gradient_norm_tensor = torch.nn.utils.clip_grad_norm_(parameters, max_norm=0.1)
+    gradient_norm = float(gradient_norm_tensor.detach().float().cpu())
+    if not math.isfinite(gradient_norm):
+        raise FeasibilityError("non-finite gradient norm")
+    optimizer.step()
+    scheduler.step()
+    end_event.record()
+    torch.cuda.synchronize(device)
     wall_seconds = time.perf_counter() - wall_start
     gpu_seconds = float(start_event.elapsed_time(end_event)) / 1000.0
     loss_value = float(loss.detach().float().cpu())
     parameter_digest_after = trainable_parameter_sha256(model)
+    update_groups = _measure_parameter_update_groups(model, parameter_baseline)
+    model_state_inventory = _model_state_inventory(model)
     (
         checkpoint_model_state,
         live_model_state_digest_after,
@@ -465,6 +742,9 @@ def run_one_step_smoke(
         sampler_order_digest=sampler_digest,
         rng_state=capture_rng_state(),
         input_digests={str(name): str(value) for name, value in input_digests.items()},
+        semantic_input_digests={
+            str(name): str(value) for name, value in semantic_input_digests.items()
+        },
     )
     digests = checkpoint_state_digests(state)
     observation = StepObservation(
@@ -485,12 +765,21 @@ def run_one_step_smoke(
         cublas_workspace_config=os.environ.get("CUBLAS_WORKSPACE_CONFIG", ""),
         bf16_supported=bool(torch.cuda.is_bf16_supported()),
         bf16_autocast_enabled=autocast_observed,
-        deterministic_fallback_detected=fallback_detected,
+        allowlisted_backward=backward_evidence,
         device=str(device),
         live_model_state_digest_after=live_model_state_digest_after,
         trainable_parameter_count=len(parameters),
         parameter_digest_before=parameter_digest_before,
         parameter_digest_after=parameter_digest_after,
+        parameter_inventory=parameter_baseline.inventory,
+        update_groups=update_groups,
+        optimizer_groups=optimizer_groups,
+        scheduler_state_before_sha256=scheduler_state_before_sha256,
+        sampler_order_digest=sampler_digest,
+        input_digests={str(name): str(value) for name, value in input_digests.items()},
+        checkpoint_epoch=0,
+        checkpoint_step=1,
+        model_state_inventory=model_state_inventory,
         state_digests=digests,
         checkpoint_state=state,
     )
@@ -508,8 +797,8 @@ def evaluate_step_observation(observation: StepObservation) -> StepObservation:
         ),
         (not observation.finite_gradients, "non-finite gradients"),
         (
-            observation.deterministic_fallback_detected,
-            "deterministic fallback detected",
+            not _allowlisted_backward_is_valid(observation.allowlisted_backward),
+            "allowlisted backward evidence mismatch",
         ),
         (
             observation.cuda_matmul_allow_tf32 or observation.cudnn_allow_tf32,
@@ -553,18 +842,62 @@ def _parameter_update_observed(observation: StepObservation) -> bool:
     )
 
 
-def deterministic_comparison(observation: StepObservation) -> dict[str, object]:
-    """Build the exact cross-run comparison, excluding timing and allocator jitter."""
-    ordered_loss_hex = [value.hex() for value in observation.ordered_losses]
+def _allowlisted_backward_is_valid(evidence: BackwardWarningEvidence) -> bool:
+    return (
+        evidence.operation_identifier == _ALLOWLISTED_BACKWARD_OPERATION
+        and evidence.expected_count == 9
+        and evidence.observed_count == 9
+        and len(evidence.raw_warnings) == 9
+        and evidence.warning_categories == ("UserWarning",) * 9
+        and evidence.operation_identifiers == (_ALLOWLISTED_BACKWARD_OPERATION,) * 9
+        and dict(evidence.source_sha256) == _ALLOWLISTED_BACKWARD_SOURCE_SHA256
+        and evidence.strict_mode_restored is True
+    )
+
+
+def _allowlisted_backward_document(
+    evidence: BackwardWarningEvidence,
+) -> dict[str, object]:
+    return {
+        "operation_identifier": evidence.operation_identifier,
+        "expected_count": evidence.expected_count,
+        "observed_count": evidence.observed_count,
+        "raw_warnings": list(evidence.raw_warnings),
+        "warning_categories": list(evidence.warning_categories),
+        "operation_identifiers": list(evidence.operation_identifiers),
+        "source_sha256": dict(sorted(evidence.source_sha256.items())),
+        "strict_mode_restored": evidence.strict_mode_restored,
+    }
+
+
+def exact_comparison(observation: StepObservation) -> dict[str, object]:
+    """Build the A3 exact replay identity, excluding post-backward float values."""
     state_digests = {
-        name: str(observation.state_digests[name]) for name in _STATE_DIGEST_KEYS
+        name: str(observation.state_digests[name])
+        for name in ("scheduler", "scaler", "rng", "sampler")
     }
     preimage = {
-        "ordered_loss_hex": ordered_loss_hex,
+        "parameter_digest_before": observation.parameter_digest_before,
+        "parameter_inventory": [dict(item) for item in observation.parameter_inventory],
+        "ordered_loss_hex": [value.hex() for value in observation.ordered_losses],
+        "optimizer_groups": [dict(item) for item in observation.optimizer_groups],
+        "scheduler_state_before_sha256": observation.scheduler_state_before_sha256,
+        "sampler_order_digest": observation.sampler_order_digest,
+        "semantic_input_digests": dict(
+            sorted(observation.semantic_input_digests.items())
+        ),
+        "checkpoint_epoch": observation.checkpoint_epoch,
+        "checkpoint_step": observation.checkpoint_step,
+        "model_state_inventory": [
+            dict(item) for item in observation.model_state_inventory
+        ],
         "state_digests": state_digests,
+        "allowlisted_backward": _allowlisted_backward_document(
+            observation.allowlisted_backward
+        ),
     }
     return {
-        "rule": "float-hex-and-state-digests-sha256-v1",
+        "rule": "wave0-a3-exact-replay-sha256-v1",
         **preimage,
         "sha256": canonical_json_sha256(preimage),
     }
@@ -669,7 +1002,12 @@ def _build_receipt(
         "cublas_workspace_config": observation.cublas_workspace_config,
         "bf16_supported": observation.bf16_supported,
         "bf16_autocast_enabled": observation.bf16_autocast_enabled,
-        "deterministic_fallback_detected": observation.deterministic_fallback_detected,
+        "allowlisted_grid_sample_backward": _allowlisted_backward_is_valid(
+            observation.allowlisted_backward
+        ),
+        "strict_deterministic_error_mode_restored": (
+            observation.allowlisted_backward.strict_mode_restored
+        ),
     }
     recipe = {
         "seed": SEED,
@@ -716,7 +1054,12 @@ def _build_receipt(
         "cudnn_benchmark_disabled": not observation.cudnn_benchmark,
         "canonical_environment": True,
         "deterministic_algorithms": observation.deterministic_algorithms,
-        "deterministic_fallback_absent": not observation.deterministic_fallback_detected,
+        "allowlisted_backward_verified": _allowlisted_backward_is_valid(
+            observation.allowlisted_backward
+        ),
+        "strict_deterministic_error_mode_restored": (
+            observation.allowlisted_backward.strict_mode_restored
+        ),
         "exact_scipy": live_environment["observed"].get("scipy") == "1.18.0",
         "finite_gradients": observation.finite_gradients,
         "finite_loss": observation.finite_loss,
@@ -756,7 +1099,15 @@ def _build_receipt(
         "invariants": dict(sorted(invariants.items())),
         "ordered_losses": list(observation.ordered_losses),
         "state_digests": dict(observation.state_digests),
-        "comparison": deterministic_comparison(observation),
+        "allowlisted_backward": _allowlisted_backward_document(
+            observation.allowlisted_backward
+        ),
+        "parameter_inventory": [dict(item) for item in observation.parameter_inventory],
+        "update_groups": {
+            name: {"l2_norm": float(observation.update_groups[name])}
+            for name in ("detector", "backbone")
+        },
+        "exact_comparison": exact_comparison(observation),
         "step": {
             "loss_hex": observation.ordered_losses[0].hex(),
             "gradient_norm": observation.gradient_norm,
@@ -788,7 +1139,7 @@ def _build_receipt(
     }
     return {
         "receipt_type": "feasibility",
-        "schema_version": 1,
+        "schema_version": 2,
         "normative": normative,
         "metadata": {"timestamp": datetime.now(UTC).isoformat(), "run_id": run_id},
     }
@@ -851,6 +1202,11 @@ def _execute_probe(
     batch, shapes, synthetic_labels = _prepare_labeled_batch(
         device, model_contract_digest
     )
+    batch = dict(batch)
+    batch["_val_semantic_input_digests"] = {
+        "fixture_sha256": str(normative["fixture_sha256"]),
+        "synthetic_target_sha256": str(normative["synthetic_target_sha256"]),
+    }
     try:
         observation = run_one_step_smoke(model, batch, seed=SEED)
         evaluate_step_observation(observation)

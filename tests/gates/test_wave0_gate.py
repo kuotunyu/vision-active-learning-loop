@@ -1,12 +1,16 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
+import random
 import shutil
 import subprocess
 from pathlib import Path
 
+import numpy as np
 import pytest
+import torch
 
 from vision_active_learning_loop.artifacts import receipts
 from vision_active_learning_loop.artifacts.digests import canonical_json_sha256
@@ -20,10 +24,22 @@ from vision_active_learning_loop.cli_manifest import build_manifest
 from vision_active_learning_loop.gates.wave0 import (
     ReplayReceiptPaths,
     Wave0Inputs,
+    _AttemptEvidence,
+    _semantic_environment_identities_match,
     evaluate_wave0,
     main,
 )
 from vision_active_learning_loop.models.assets import load_pinned_asset_specs
+from vision_active_learning_loop.probes import training_feasibility as feasibility_probe
+from vision_active_learning_loop.training.checkpoint_io import (
+    CheckpointState,
+    capture_rng_state,
+    checkpoint_state_digests,
+    checkpoint_state_sha256,
+    load_checkpoint_verified,
+    save_checkpoint_atomic,
+    structured_state_sha256,
+)
 
 from ..artifacts.test_receipts import (
     MODEL_CONTRACT_INVARIANTS,
@@ -32,6 +48,119 @@ from ..artifacts.test_receipts import (
 )
 from ..models.test_assets import CONFIG_PATH, _valid_model_asset_receipt
 from ..probes.test_training_feasibility import _receipt as valid_feasibility_receipt
+
+
+class _GateGroupedModel(torch.nn.Module):
+    def __init__(self) -> None:
+        super().__init__()
+        self.detector = torch.nn.Linear(2, 1)
+        self.model = torch.nn.Module()
+        self.model.backbone = torch.nn.Linear(2, 1)
+
+
+def _checkpoint_fixture(
+    model_contract_digest: str,
+) -> tuple[CheckpointState, dict[str, object]]:
+    random.seed(17)
+    np.random.seed(17)
+    torch.manual_seed(17)
+    model = _GateGroupedModel()
+    baseline = feasibility_probe._capture_parameter_baseline(model)
+    parameter_digest_before = feasibility_probe.trainable_parameter_sha256(model)
+    optimizer = feasibility_probe.build_optimizer(model)
+    scheduler = feasibility_probe.build_scheduler(optimizer)
+    optimizer_groups = feasibility_probe._optimizer_group_evidence(optimizer)
+    scheduler_before = structured_state_sha256(scheduler.state_dict())
+    loss = sum(parameter.square().sum() for parameter in model.parameters())
+    loss.backward()
+    optimizer.step()
+    scheduler.step()
+    sampler_digest = hashlib.sha256(b'["wide-gradient","tall-checker"]').hexdigest()
+    state = CheckpointState(
+        model_state=copy.deepcopy(model.state_dict()),
+        optimizer_state=copy.deepcopy(optimizer.state_dict()),
+        scheduler_state=copy.deepcopy(scheduler.state_dict()),
+        scaler_state=None,
+        epoch=0,
+        step=1,
+        sampler_order_digest=sampler_digest,
+        rng_state=capture_rng_state(),
+        input_digests={"model_contract_receipt": model_contract_digest},
+    )
+    evidence = {
+        "parameter_digest_before": parameter_digest_before,
+        "parameter_digest_after": feasibility_probe.trainable_parameter_sha256(model),
+        "parameter_inventory": [dict(item) for item in baseline.inventory],
+        "update_groups": feasibility_probe._measure_parameter_update_groups(
+            model, baseline
+        ),
+        "optimizer_groups": [dict(item) for item in optimizer_groups],
+        "scheduler_state_before_sha256": scheduler_before,
+        "sampler_order_digest": sampler_digest,
+        "model_state_inventory": [
+            dict(item) for item in feasibility_probe._model_state_inventory(model)
+        ],
+        "state_digests": checkpoint_state_digests(state),
+        "checkpoint_state_sha256": checkpoint_state_sha256(state),
+    }
+    return state, evidence
+
+
+def _bind_checkpoint_evidence(
+    document: dict[str, object],
+    *,
+    model_contract: dict[str, object],
+    model_contract_digest: str,
+    checkpoint_digest: str,
+    evidence: dict[str, object],
+) -> None:
+    normative = document["normative"]
+    assert isinstance(normative, dict)
+    normative["parent_model_contract"] = copy.deepcopy(model_contract)
+    normative["model_contract_receipt_sha256"] = model_contract_digest
+    normative["checkpoint_sha256"] = checkpoint_digest
+    normative["checkpoint_state_sha256"] = evidence["checkpoint_state_sha256"]
+    normative["state_digests"] = copy.deepcopy(evidence["state_digests"])
+    normative["parameter_inventory"] = copy.deepcopy(evidence["parameter_inventory"])
+    normative["update_groups"] = {
+        name: {"l2_norm": value} for name, value in evidence["update_groups"].items()
+    }
+    step = normative["step"]
+    assert isinstance(step, dict)
+    step["trainable_parameter_count"] = len(evidence["parameter_inventory"])
+    step["parameter_digest_before"] = evidence["parameter_digest_before"]
+    step["parameter_digest_after"] = evidence["parameter_digest_after"]
+    exact = normative["exact_comparison"]
+    assert isinstance(exact, dict)
+    exact["parameter_digest_before"] = evidence["parameter_digest_before"]
+    exact["parameter_inventory"] = copy.deepcopy(evidence["parameter_inventory"])
+    exact["optimizer_groups"] = copy.deepcopy(evidence["optimizer_groups"])
+    exact["scheduler_state_before_sha256"] = evidence["scheduler_state_before_sha256"]
+    exact["sampler_order_digest"] = evidence["sampler_order_digest"]
+    exact["model_state_inventory"] = copy.deepcopy(evidence["model_state_inventory"])
+    state_digests = evidence["state_digests"]
+    assert isinstance(state_digests, dict)
+    exact["state_digests"] = {
+        name: state_digests[name] for name in ("scheduler", "scaler", "rng", "sampler")
+    }
+    exact["sha256"] = canonical_json_sha256(
+        {name: value for name, value in exact.items() if name not in {"rule", "sha256"}}
+    )
+    checkpoint = normative["checkpoint"]
+    assert isinstance(checkpoint, dict)
+    checkpoint.update(
+        {
+            "file_sha256": checkpoint_digest,
+            "verified_file_sha256": checkpoint_digest,
+            "live_model_state_sha256_after_step": state_digests["model"],
+            "state_sha256_before_save": evidence["checkpoint_state_sha256"],
+            "state_sha256_after_load": evidence["checkpoint_state_sha256"],
+            "state_digests_before_save": copy.deepcopy(state_digests),
+            "state_digests_after_load": copy.deepcopy(state_digests),
+            "state_digests_after_restore": copy.deepcopy(state_digests),
+            "input_digests_verified": True,
+        }
+    )
 
 
 @pytest.fixture(autouse=True)
@@ -49,12 +178,15 @@ def _bind_minimal_asset_documents(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def _paths(attempt_root: Path) -> ReplayReceiptPaths:
     root = attempt_root / "wave0" / "receipts"
+    checkpoints = attempt_root / "wave0" / "checkpoints"
     return ReplayReceiptPaths(
         environment=root / "environment.json",
         model_assets=root / "model-assets.json",
         model_contract=root / "model-contract.json",
         feasibility_a=root / "feasibility-a.json",
         feasibility_b=root / "feasibility-b.json",
+        checkpoint_a=checkpoints / "feasibility-a" / "step-000001.pt",
+        checkpoint_b=checkpoints / "feasibility-b" / "step-000001.pt",
     )
 
 
@@ -65,17 +197,33 @@ def _publish_attempt(attempt_root: Path, run_id: str = "run-a") -> ReplayReceipt
     asset_receipt = _valid_model_asset_receipt(specs)
     asset_receipt["metadata"]["run_id"] = run_id
     model_contract = build_valid_model_contract_receipt()
-    feasibility = valid_feasibility_receipt()
     if run_id != "run-a":
         raise AssertionError("test helper only supports the canonical fixture run")
     for path, document in (
         (paths.environment, build_valid_environment_receipt(run_id)),
         (paths.model_assets, asset_receipt),
         (paths.model_contract, model_contract),
-        (paths.feasibility_a, feasibility),
-        (paths.feasibility_b, copy.deepcopy(feasibility)),
     ):
         atomic_write_receipt(path, document)
+    model_contract = json.loads(paths.model_contract.read_text(encoding="utf-8"))
+    assert isinstance(model_contract, dict)
+    model_contract_digest = hashlib.sha256(
+        paths.model_contract.read_bytes()
+    ).hexdigest()
+    for suffix in ("a", "b"):
+        checkpoint_path = getattr(paths, f"checkpoint_{suffix}")
+        checkpoint_path.parent.mkdir(parents=True)
+        state, evidence = _checkpoint_fixture(model_contract_digest)
+        checkpoint_digest = save_checkpoint_atomic(state, checkpoint_path)
+        feasibility = valid_feasibility_receipt()
+        _bind_checkpoint_evidence(
+            feasibility,
+            model_contract=model_contract,
+            model_contract_digest=model_contract_digest,
+            checkpoint_digest=checkpoint_digest,
+            evidence=evidence,
+        )
+        atomic_write_receipt(getattr(paths, f"feasibility_{suffix}"), feasibility)
     return paths
 
 
@@ -97,7 +245,7 @@ def _rewrite(path: Path, mutation: object) -> None:
     path.write_bytes(_canonical_storage_bytes(document))
 
 
-def test_complete_a2_inputs_pass_with_exact_terminal_interpretation(
+def test_complete_a3_inputs_pass_with_exact_terminal_interpretation(
     valid_inputs: Wave0Inputs,
 ) -> None:
     result = evaluate_wave0(valid_inputs)
@@ -107,8 +255,161 @@ def test_complete_a2_inputs_pass_with_exact_terminal_interpretation(
     document = result.as_dict()
     assert document["normative"]["status"] == "PASS"
     assert (
-        document["normative"]["interpretation"] == "WAVE0_A2_PASS / WAVE1_NOT_STARTED"
+        document["normative"]["interpretation"] == "WAVE0_A3_PASS / WAVE1_NOT_STARTED"
     )
+    comparison_keys = {
+        "primary_b",
+        "clean_a_a",
+        "clean_a_b",
+        "clean_b_a",
+        "clean_b_b",
+    }
+    assert set(document["normative"]["exact_comparisons"]) == comparison_keys
+    assert set(document["normative"]["numerical_replay_comparisons"]) == comparison_keys
+    assert all(
+        value["passed"] is True
+        for value in document["normative"]["exact_comparisons"].values()
+    )
+    assert all(
+        value["passed"] is True
+        for value in document["normative"]["numerical_replay_comparisons"].values()
+    )
+
+
+def test_attempts_must_share_one_exact_semantic_environment() -> None:
+    def attempt(gpu_uuid: str) -> _AttemptEvidence:
+        return _AttemptEvidence(
+            documents={
+                "environment": {
+                    "normative": {
+                        "observed": {
+                            "gpu_uuid": gpu_uuid,
+                            "driver": "580.88",
+                            "runtime_image_digest": "sha256:" + "a" * 64,
+                        }
+                    }
+                }
+            },
+            stored_hashes={},
+            checkpoints={},
+        )
+
+    canonical = attempt("GPU-11111111-1111-1111-1111-111111111111")
+    same = attempt("GPU-11111111-1111-1111-1111-111111111111")
+    different = attempt("GPU-22222222-2222-2222-2222-222222222222")
+
+    assert _semantic_environment_identities_match(
+        {"primary": canonical, "clean_a": same, "clean_b": same}
+    )
+    assert not _semantic_environment_identities_match(
+        {"primary": canonical, "clean_a": same, "clean_b": different}
+    )
+
+
+@pytest.mark.parametrize("mode", ["missing", "corrupt", "wrong-receipt-hash"])
+def test_missing_corrupt_or_wrong_hash_checkpoint_fails_before_comparison(
+    valid_inputs: Wave0Inputs, mode: str
+) -> None:
+    checkpoint = valid_inputs.primary.checkpoint_b
+    if mode == "missing":
+        checkpoint.unlink()
+    elif mode == "corrupt":
+        checkpoint.write_bytes(b"not a checkpoint")
+    else:
+        _rewrite(
+            valid_inputs.primary.feasibility_b,
+            lambda document: (
+                document["normative"].update({"checkpoint_sha256": "0" * 64}),
+                document["normative"]["checkpoint"].update(
+                    {
+                        "file_sha256": "0" * 64,
+                        "verified_file_sha256": "0" * 64,
+                    }
+                ),
+            ),
+        )
+
+    result = evaluate_wave0(valid_inputs)
+
+    assert result.invariants["primary_complete_pass"] is False
+    assert result.invariants["numerical_replays_within_bounds"] is False
+    assert result.errors
+
+
+def test_historical_feasibility_version_is_rejected_by_a3_gate(
+    valid_inputs: Wave0Inputs,
+) -> None:
+    _rewrite(
+        valid_inputs.clean_a.feasibility_a,
+        lambda document: document.update({"schema_version": 1}),
+    )
+
+    result = evaluate_wave0(valid_inputs)
+
+    assert result.invariants["historical_evidence_not_used"] is False
+    assert result.invariants["clean_a_complete_pass"] is False
+
+
+def test_post_update_checkpoint_drift_fails_registered_numerical_bound(
+    valid_inputs: Wave0Inputs,
+) -> None:
+    receipt_path = valid_inputs.clean_b.feasibility_b
+    document = json.loads(receipt_path.read_text(encoding="utf-8"))
+    normative = document["normative"]
+    checkpoint_path = valid_inputs.clean_b.checkpoint_b
+    state = load_checkpoint_verified(
+        checkpoint_path,
+        normative["checkpoint_sha256"],
+        expected_input_digests={
+            "model_contract_receipt": normative["model_contract_receipt_sha256"]
+        },
+    )
+    model_state = dict(state.model_state)
+    first_name = normative["parameter_inventory"][0]["name"]
+    first_tensor = model_state[first_name]
+    model_state[first_name] = first_tensor + torch.full_like(first_tensor, 0.1)
+    changed = CheckpointState(
+        model_state=model_state,
+        optimizer_state=state.optimizer_state,
+        scheduler_state=state.scheduler_state,
+        scaler_state=state.scaler_state,
+        epoch=state.epoch,
+        step=state.step,
+        sampler_order_digest=state.sampler_order_digest,
+        rng_state=state.rng_state,
+        input_digests=state.input_digests,
+    )
+    checkpoint_path.unlink()
+    new_digest = save_checkpoint_atomic(changed, checkpoint_path)
+    new_state_digest = checkpoint_state_sha256(changed)
+    new_digests = checkpoint_state_digests(changed)
+
+    def rebind(changed_document: dict[str, object]) -> None:
+        changed_normative = changed_document["normative"]
+        changed_normative["checkpoint_sha256"] = new_digest
+        changed_normative["checkpoint_state_sha256"] = new_state_digest
+        changed_normative["state_digests"] = copy.deepcopy(new_digests)
+        checkpoint_evidence = changed_normative["checkpoint"]
+        checkpoint_evidence.update(
+            {
+                "file_sha256": new_digest,
+                "verified_file_sha256": new_digest,
+                "live_model_state_sha256_after_step": new_digests["model"],
+                "state_sha256_before_save": new_state_digest,
+                "state_sha256_after_load": new_state_digest,
+                "state_digests_before_save": copy.deepcopy(new_digests),
+                "state_digests_after_load": copy.deepcopy(new_digests),
+                "state_digests_after_restore": copy.deepcopy(new_digests),
+            }
+        )
+
+    _rewrite(receipt_path, rebind)
+
+    result = evaluate_wave0(valid_inputs)
+
+    assert result.invariants["clean_replays_exact_fields_match"] is True
+    assert result.invariants["numerical_replays_within_bounds"] is False
+    assert any("clean_b_b" in error for error in result.errors)
 
 
 @pytest.mark.parametrize(
@@ -185,34 +486,34 @@ def test_every_a2_model_invariant_is_fail_closed(
     assert evaluate_wave0(valid_inputs).errors
 
 
-def test_feasibility_ab_deterministic_divergence_is_rejected(
+def test_feasibility_ab_exact_divergence_is_rejected(
     valid_inputs: Wave0Inputs,
 ) -> None:
     _rewrite(
         valid_inputs.primary.feasibility_b,
-        lambda document: document["normative"]["comparison"].update(
+        lambda document: document["normative"]["exact_comparison"].update(
             {"sha256": "b" * 64}
         ),
     )
 
     result = evaluate_wave0(valid_inputs)
 
-    assert result.invariants["feasibility_ab_deterministic"] is False
+    assert result.invariants["feasibility_ab_exact_fields_match"] is False
 
 
-def test_clean_replay_normative_divergence_is_rejected(
+def test_clean_replay_exact_divergence_is_rejected(
     valid_inputs: Wave0Inputs,
 ) -> None:
     _rewrite(
         valid_inputs.clean_b.feasibility_a,
-        lambda document: document["normative"]["comparison"].update(
+        lambda document: document["normative"]["exact_comparison"].update(
             {"sha256": "b" * 64}
         ),
     )
 
     result = evaluate_wave0(valid_inputs)
 
-    assert result.invariants["clean_replays_deterministic"] is False
+    assert result.invariants["clean_replays_exact_fields_match"] is False
 
 
 def test_data_root_presence_is_rejected(valid_inputs: Wave0Inputs) -> None:

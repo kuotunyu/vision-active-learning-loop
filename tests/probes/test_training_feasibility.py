@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import copy
 import json
+import warnings
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -23,7 +25,6 @@ from vision_active_learning_loop.probes.training_feasibility import (
     StepObservation,
     _prepare_labeled_batch,
     configure_determinism,
-    deterministic_comparison,
     evaluate_step_observation,
     resolve_cli_paths,
     validate_live_environment_evidence,
@@ -32,6 +33,34 @@ from vision_active_learning_loop.probes.training_feasibility import (
 from ..artifacts.test_receipts import build_valid_model_contract_receipt
 
 HASH = "a" * 64
+GRID_WARNING = (
+    "grid_sampler_2d_backward_cuda does not have a deterministic implementation."
+)
+
+
+def _emit_grid_sample_warnings(count: int) -> None:
+    for _ in range(count):
+        warnings.warn(
+            "grid_sampler_2d_backward_cuda does not have a deterministic "
+            "implementation, but deterministic algorithms were requested",
+            UserWarning,
+            stacklevel=2,
+        )
+
+
+def _emit_warning_messages(
+    messages: tuple[str, ...], category: type[Warning] = UserWarning
+) -> None:
+    for message in messages:
+        warnings.warn(message, category, stacklevel=2)
+
+
+class _TinyGroupedModel(torch.nn.Module):
+    def __init__(self) -> None:
+        super().__init__()
+        self.detector = torch.nn.Linear(2, 1)
+        self.model = torch.nn.Module()
+        self.model.backbone = torch.nn.Linear(2, 1)
 
 
 def _parent_environment() -> dict[str, object]:
@@ -120,6 +149,31 @@ def _environment_evidence() -> dict[str, object]:
     }
 
 
+def _warning_evidence() -> feasibility_probe.BackwardWarningEvidence:
+    operation = "grid_sampler_2d_backward_cuda"
+    message = f"{operation} does not have a deterministic implementation."
+    return feasibility_probe.BackwardWarningEvidence(
+        operation_identifier=operation,
+        expected_count=9,
+        observed_count=9,
+        raw_warnings=(message,) * 9,
+        warning_categories=("UserWarning",) * 9,
+        operation_identifiers=(operation,) * 9,
+        source_sha256={
+            "torch_init": (
+                "b508de5a66ebc368fc8fa2161b1e0e88ae0034d9d9540e7c020460237a5464a9"
+            ),
+            "torch_nn_functional": (
+                "e409a97896241e0dfb8c23fbf1f09967ecf5e65ec9626aec0d97d9cc5d727d50"
+            ),
+            "transformers_modeling_rt_detr": (
+                "fce24c79c8599e52f3648f549502879e9b396cc86f593c3a07baf10c002cead3"
+            ),
+        },
+        strict_mode_restored=True,
+    )
+
+
 def _observation(**changes: object) -> StepObservation:
     values: dict[str, object] = {
         "ordered_losses": (3.25,),
@@ -139,12 +193,66 @@ def _observation(**changes: object) -> StepObservation:
         "cublas_workspace_config": ":4096:8",
         "bf16_supported": True,
         "bf16_autocast_enabled": True,
-        "deterministic_fallback_detected": False,
+        "allowlisted_backward": _warning_evidence(),
         "device": "cuda:0",
         "live_model_state_digest_after": "7" * 64,
-        "trainable_parameter_count": 342,
+        "trainable_parameter_count": 2,
         "parameter_digest_before": "0" * 64,
         "parameter_digest_after": "1" * 64,
+        "parameter_inventory": (
+            {
+                "name": "detector.weight",
+                "group_name": "detector",
+                "shape": [4, 8],
+                "dtype": "float32",
+            },
+            {
+                "name": "model.backbone.weight",
+                "group_name": "backbone",
+                "shape": [8, 8],
+                "dtype": "float32",
+            },
+        ),
+        "update_groups": {"detector": 0.125, "backbone": 0.0625},
+        "optimizer_groups": (
+            {
+                "group_name": "detector",
+                "learning_rate": 1e-4,
+                "weight_decay": 1e-4,
+            },
+            {
+                "group_name": "backbone",
+                "learning_rate": 1e-5,
+                "weight_decay": 1e-4,
+            },
+        ),
+        "scheduler_state_before_sha256": "8" * 64,
+        "sampler_order_digest": "6" * 64,
+        "input_digests": {"model_contract_receipt": "9" * 64},
+        "semantic_input_digests": {
+            "fixture_sha256": (
+                "4e5eddbb21426c00932c34af331ae3e0ef3d30eb9010da7310b7319e91ec6d0f"
+            ),
+            "synthetic_target_sha256": (
+                "abffd232b48a8306af8a35e6e2bce3ad0afa92f6380508f47e9c22b90e87d198"
+            ),
+        },
+        "checkpoint_epoch": 0,
+        "checkpoint_step": 1,
+        "model_state_inventory": (
+            {
+                "name": "detector.weight",
+                "shape": [4, 8],
+                "dtype": "float32",
+                "trainable": True,
+            },
+            {
+                "name": "running_count",
+                "shape": [],
+                "dtype": "int64",
+                "trainable": False,
+            },
+        ),
         "state_digests": {
             "model": "7" * 64,
             "optimizer": "2" * 64,
@@ -161,14 +269,14 @@ def _observation(**changes: object) -> StepObservation:
 
 def _receipt() -> dict[str, object]:
     observation = _observation()
-    comparison = deterministic_comparison(observation)
+    comparison = feasibility_probe.exact_comparison(observation)
     environment = _environment_evidence()
     parent = build_valid_model_contract_receipt()
     parent["metadata"]["receipt_content_sha256"] = _receipt_content_sha256(parent)
     parent_normative = parent["normative"]
     return {
         "receipt_type": "feasibility",
-        "schema_version": 1,
+        "schema_version": 2,
         "normative": {
             "model_sha256": parent_normative["model_sha256"],
             "config_sha256": parent_normative["config_sha256"],
@@ -200,7 +308,8 @@ def _receipt() -> dict[str, object]:
                 "cudnn_benchmark_disabled": True,
                 "canonical_environment": True,
                 "deterministic_algorithms": True,
-                "deterministic_fallback_absent": True,
+                "allowlisted_backward_verified": True,
+                "strict_deterministic_error_mode_restored": True,
                 "exact_scipy": True,
                 "finite_gradients": True,
                 "finite_loss": True,
@@ -214,7 +323,17 @@ def _receipt() -> dict[str, object]:
             },
             "ordered_losses": list(observation.ordered_losses),
             "state_digests": dict(observation.state_digests),
-            "comparison": comparison,
+            "allowlisted_backward": feasibility_probe._allowlisted_backward_document(
+                observation.allowlisted_backward
+            ),
+            "parameter_inventory": [
+                dict(item) for item in observation.parameter_inventory
+            ],
+            "update_groups": {
+                name: {"l2_norm": observation.update_groups[name]}
+                for name in ("detector", "backbone")
+            },
+            "exact_comparison": comparison,
             "step": {
                 "loss_hex": (3.25).hex(),
                 "gradient_norm": 0.75,
@@ -255,7 +374,8 @@ def _receipt() -> dict[str, object]:
                 "cublas_workspace_config": ":4096:8",
                 "bf16_supported": True,
                 "bf16_autocast_enabled": True,
-                "deterministic_fallback_detected": False,
+                "allowlisted_grid_sample_backward": True,
+                "strict_deterministic_error_mode_restored": True,
             },
             "recipe": {
                 "seed": 17,
@@ -302,6 +422,227 @@ def test_tf32_is_disabled_and_runtime_controls_are_exact(
     assert state.cublas_workspace_config == ":4096:8"
 
 
+def test_allowlisted_backward_accepts_exact_inventory_and_restores_error_mode() -> None:
+    configure_determinism(seed=17)
+
+    evidence = feasibility_probe.run_allowlisted_backward(
+        lambda: _emit_grid_sample_warnings(9), expected_count=9
+    )
+
+    assert evidence.operation_identifier == "grid_sampler_2d_backward_cuda"
+    assert evidence.expected_count == 9
+    assert evidence.observed_count == 9
+    assert evidence.operation_identifiers == ("grid_sampler_2d_backward_cuda",) * 9
+    assert evidence.warning_categories == ("UserWarning",) * 9
+    assert len(evidence.raw_warnings) == 9
+    assert evidence.strict_mode_restored is True
+    assert evidence.source_sha256 == {
+        "torch_init": (
+            "b508de5a66ebc368fc8fa2161b1e0e88ae0034d9d9540e7c020460237a5464a9"
+        ),
+        "torch_nn_functional": (
+            "e409a97896241e0dfb8c23fbf1f09967ecf5e65ec9626aec0d97d9cc5d727d50"
+        ),
+        "transformers_modeling_rt_detr": (
+            "fce24c79c8599e52f3648f549502879e9b396cc86f593c3a07baf10c002cead3"
+        ),
+    }
+    assert torch.are_deterministic_algorithms_enabled() is True
+    assert torch.is_deterministic_algorithms_warn_only_enabled() is False
+    assert torch.get_deterministic_debug_mode() == 2
+
+
+@pytest.mark.parametrize(
+    ("messages", "category", "expected"),
+    [
+        ((), UserWarning, "count mismatch"),
+        (
+            (GRID_WARNING,) * 8,
+            UserWarning,
+            "count mismatch",
+        ),
+        (
+            (GRID_WARNING,) * 10,
+            UserWarning,
+            "count mismatch",
+        ),
+        (
+            ("other_backward_cuda does not have a deterministic implementation.",) * 9,
+            UserWarning,
+            "unexpected deterministic backward operation",
+        ),
+        (
+            (GRID_WARNING,) * 8
+            + ("other_backward_cuda does not have a deterministic implementation.",),
+            UserWarning,
+            "unexpected deterministic backward operation",
+        ),
+        (
+            ("deterministic warning without an operation identifier",),
+            UserWarning,
+            "unparsable",
+        ),
+        (
+            (GRID_WARNING,) * 9,
+            RuntimeWarning,
+            "unexpected deterministic warning category",
+        ),
+    ],
+    ids=[
+        "zero",
+        "eight",
+        "ten",
+        "different-operation",
+        "mixed-operations",
+        "unparsable",
+        "wrong-category",
+    ],
+)
+def test_allowlisted_backward_rejects_every_inventory_drift(
+    messages: tuple[str, ...], category: type[Warning], expected: str
+) -> None:
+    configure_determinism(seed=17)
+
+    with pytest.raises(FeasibilityError, match=expected):
+        feasibility_probe.run_allowlisted_backward(
+            lambda: _emit_warning_messages(messages, category), expected_count=9
+        )
+
+    assert torch.are_deterministic_algorithms_enabled() is True
+    assert torch.is_deterministic_algorithms_warn_only_enabled() is False
+    assert torch.get_deterministic_debug_mode() == 2
+
+
+def test_allowlisted_backward_requires_strict_error_mode_on_entry() -> None:
+    configure_determinism(seed=17)
+    torch.use_deterministic_algorithms(True, warn_only=True)
+    try:
+        with pytest.raises(FeasibilityError, match="strict deterministic error mode"):
+            feasibility_probe.run_allowlisted_backward(
+                lambda: _emit_grid_sample_warnings(9), expected_count=9
+            )
+    finally:
+        torch.use_deterministic_algorithms(True, warn_only=False)
+        torch.set_deterministic_debug_mode("error")
+
+
+def test_allowlisted_backward_restores_error_mode_when_backward_raises() -> None:
+    configure_determinism(seed=17)
+
+    def fail() -> None:
+        raise RuntimeError("backward failed")
+
+    with pytest.raises(RuntimeError, match="backward failed"):
+        feasibility_probe.run_allowlisted_backward(fail, expected_count=9)
+
+    assert torch.are_deterministic_algorithms_enabled() is True
+    assert torch.is_deterministic_algorithms_warn_only_enabled() is False
+    assert torch.get_deterministic_debug_mode() == 2
+
+
+def test_allowlisted_backward_rejects_source_hash_drift_before_callback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    configure_determinism(seed=17)
+    called = False
+
+    def callback() -> None:
+        nonlocal called
+        called = True
+
+    monkeypatch.setattr(feasibility_probe, "sha256_file", lambda path: "0" * 64)
+
+    with pytest.raises(FeasibilityError, match="source hash mismatch"):
+        feasibility_probe.run_allowlisted_backward(callback, expected_count=9)
+
+    assert called is False
+
+
+def test_grid_sample_warning_count_is_derived_from_pinned_model_config() -> None:
+    model = SimpleNamespace(
+        config=SimpleNamespace(decoder_layers=3, num_feature_levels=3)
+    )
+
+    assert feasibility_probe._expected_grid_sample_warning_count(model) == 9
+
+
+@pytest.mark.parametrize(
+    ("decoder_layers", "feature_levels"),
+    [(2, 3), (3, 4), (True, 3), (3, None)],
+)
+def test_grid_sample_warning_count_rejects_config_drift(
+    decoder_layers: object, feature_levels: object
+) -> None:
+    model = SimpleNamespace(
+        config=SimpleNamespace(
+            decoder_layers=decoder_layers, num_feature_levels=feature_levels
+        )
+    )
+
+    with pytest.raises(FeasibilityError, match="pinned RT-DETR deformable-attention"):
+        feasibility_probe._expected_grid_sample_warning_count(model)
+
+
+def test_optimizer_and_parameter_inventory_have_exact_named_groups() -> None:
+    model = _TinyGroupedModel()
+
+    optimizer = feasibility_probe.build_optimizer(model)
+    baseline = feasibility_probe._capture_parameter_baseline(model)
+
+    assert [group["group_name"] for group in optimizer.param_groups] == [
+        "detector",
+        "backbone",
+    ]
+    assert [group["lr"] for group in optimizer.param_groups] == [1e-4, 1e-5]
+    assert [group["weight_decay"] for group in optimizer.param_groups] == [
+        1e-4,
+        1e-4,
+    ]
+    assert baseline.inventory == (
+        {
+            "name": "detector.weight",
+            "group_name": "detector",
+            "shape": [1, 2],
+            "dtype": "float32",
+        },
+        {
+            "name": "detector.bias",
+            "group_name": "detector",
+            "shape": [1],
+            "dtype": "float32",
+        },
+        {
+            "name": "model.backbone.weight",
+            "group_name": "backbone",
+            "shape": [1, 2],
+            "dtype": "float32",
+        },
+        {
+            "name": "model.backbone.bias",
+            "group_name": "backbone",
+            "shape": [1],
+            "dtype": "float32",
+        },
+    )
+
+
+def test_parameter_update_norms_use_ordered_cpu_float64_groups() -> None:
+    model = _TinyGroupedModel()
+    with torch.no_grad():
+        for parameter in model.parameters():
+            parameter.zero_()
+    baseline = feasibility_probe._capture_parameter_baseline(model)
+    with torch.no_grad():
+        model.detector.weight.add_(torch.tensor([[3.0, 4.0]]))
+        model.detector.bias.add_(12.0)
+        model.model.backbone.weight.add_(torch.tensor([[5.0, 12.0]]))
+        model.model.backbone.bias.add_(84.0)
+
+    update_groups = feasibility_probe._measure_parameter_update_groups(model, baseline)
+
+    assert update_groups == {"detector": 13.0, "backbone": 85.0}
+
+
 def test_initialized_cuda_requires_preconfigured_cublas_workspace(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -314,14 +655,41 @@ def test_initialized_cuda_requires_preconfigured_cublas_workspace(
 
 
 def test_deterministic_comparison_is_exact_and_excludes_timing() -> None:
-    """Catch timing jitter entering, or float rounding weakening, the comparison rule."""
+    """Catch observational post-update jitter entering the exact A3 identity."""
     first = _observation()
-    second = _observation(wall_seconds=99.0, gpu_seconds=98.0)
+    second = _observation(
+        wall_seconds=99.0,
+        gpu_seconds=98.0,
+        gradient_norm=0.7500001,
+        parameter_digest_after="a" * 64,
+        live_model_state_digest_after="b" * 64,
+        update_groups={"detector": 0.1251, "backbone": 0.0626},
+        state_digests={
+            "model": "a" * 64,
+            "optimizer": "b" * 64,
+            "scheduler": "3" * 64,
+            "scaler": "4" * 64,
+            "rng": "5" * 64,
+            "sampler": "6" * 64,
+        },
+    )
     changed = _observation(ordered_losses=(3.2500000000000004,))
 
-    assert deterministic_comparison(first) == deterministic_comparison(second)
-    assert deterministic_comparison(first) != deterministic_comparison(changed)
-    assert deterministic_comparison(first)["ordered_loss_hex"] == [(3.25).hex()]
+    assert feasibility_probe.exact_comparison(
+        first
+    ) == feasibility_probe.exact_comparison(second)
+    assert feasibility_probe.exact_comparison(
+        first
+    ) != feasibility_probe.exact_comparison(changed)
+    assert feasibility_probe.exact_comparison(first)["ordered_loss_hex"] == [
+        (3.25).hex()
+    ]
+    assert set(feasibility_probe.exact_comparison(first)["state_digests"]) == {
+        "scheduler",
+        "scaler",
+        "rng",
+        "sampler",
+    }
 
 
 def test_buffer_only_state_change_cannot_prove_parameter_update() -> None:
@@ -377,7 +745,10 @@ def test_omitted_cpu_checkpoint_model_state_is_rejected(
     [
         ({"ordered_losses": (float("nan"),), "finite_loss": False}, "non-finite loss"),
         ({"finite_gradients": False}, "non-finite gradients"),
-        ({"deterministic_fallback_detected": True}, "deterministic fallback"),
+        (
+            {"allowlisted_backward": replace(_warning_evidence(), observed_count=8)},
+            "allowlisted backward",
+        ),
         ({"cuda_matmul_allow_tf32": True}, "TF32"),
         ({"bf16_supported": False}, "BF16"),
         ({"parameter_changed": False}, "parameter update"),
@@ -419,24 +790,96 @@ def test_feasibility_receipt_is_schema_valid_and_content_addressed(
             "synthetic_target_sha256"
         ]
     )
-    assert stored["normative"]["comparison"]["sha256"] == canonical_json_sha256(
-        {
-            "ordered_loss_hex": [(3.25).hex()],
-            "state_digests": stored["normative"]["state_digests"],
-        }
+    exact = stored["normative"]["exact_comparison"]
+    assert exact["sha256"] == canonical_json_sha256(
+        {name: value for name, value in exact.items() if name not in {"rule", "sha256"}}
     )
+
+
+def test_historical_feasibility_schema_version_cannot_satisfy_a3(
+    tmp_path: Path,
+) -> None:
+    receipt = _receipt()
+    receipt["schema_version"] = 1
+
+    with pytest.raises(ReceiptValidationError, match="unknown receipt type or schema"):
+        atomic_write_receipt(tmp_path / "historical.json", receipt)
+
+
+@pytest.mark.parametrize(
+    ("mutation", "expected"),
+    [
+        (lambda n: n["allowlisted_backward"].pop("source_sha256"), "source_sha256"),
+        (
+            lambda n: n["allowlisted_backward"].update({"expected_count": 8}),
+            "expected_count",
+        ),
+        (
+            lambda n: n["allowlisted_backward"]["raw_warnings"].pop(),
+            "raw_warnings",
+        ),
+        (
+            lambda n: n["allowlisted_backward"]["warning_categories"].__setitem__(
+                0, "RuntimeWarning"
+            ),
+            "warning_categories",
+        ),
+        (
+            lambda n: n["allowlisted_backward"]["operation_identifiers"].__setitem__(
+                0, "other_backward_cuda"
+            ),
+            "operation_identifiers",
+        ),
+        (
+            lambda n: n["allowlisted_backward"]["source_sha256"].update(
+                {"torch_init": "0" * 64}
+            ),
+            "torch_init",
+        ),
+        (
+            lambda n: n["allowlisted_backward"].update({"strict_mode_restored": False}),
+            "strict_mode_restored",
+        ),
+        (
+            lambda n: n["allowlisted_backward"].update({"unexpected": True}),
+            "unexpected",
+        ),
+        (
+            lambda n: n["parameter_inventory"].append(
+                copy.deepcopy(n["parameter_inventory"][0])
+            ),
+            "parameter inventory count",
+        ),
+        (lambda n: n["update_groups"].pop("backbone"), "backbone"),
+        (
+            lambda n: n["update_groups"]["detector"].update({"l2_norm": 0.0}),
+            "detector update norm",
+        ),
+    ],
+)
+def test_a3_feasibility_evidence_drift_fails_closed(
+    tmp_path: Path, mutation: object, expected: str
+) -> None:
+    receipt = _receipt()
+    normative = receipt["normative"]
+    assert isinstance(normative, dict)
+    assert callable(mutation)
+    mutation(normative)
+
+    with pytest.raises(ReceiptValidationError, match=expected):
+        atomic_write_receipt(tmp_path / "feasibility.json", receipt)
 
 
 @pytest.mark.parametrize(
     ("mutation", "expected"),
     [
         (
-            lambda n: n["comparison"].update({"sha256": "0" * 64}),
-            "comparison",
+            lambda n: n["exact_comparison"].update({"sha256": "0" * 64}),
+            "exact comparison",
         ),
         (
             lambda n: n["runtime"].update({"tf32": True}),
-            "tf32_disabled",
+            "runtime.tf32",
         ),
         (
             lambda n: n["vram"].update({"peak_allocated_bytes": 22 * 1024**3 + 1}),
@@ -444,7 +887,7 @@ def test_feasibility_receipt_is_schema_valid_and_content_addressed(
         ),
         (
             lambda n: n["recipe"].update({"gradient_clip_norm": 1.0}),
-            "gradient_clip_0_1",
+            "gradient_clip_norm",
         ),
         (
             lambda n: n["step"].update(
@@ -454,7 +897,7 @@ def test_feasibility_receipt_is_schema_valid_and_content_addressed(
         ),
         (
             lambda n: n["step"].update({"trainable_parameter_count": 0}),
-            "parameter_changed",
+            "parameter inventory count",
         ),
         (
             lambda n: n["step"].update(
