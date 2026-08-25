@@ -330,6 +330,90 @@ Write-NewText -Path $env:VAL_TEST_EMPTY_LOG -Text ''
     assert output.read_bytes() == b""
 
 
+def _run_powershell_native_capture(
+    monkeypatch: pytest.MonkeyPatch, native_command: str
+) -> subprocess.CompletedProcess[str]:
+    powershell = shutil.which("powershell")
+    if powershell is None:
+        pytest.skip("Windows PowerShell is unavailable")
+
+    project_root = Path(__file__).parents[2]
+    monkeypatch.setenv(
+        "VAL_TEST_WAVE0_SCRIPT", str(project_root / "scripts/run_wave0_clean.ps1")
+    )
+    monkeypatch.setenv("VAL_TEST_NATIVE_COMMAND", native_command)
+    command = r"""
+$ErrorActionPreference = 'Stop'
+$Tokens = $null
+$ParseErrors = $null
+$Ast = [System.Management.Automation.Language.Parser]::ParseFile(
+    $env:VAL_TEST_WAVE0_SCRIPT,
+    [ref]$Tokens,
+    [ref]$ParseErrors
+)
+if ($ParseErrors.Count -ne 0) { throw 'Wave 0 PowerShell script did not parse' }
+$CaptureFunction = $Ast.Find({
+    param($Node)
+    $Node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
+        $Node.Name -eq 'Invoke-NativeCommandCapture'
+}, $true)
+if ($null -eq $CaptureFunction) { throw 'Invoke-NativeCommandCapture was not found' }
+Invoke-Expression $CaptureFunction.Extent.Text
+$Result = Invoke-NativeCommandCapture -FilePath 'cmd.exe' -ArgumentList @(
+    '/d', '/c', $env:VAL_TEST_NATIVE_COMMAND
+)
+[pscustomobject]@{
+    text = $Result.Text
+    exit_code = $Result.ExitCode
+    error_action_preference = $ErrorActionPreference.ToString()
+} | ConvertTo-Json -Compress
+"""
+    return subprocess.run(
+        [powershell, "-NoProfile", "-NonInteractive", "-Command", command],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+
+def test_powershell_native_capture_allows_stderr_with_zero_exit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Catch successful native stderr being promoted to a terminating error."""
+    completed = _run_powershell_native_capture(
+        monkeypatch, "echo download-progress 1>&2 & exit /b 0"
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    payload = json.loads(completed.stdout)
+    assert payload["exit_code"] == 0
+    assert payload["text"].strip() == "download-progress"
+    assert payload["error_action_preference"] == "Stop"
+
+
+@pytest.mark.parametrize(
+    ("native_command", "expected_exit_code", "expected_lines"),
+    [
+        ("exit /b 0", 0, []),
+        ("echo normal & echo failure 1>&2 & exit /b 7", 7, ["normal", "failure"]),
+    ],
+)
+def test_powershell_native_capture_preserves_empty_and_nonzero_results(
+    monkeypatch: pytest.MonkeyPatch,
+    native_command: str,
+    expected_exit_code: int,
+    expected_lines: list[str],
+) -> None:
+    """Catch empty logs or nonzero native exit codes being reinterpreted."""
+    completed = _run_powershell_native_capture(monkeypatch, native_command)
+
+    assert completed.returncode == 0, completed.stderr
+    payload = json.loads(completed.stdout)
+    assert payload["exit_code"] == expected_exit_code
+    assert [line.strip() for line in payload["text"].splitlines()] == expected_lines
+    assert payload["error_action_preference"] == "Stop"
+
+
 def test_powershell_and_bash_scripts_have_equivalent_fail_closed_stages() -> None:
     project_root = Path(__file__).parents[2]
     powershell = (project_root / "scripts/run_wave0_clean.ps1").read_text(

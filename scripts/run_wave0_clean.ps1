@@ -51,6 +51,39 @@ function Write-NewText {
     }
 }
 
+function Invoke-NativeCommandCapture {
+    param(
+        [Parameter(Mandatory = $true)][string]$FilePath,
+        [string[]]$ArgumentList = @()
+    )
+    $Application = Get-Command -Name $FilePath -CommandType Application -ErrorAction Stop |
+        Select-Object -First 1
+    $PreviousPreference = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = 'Continue'
+        $Items = @(& $Application.Source @ArgumentList 2>&1)
+        $ExitCode = $LASTEXITCODE
+    } finally {
+        $ErrorActionPreference = $PreviousPreference
+    }
+    $Lines = @($Items | ForEach-Object {
+        if ($_ -is [System.Management.Automation.ErrorRecord]) {
+            $_.Exception.Message
+        } else {
+            $_.ToString()
+        }
+    })
+    $Text = if ($Lines.Count -eq 0) {
+        ''
+    } else {
+        ($Lines -join [Environment]::NewLine) + [Environment]::NewLine
+    }
+    return [pscustomobject]@{
+        Text = $Text
+        ExitCode = [int]$ExitCode
+    }
+}
+
 function Get-TreeBytes {
     param([Parameter(Mandatory = $true)][string]$Path)
     return [long]((Get-ChildItem -LiteralPath $Path -File -Recurse | Measure-Object -Property Length -Sum).Sum)
@@ -86,8 +119,9 @@ function Invoke-WaveStage {
     $DockerArgs += @($ImageTag)
     $DockerArgs += $Command
     $Started = [DateTimeOffset]::UtcNow
-    $Output = (& docker @DockerArgs 2>&1 | Out-String)
-    $ExitCode = $LASTEXITCODE
+    $NativeResult = Invoke-NativeCommandCapture -FilePath 'docker' -ArgumentList $DockerArgs
+    $Output = $NativeResult.Text
+    $ExitCode = $NativeResult.ExitCode
     $Finished = [DateTimeOffset]::UtcNow
     Write-NewText -Path $LogPath -Text $Output
     $ReceiptPath = Join-Path $ReceiptsRoot.FullName $Receipt
@@ -131,9 +165,11 @@ function Invoke-WaveStage {
 }
 
 $InspectPath = Join-Path $AuditRoot.FullName 'image-inspect.json'
-$Inspect = (& docker image inspect $ImageTag 2>&1 | Out-String)
-if ($LASTEXITCODE -ne 0) { throw 'image inspect failed' }
-Write-NewText -Path $InspectPath -Text $Inspect
+$InspectResult = Invoke-NativeCommandCapture -FilePath 'docker' -ArgumentList @(
+    'image', 'inspect', $ImageTag
+)
+if ($InspectResult.ExitCode -ne 0) { throw 'image inspect failed' }
+Write-NewText -Path $InspectPath -Text $InspectResult.Text
 
 Invoke-WaveStage -Name '01-environment' -Network 'none' -Receipt 'environment.json' -Command @(
     'environment', 'check', '--config', '/workspace/configs/environment/wave0.yaml',
