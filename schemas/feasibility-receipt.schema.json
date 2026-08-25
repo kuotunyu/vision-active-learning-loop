@@ -251,7 +251,7 @@
     },
     "allowlisted_backward": {
       "type": "object", "additionalProperties": false,
-      "required": ["operation_identifier", "expected_count", "observed_count", "raw_warnings", "warning_categories", "operation_identifiers", "source_sha256", "strict_mode_restored"],
+      "required": ["operation_identifier", "expected_count", "observed_count", "raw_warnings", "warning_categories", "operation_identifiers", "source_hash_rule", "source_sha256", "strict_mode_restored"],
       "properties": {
         "operation_identifier": {"const": "grid_sampler_2d_backward_cuda"},
         "expected_count": {"const": 9},
@@ -259,12 +259,13 @@
         "raw_warnings": {"type": "array", "minItems": 9, "maxItems": 9, "items": {"type": "string", "pattern": "^grid_sampler_2d_backward_cuda does not have a deterministic implementation.*"}},
         "warning_categories": {"type": "array", "minItems": 9, "maxItems": 9, "items": {"const": "UserWarning"}},
         "operation_identifiers": {"type": "array", "minItems": 9, "maxItems": 9, "items": {"const": "grid_sampler_2d_backward_cuda"}},
+        "source_hash_rule": {"const": "python-source-lf-normalized-sha256-v1"},
         "source_sha256": {
           "type": "object", "additionalProperties": false,
           "required": ["torch_init", "torch_nn_functional", "transformers_modeling_rt_detr"],
           "properties": {
-            "torch_init": {"const": "b508de5a66ebc368fc8fa2161b1e0e88ae0034d9d9540e7c020460237a5464a9"},
-            "torch_nn_functional": {"const": "e409a97896241e0dfb8c23fbf1f09967ecf5e65ec9626aec0d97d9cc5d727d50"},
+            "torch_init": {"const": "d9dfff4b75d46e4c75572200a3466b70231d05b0318e38ac1bd121789165fb49"},
+            "torch_nn_functional": {"const": "27493186ee22f811b553e31d9c804d4d46716d1be62d034d731537f66f27ef19"},
             "transformers_modeling_rt_detr": {"const": "fce24c79c8599e52f3648f549502879e9b396cc86f593c3a07baf10c002cead3"}
           }
         },

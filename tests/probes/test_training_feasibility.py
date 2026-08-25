@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 import warnings
 from dataclasses import replace
@@ -16,6 +17,7 @@ from vision_active_learning_loop.artifacts.receipts import (
     ReceiptValidationError,
     _receipt_content_sha256,
     _stored_receipt_sha256,
+    _validate_feasibility_consistency,
     atomic_write_receipt,
     validate_receipt,
 )
@@ -33,6 +35,16 @@ from vision_active_learning_loop.probes.training_feasibility import (
 from ..artifacts.test_receipts import build_valid_model_contract_receipt
 
 HASH = "a" * 64
+A4_SOURCE_HASH_RULE = "python-source-lf-normalized-sha256-v1"
+A4_SOURCE_SHA256 = {
+    "torch_init": "d9dfff4b75d46e4c75572200a3466b70231d05b0318e38ac1bd121789165fb49",
+    "torch_nn_functional": (
+        "27493186ee22f811b553e31d9c804d4d46716d1be62d034d731537f66f27ef19"
+    ),
+    "transformers_modeling_rt_detr": (
+        "fce24c79c8599e52f3648f549502879e9b396cc86f593c3a07baf10c002cead3"
+    ),
+}
 GRID_WARNING = (
     "grid_sampler_2d_backward_cuda does not have a deterministic implementation."
 )
@@ -159,17 +171,8 @@ def _warning_evidence() -> feasibility_probe.BackwardWarningEvidence:
         raw_warnings=(message,) * 9,
         warning_categories=("UserWarning",) * 9,
         operation_identifiers=(operation,) * 9,
-        source_sha256={
-            "torch_init": (
-                "b508de5a66ebc368fc8fa2161b1e0e88ae0034d9d9540e7c020460237a5464a9"
-            ),
-            "torch_nn_functional": (
-                "e409a97896241e0dfb8c23fbf1f09967ecf5e65ec9626aec0d97d9cc5d727d50"
-            ),
-            "transformers_modeling_rt_detr": (
-                "fce24c79c8599e52f3648f549502879e9b396cc86f593c3a07baf10c002cead3"
-            ),
-        },
+        source_hash_rule=A4_SOURCE_HASH_RULE,
+        source_sha256=dict(A4_SOURCE_SHA256),
         strict_mode_restored=True,
     )
 
@@ -436,12 +439,13 @@ def test_allowlisted_backward_accepts_exact_inventory_and_restores_error_mode() 
     assert evidence.warning_categories == ("UserWarning",) * 9
     assert len(evidence.raw_warnings) == 9
     assert evidence.strict_mode_restored is True
+    assert evidence.source_hash_rule == A4_SOURCE_HASH_RULE
     assert evidence.source_sha256 == {
         "torch_init": (
-            "b508de5a66ebc368fc8fa2161b1e0e88ae0034d9d9540e7c020460237a5464a9"
+            "d9dfff4b75d46e4c75572200a3466b70231d05b0318e38ac1bd121789165fb49"
         ),
         "torch_nn_functional": (
-            "e409a97896241e0dfb8c23fbf1f09967ecf5e65ec9626aec0d97d9cc5d727d50"
+            "27493186ee22f811b553e31d9c804d4d46716d1be62d034d731537f66f27ef19"
         ),
         "transformers_modeling_rt_detr": (
             "fce24c79c8599e52f3648f549502879e9b396cc86f593c3a07baf10c002cead3"
@@ -450,6 +454,80 @@ def test_allowlisted_backward_accepts_exact_inventory_and_restores_error_mode() 
     assert torch.are_deterministic_algorithms_enabled() is True
     assert torch.is_deterministic_algorithms_warn_only_enabled() is False
     assert torch.get_deterministic_debug_mode() == 2
+
+
+@pytest.mark.parametrize("newline", [b"\n", b"\r\n", b"\r"])
+def test_canonical_python_source_hash_normalizes_only_newlines(
+    tmp_path: Path, newline: bytes
+) -> None:
+    source = tmp_path / "source.py"
+    source.write_bytes(b"alpha" + newline + b"beta" + newline)
+
+    helper = getattr(feasibility_probe, "_canonical_python_source_sha256", None)
+    assert callable(helper)
+    assert helper(source) == hashlib.sha256(b"alpha\nbeta\n").hexdigest()
+
+
+def test_canonical_python_source_hash_keeps_non_newline_bytes_visible(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "source.py"
+    source.write_bytes(b"alpha\r\nbeta\r\n")
+    helper = getattr(feasibility_probe, "_canonical_python_source_sha256", None)
+    assert callable(helper)
+    expected = helper(source)
+    source.write_bytes(b"alpha\r\nBeta\r\n")
+
+    assert helper(source) != expected
+
+
+def test_allowlisted_backward_validation_requires_exact_a4_source_rule() -> None:
+    base = _warning_evidence()
+
+    assert feasibility_probe._allowlisted_backward_is_valid(base) is True
+    assert (
+        feasibility_probe._allowlisted_backward_is_valid(
+            replace(base, source_hash_rule="raw-file-sha256-v1")
+        )
+        is False
+    )
+
+
+def test_allowlisted_backward_rejects_link_or_junction_before_callback(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    configure_determinism(seed=17)
+    paths = {
+        name: tmp_path / f"{name}.py"
+        for name in (
+            "torch_init",
+            "torch_nn_functional",
+            "transformers_modeling_rt_detr",
+        )
+    }
+    for path in paths.values():
+        path.write_bytes(b"source\n")
+    blocked = paths["torch_init"]
+    callback_called = False
+
+    monkeypatch.setattr(
+        feasibility_probe, "_allowlisted_backward_source_paths", lambda: paths
+    )
+    monkeypatch.setattr(
+        feasibility_probe, "_is_link_or_junction", lambda path: path == blocked
+    )
+
+    def callback() -> None:
+        nonlocal callback_called
+        callback_called = True
+
+    with pytest.raises(
+        feasibility_probe.FeasibilityError,
+        match="bounded-backward source is not a regular file: torch_init",
+    ):
+        feasibility_probe.run_allowlisted_backward(callback, expected_count=9)
+
+    assert callback_called is False
 
 
 @pytest.mark.parametrize(
@@ -550,7 +628,9 @@ def test_allowlisted_backward_rejects_source_hash_drift_before_callback(
         nonlocal called
         called = True
 
-    monkeypatch.setattr(feasibility_probe, "sha256_file", lambda path: "0" * 64)
+    monkeypatch.setattr(
+        feasibility_probe, "_canonical_python_source_sha256", lambda path: "0" * 64
+    )
 
     with pytest.raises(FeasibilityError, match="source hash mismatch"):
         feasibility_probe.run_allowlisted_backward(callback, expected_count=9)
@@ -857,7 +937,7 @@ def test_historical_feasibility_schema_version_cannot_satisfy_a3(
         ),
     ],
 )
-def test_a3_feasibility_evidence_drift_fails_closed(
+def test_feasibility_evidence_drift_fails_closed(
     tmp_path: Path, mutation: object, expected: str
 ) -> None:
     receipt = _receipt()
@@ -868,6 +948,93 @@ def test_a3_feasibility_evidence_drift_fails_closed(
 
     with pytest.raises(ReceiptValidationError, match=expected):
         atomic_write_receipt(tmp_path / "feasibility.json", receipt)
+
+
+def test_a4_feasibility_receipt_accepts_canonical_source_identity(
+    tmp_path: Path,
+) -> None:
+    atomic_write_receipt(tmp_path / "a4-feasibility.json", _receipt())
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        lambda n: n["allowlisted_backward"].pop("source_hash_rule"),
+        lambda n: n["allowlisted_backward"].update(
+            {"source_hash_rule": "raw-file-sha256-v1"}
+        ),
+        lambda n: n["allowlisted_backward"]["source_sha256"].update(
+            {
+                "torch_init": (
+                    "b508de5a66ebc368fc8fa2161b1e0e88ae0034d9d9540e7c020460237a5464a9"
+                )
+            }
+        ),
+    ],
+    ids=["missing-rule", "wrong-rule", "raw-windows-digest"],
+)
+def test_a4_semantic_validator_rejects_source_identity_drift(
+    mutation: object,
+) -> None:
+    receipt = _receipt()
+    normative = receipt["normative"]
+    metadata = receipt["metadata"]
+    assert isinstance(normative, dict)
+    assert isinstance(metadata, dict)
+    assert callable(mutation)
+    mutation(normative)
+    comparison = normative["exact_comparison"]
+    assert isinstance(comparison, dict)
+    comparison["allowlisted_backward"] = copy.deepcopy(
+        normative["allowlisted_backward"]
+    )
+    comparison_preimage = {
+        key: value for key, value in comparison.items() if key not in {"rule", "sha256"}
+    }
+    comparison["sha256"] = canonical_json_sha256(comparison_preimage)
+
+    with pytest.raises(
+        ReceiptValidationError, match="allowlisted backward identity mismatch"
+    ):
+        _validate_feasibility_consistency(normative, metadata, schema_version=2)
+
+
+@pytest.mark.parametrize(
+    ("mutation", "expected"),
+    [
+        (
+            lambda n: n["allowlisted_backward"].pop("source_hash_rule"),
+            "source_hash_rule",
+        ),
+        (
+            lambda n: n["allowlisted_backward"].update(
+                {"source_hash_rule": "raw-file-sha256-v1"}
+            ),
+            "source_hash_rule",
+        ),
+        (
+            lambda n: n["allowlisted_backward"]["source_sha256"].update(
+                {
+                    "torch_init": (
+                        "b508de5a66ebc368fc8fa2161b1e0e88ae0034d9d9540e7c020460237a5464a9"
+                    )
+                }
+            ),
+            "torch_init",
+        ),
+    ],
+)
+def test_a4_source_identity_drift_fails_closed(
+    tmp_path: Path, mutation: object, expected: str
+) -> None:
+    receipt = _receipt()
+    normative = receipt["normative"]
+    assert isinstance(normative, dict)
+    assert callable(mutation)
+    mutation(normative)
+
+    with pytest.raises(ReceiptValidationError, match=expected):
+        atomic_write_receipt(tmp_path / "a4-feasibility.json", receipt)
 
 
 @pytest.mark.parametrize(

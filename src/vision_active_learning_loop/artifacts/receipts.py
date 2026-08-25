@@ -84,9 +84,10 @@ _APPROVED_RTDETR_SOURCE_FILES = {
     },
 }
 _A3_BACKWARD_OPERATION = "grid_sampler_2d_backward_cuda"
-_A3_BACKWARD_SOURCE_SHA256 = {
-    "torch_init": "b508de5a66ebc368fc8fa2161b1e0e88ae0034d9d9540e7c020460237a5464a9",
-    "torch_nn_functional": "e409a97896241e0dfb8c23fbf1f09967ecf5e65ec9626aec0d97d9cc5d727d50",
+_A4_BACKWARD_SOURCE_HASH_RULE = "python-source-lf-normalized-sha256-v1"
+_A4_BACKWARD_SOURCE_SHA256 = {
+    "torch_init": "d9dfff4b75d46e4c75572200a3466b70231d05b0318e38ac1bd121789165fb49",
+    "torch_nn_functional": "27493186ee22f811b553e31d9c804d4d46716d1be62d034d731537f66f27ef19",
     "transformers_modeling_rt_detr": (
         "fce24c79c8599e52f3648f549502879e9b396cc86f593c3a07baf10c002cead3"
     ),
@@ -1212,7 +1213,8 @@ def _validate_feasibility_consistency(
         or allowlisted_backward.get("expected_count") != 9
         or allowlisted_backward.get("observed_count") != 9
         or allowlisted_backward.get("strict_mode_restored") is not True
-        or allowlisted_backward.get("source_sha256") != _A3_BACKWARD_SOURCE_SHA256
+        or allowlisted_backward.get("source_hash_rule") != _A4_BACKWARD_SOURCE_HASH_RULE
+        or allowlisted_backward.get("source_sha256") != _A4_BACKWARD_SOURCE_SHA256
     ):
         raise ReceiptValidationError("allowlisted backward identity mismatch")
     raw_warnings = allowlisted_backward.get("raw_warnings")
@@ -1393,8 +1395,10 @@ def _validate_feasibility_consistency(
         ),
         "allowlisted_backward_verified": runtime.get("allowlisted_grid_sample_backward")
         is True
+        and allowlisted_backward.get("source_hash_rule")
+        == _A4_BACKWARD_SOURCE_HASH_RULE
         and dict(allowlisted_backward.get("source_sha256", {}))
-        == _A3_BACKWARD_SOURCE_SHA256
+        == _A4_BACKWARD_SOURCE_SHA256
         and allowlisted_backward.get("observed_count") == 9,
         "batch_size_two": shapes.get("pixel_values") == [2, 3, 640, 640]
         and shapes.get("pixel_mask") == [2, 640, 640],

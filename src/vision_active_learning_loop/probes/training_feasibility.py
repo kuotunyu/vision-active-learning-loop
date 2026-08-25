@@ -71,9 +71,10 @@ VRAM_LIMIT_BYTES = 22 * 1024**3
 _CUBLAS_WORKSPACE_CONFIG = ":4096:8"
 _PARAMETER_DIGEST_RULE = "ordered-trainable-named-parameters-sha256-v1"
 _ALLOWLISTED_BACKWARD_OPERATION = "grid_sampler_2d_backward_cuda"
+_ALLOWLISTED_BACKWARD_SOURCE_HASH_RULE = "python-source-lf-normalized-sha256-v1"
 _ALLOWLISTED_BACKWARD_SOURCE_SHA256 = {
-    "torch_init": "b508de5a66ebc368fc8fa2161b1e0e88ae0034d9d9540e7c020460237a5464a9",
-    "torch_nn_functional": "e409a97896241e0dfb8c23fbf1f09967ecf5e65ec9626aec0d97d9cc5d727d50",
+    "torch_init": "d9dfff4b75d46e4c75572200a3466b70231d05b0318e38ac1bd121789165fb49",
+    "torch_nn_functional": "27493186ee22f811b553e31d9c804d4d46716d1be62d034d731537f66f27ef19",
     "transformers_modeling_rt_detr": (
         "fce24c79c8599e52f3648f549502879e9b396cc86f593c3a07baf10c002cead3"
     ),
@@ -128,6 +129,7 @@ class BackwardWarningEvidence:
     raw_warnings: tuple[str, ...]
     warning_categories: tuple[str, ...]
     operation_identifiers: tuple[str, ...]
+    source_hash_rule: str
     source_sha256: Mapping[str, str]
     strict_mode_restored: bool
 
@@ -339,6 +341,12 @@ def _allowlisted_backward_source_paths() -> Mapping[str, Path]:
     }
 
 
+def _canonical_python_source_sha256(path: Path) -> str:
+    raw = path.read_bytes()
+    canonical = raw.replace(b"\r\n", b"\n").replace(b"\r", b"\n")
+    return hashlib.sha256(canonical).hexdigest()
+
+
 def _verify_allowlisted_backward_sources() -> dict[str, str]:
     observed: dict[str, str] = {}
     paths = _allowlisted_backward_source_paths()
@@ -346,11 +354,11 @@ def _verify_allowlisted_backward_sources() -> dict[str, str]:
         raise FeasibilityError("bounded-backward source inventory mismatch")
     for name in sorted(paths):
         path = paths[name]
-        if not path.is_file() or path.is_symlink():
+        if not path.is_file() or _is_link_or_junction(path):
             raise FeasibilityError(
                 f"bounded-backward source is not a regular file: {name}"
             )
-        digest = sha256_file(path)
+        digest = _canonical_python_source_sha256(path)
         if digest != _ALLOWLISTED_BACKWARD_SOURCE_SHA256[name]:
             raise FeasibilityError(f"bounded-backward source hash mismatch: {name}")
         observed[name] = digest
@@ -406,6 +414,7 @@ def run_allowlisted_backward(
         raw_warnings=raw_warnings,
         warning_categories=warning_categories,
         operation_identifiers=operation_identifiers,
+        source_hash_rule=_ALLOWLISTED_BACKWARD_SOURCE_HASH_RULE,
         source_sha256=source_sha256,
         strict_mode_restored=(
             torch.are_deterministic_algorithms_enabled()
@@ -850,6 +859,7 @@ def _allowlisted_backward_is_valid(evidence: BackwardWarningEvidence) -> bool:
         and len(evidence.raw_warnings) == 9
         and evidence.warning_categories == ("UserWarning",) * 9
         and evidence.operation_identifiers == (_ALLOWLISTED_BACKWARD_OPERATION,) * 9
+        and evidence.source_hash_rule == _ALLOWLISTED_BACKWARD_SOURCE_HASH_RULE
         and dict(evidence.source_sha256) == _ALLOWLISTED_BACKWARD_SOURCE_SHA256
         and evidence.strict_mode_restored is True
     )
@@ -865,6 +875,7 @@ def _allowlisted_backward_document(
         "raw_warnings": list(evidence.raw_warnings),
         "warning_categories": list(evidence.warning_categories),
         "operation_identifiers": list(evidence.operation_identifiers),
+        "source_hash_rule": evidence.source_hash_rule,
         "source_sha256": dict(sorted(evidence.source_sha256.items())),
         "strict_mode_restored": evidence.strict_mode_restored,
     }
