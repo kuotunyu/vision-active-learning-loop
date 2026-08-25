@@ -1,0 +1,375 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "grid-sample-attribution-receipt.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["receipt_type", "schema_version", "normative", "metadata"],
+  "properties": {
+    "receipt_type": {"const": "grid-sample-attribution"},
+    "schema_version": {"const": 1},
+    "normative": {
+      "oneOf": [
+        {"$ref": "#/$defs/control"},
+        {"$ref": "#/$defs/instrumented"},
+        {"$ref": "#/$defs/isolated"},
+        {"$ref": "#/$defs/aggregate"}
+      ]
+    },
+    "metadata": {"$ref": "#/$defs/metadata"}
+  },
+  "$defs": {
+    "sha": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "image": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "identity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "source_commit", "image_id", "base_image_digest", "run_id",
+        "component_kind", "component_id", "gpu_name", "gpu_uuid",
+        "model_sha256", "config_sha256", "processor_sha256", "fixture_sha256",
+        "model_loss_source_sha256", "adapter_source_sha256",
+        "tensor_evidence_source_sha256", "source_sha256", "seed", "precision",
+        "num_queries", "decoder_layers",
+        "feature_levels", "disable_custom_kernels"
+      ],
+      "properties": {
+        "source_commit": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+        "image_id": {"$ref": "#/$defs/image"},
+        "base_image_digest": {"$ref": "#/$defs/image"},
+        "run_id": {"type": "string", "pattern": "^wave0-a7-[A-Za-z0-9._-]+$"},
+        "component_kind": {"enum": ["control", "instrumented", "isolated-vjp", "aggregate"]},
+        "component_id": {"type": "string", "pattern": "^(control-[01]|instrumented-[0-4]|isolated-vjp-[0-4]|aggregate)$"},
+        "gpu_name": {"const": "NVIDIA GeForce RTX 4090"},
+        "gpu_uuid": {"type": "string", "pattern": "^GPU-[0-9A-Fa-f-]+$"},
+        "model_sha256": {"$ref": "#/$defs/sha"},
+        "config_sha256": {"$ref": "#/$defs/sha"},
+        "processor_sha256": {"$ref": "#/$defs/sha"},
+        "fixture_sha256": {"$ref": "#/$defs/sha"},
+        "model_loss_source_sha256": {"$ref": "#/$defs/sha"},
+        "adapter_source_sha256": {"$ref": "#/$defs/sha"},
+        "tensor_evidence_source_sha256": {"$ref": "#/$defs/sha"},
+        "source_sha256": {"$ref": "#/$defs/sha"},
+        "seed": {"const": 17},
+        "precision": {"const": "BF16"},
+        "num_queries": {"const": 300},
+        "decoder_layers": {"const": 3},
+        "feature_levels": {"const": 3},
+        "disable_custom_kernels": {"const": true}
+      }
+    },
+    "artifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "size", "sha256"],
+      "properties": {
+        "path": {"type": "string", "pattern": "^[^\\r\\n]+$"},
+        "size": {"type": "integer"},
+        "sha256": {"$ref": "#/$defs/sha"}
+      }
+    },
+    "bundle": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "size", "sha256", "inventory_sha256", "names", "public_export_candidate"],
+      "properties": {
+        "path": {"type": "string", "pattern": "^[^\\r\\n]+\\.vala7$"},
+        "size": {"type": "integer"},
+        "sha256": {"$ref": "#/$defs/sha"},
+        "inventory_sha256": {"$ref": "#/$defs/sha"},
+        "names": {"type": "array", "minItems": 1, "items": {"type": "string", "pattern": "^[^\\r\\n]+$"}},
+        "public_export_candidate": {"const": false}
+      }
+    },
+    "parents3": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["environment", "model_assets", "model_contract"],
+      "properties": {
+        "environment": {"$ref": "#/$defs/artifact"},
+        "model_assets": {"$ref": "#/$defs/artifact"},
+        "model_contract": {"$ref": "#/$defs/artifact"}
+      }
+    },
+    "parents4": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["environment", "model_assets", "model_contract", "instrumented"],
+      "properties": {
+        "environment": {"$ref": "#/$defs/artifact"},
+        "model_assets": {"$ref": "#/$defs/artifact"},
+        "model_contract": {"$ref": "#/$defs/artifact"},
+        "instrumented": {"$ref": "#/$defs/artifact"}
+      }
+    },
+    "execution": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["argv", "exit_code", "started_at", "ended_at", "runtime_seconds", "peak_vram_bytes", "peak_reserved_vram_bytes", "loss_hex", "warning_evidence", "backend"],
+      "properties": {
+        "argv": {"type": "array", "minItems": 3, "items": {"type": "string"}},
+        "exit_code": {"const": 0},
+        "started_at": {"type": "string"},
+        "ended_at": {"type": "string"},
+        "runtime_seconds": {"type": "number"},
+        "peak_vram_bytes": {"type": "integer"},
+        "peak_reserved_vram_bytes": {"type": "integer"},
+        "loss_hex": {"type": "string", "pattern": "^0x[0-9a-f.]+p[+-][0-9]+$"},
+        "warning_evidence": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["count", "operations"],
+          "properties": {
+            "count": {"const": 9},
+            "operations": {"type": "array", "minItems": 9, "maxItems": 9, "items": {"const": "grid_sampler_2d_backward_cuda"}}
+          }
+        },
+        "backend": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["math_only", "strict_restored", "autocast_bf16"],
+          "properties": {
+            "math_only": {"const": true},
+            "strict_restored": {"const": true},
+            "autocast_bf16": {"const": true}
+          }
+        }
+      }
+    },
+    "invariants": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["identity_verified", "parents_verified", "tensor_inventory_verified", "warnings_verified", "backend_restored", "publication_verified"],
+      "properties": {
+        "identity_verified": {"type": "boolean"},
+        "parents_verified": {"type": "boolean"},
+        "tensor_inventory_verified": {"type": "boolean"},
+        "warnings_verified": {"type": "boolean"},
+        "backend_restored": {"type": "boolean"},
+        "publication_verified": {"type": "boolean"}
+      }
+    },
+    "tensor": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "role", "operation_id", "shape", "dtype", "element_count", "finite_count", "non_finite_count", "sha256", "l2_norm"],
+      "properties": {
+        "name": {"type": "string"},
+        "role": {"type": "string"},
+        "operation_id": {"type": "string"},
+        "shape": {"type": "array", "minItems": 1, "items": {"type": "integer"}},
+        "dtype": {"enum": ["bfloat16", "float16", "float32", "float64"]},
+        "element_count": {"type": "integer"},
+        "finite_count": {"type": "integer"},
+        "non_finite_count": {"const": 0},
+        "sha256": {"$ref": "#/$defs/sha"},
+        "l2_norm": {"type": "number"}
+      }
+    },
+    "operation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["operation_id", "callback_order", "tensors"],
+      "properties": {
+        "operation_id": {"type": "string", "pattern": "^decoder-[0-2]/feature-[0-2]$"},
+        "callback_order": {"type": "integer"},
+        "tensors": {"type": "array", "minItems": 6, "maxItems": 6, "items": {"$ref": "#/$defs/tensor"}}
+      }
+    },
+    "operations": {"type": "array", "minItems": 9, "maxItems": 9, "items": {"$ref": "#/$defs/operation"}},
+    "parameters": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["count", "inventory_sha256", "parameters"],
+      "properties": {
+        "count": {"type": "integer"},
+        "inventory_sha256": {"$ref": "#/$defs/sha"},
+        "parameters": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/tensor"}}
+      }
+    },
+    "errors": {"type": "array", "maxItems": 0, "items": {"type": "string"}},
+    "control": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["identity", "parent_receipts", "execution", "tensor_bundle", "parameter_gradients", "invariants", "status", "errors"],
+      "properties": {
+        "identity": {"$ref": "#/$defs/identity"},
+        "parent_receipts": {"$ref": "#/$defs/parents3"},
+        "execution": {"$ref": "#/$defs/execution"},
+        "tensor_bundle": {"$ref": "#/$defs/bundle"},
+        "parameter_gradients": {"$ref": "#/$defs/parameters"},
+        "invariants": {"$ref": "#/$defs/invariants"},
+        "status": {"const": "RECORDED"},
+        "errors": {"$ref": "#/$defs/errors"}
+      }
+    },
+    "instrumented": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["identity", "parent_receipts", "execution", "tensor_bundle", "parameter_gradients", "operations", "invariants", "status", "errors"],
+      "if": {
+        "type": "object",
+        "properties": {
+          "identity": {
+            "type": "object",
+            "properties": {"component_id": {"const": "instrumented-0"}}
+          }
+        }
+      },
+      "then": {"type": "object", "required": ["vjp_snapshot"]},
+      "else": {"type": "object", "properties": {"vjp_snapshot": {"const": null}}},
+      "properties": {
+        "identity": {"$ref": "#/$defs/identity"},
+        "parent_receipts": {"$ref": "#/$defs/parents3"},
+        "execution": {"$ref": "#/$defs/execution"},
+        "tensor_bundle": {"$ref": "#/$defs/bundle"},
+        "vjp_snapshot": {"$ref": "#/$defs/bundle"},
+        "parameter_gradients": {"$ref": "#/$defs/parameters"},
+        "operations": {"$ref": "#/$defs/operations"},
+        "invariants": {"$ref": "#/$defs/invariants"},
+        "status": {"const": "RECORDED"},
+        "errors": {"$ref": "#/$defs/errors"}
+      }
+    },
+    "isolated": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["identity", "parent_receipts", "execution", "tensor_bundle", "vjp_snapshot", "operations", "invariants", "status", "errors"],
+      "properties": {
+        "identity": {"$ref": "#/$defs/identity"},
+        "parent_receipts": {"$ref": "#/$defs/parents4"},
+        "execution": {"$ref": "#/$defs/execution"},
+        "tensor_bundle": {"$ref": "#/$defs/bundle"},
+        "vjp_snapshot": {"$ref": "#/$defs/bundle"},
+        "operations": {"$ref": "#/$defs/operations"},
+        "invariants": {"$ref": "#/$defs/invariants"},
+        "status": {"const": "RECORDED"},
+        "errors": {"$ref": "#/$defs/errors"}
+      }
+    },
+    "parentComponent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["component_id", "receipt", "tensor_bundle"],
+      "properties": {
+        "component_id": {"type": "string"},
+        "receipt": {"$ref": "#/$defs/artifact"},
+        "tensor_bundle": {"$ref": "#/$defs/bundle"}
+      }
+    },
+    "classification": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "candidate_operation", "candidate_role", "reason_codes", "terminal"],
+      "properties": {
+        "status": {"enum": ["ATTRIBUTED", "NOT_ATTRIBUTED", "INCONCLUSIVE"]},
+        "candidate_operation": {},
+        "candidate_role": {},
+        "reason_codes": {"type": "array", "items": {"type": "string"}},
+        "terminal": {"enum": [
+          "WAVE0_A7_DIAGNOSTIC_ATTRIBUTED / WAVE0_NOT_PASSED / WAVE1_FORBIDDEN",
+          "WAVE0_A7_DIAGNOSTIC_NOT_ATTRIBUTED / WAVE0_NOT_PASSED / WAVE1_FORBIDDEN",
+          "WAVE0_A7_DIAGNOSTIC_INCONCLUSIVE / WAVE0_NOT_PASSED / WAVE1_FORBIDDEN"
+        ]}
+      }
+    },
+    "tensorComparison": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["left_replica", "right_replica", "name", "exact_digest_equal", "difference_l2", "relative_l2", "cosine"],
+      "properties": {
+        "left_replica": {"type": "string"},
+        "right_replica": {"type": "string"},
+        "name": {"type": "string"},
+        "exact_digest_equal": {"type": "boolean"},
+        "difference_l2": {"type": "number"},
+        "relative_l2": {"type": "number"},
+        "cosine": {"type": "number"}
+      }
+    },
+    "parameterPair": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["left_replica", "right_replica", "inventory_digest_equal", "tensors"],
+      "properties": {
+        "left_replica": {"type": "string"},
+        "right_replica": {"type": "string"},
+        "inventory_digest_equal": {"type": "boolean"},
+        "tensors": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/tensorComparison"}}
+      }
+    },
+    "operationPair": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["left_replica", "right_replica", "inventory_digest_equal", "tensors"],
+      "properties": {
+        "left_replica": {"type": "string"},
+        "right_replica": {"type": "string"},
+        "inventory_digest_equal": {"const": true},
+        "tensors": {"type": "array", "minItems": 54, "maxItems": 54, "items": {"$ref": "#/$defs/tensorComparison"}}
+      }
+    },
+    "comparisons": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["callback_order", "parameter_pairs", "instrumented_pairs", "isolated_pairs"],
+      "properties": {
+        "callback_order": {"type": "array", "minItems": 9, "maxItems": 9, "items": {"type": "string", "pattern": "^decoder-[0-2]/feature-[0-2]$"}},
+        "parameter_pairs": {"type": "array", "minItems": 21, "maxItems": 21, "items": {"$ref": "#/$defs/parameterPair"}},
+        "instrumented_pairs": {"type": "array", "minItems": 10, "maxItems": 10, "items": {"$ref": "#/$defs/operationPair"}},
+        "isolated_pairs": {"type": "array", "minItems": 10, "maxItems": 10, "items": {"$ref": "#/$defs/operationPair"}}
+      }
+    },
+    "aggregate": {
+      "type": "object",
+      "additionalProperties": false,
+      "if": {
+        "properties": {"status": {"const": "INCONCLUSIVE"}}
+      },
+      "then": {
+        "properties": {
+          "errors": {"type": "array", "minItems": 1, "items": {"type": "string"}}
+        }
+      },
+      "else": {
+        "properties": {"errors": {"$ref": "#/$defs/errors"}}
+      },
+      "required": ["identity", "parent_receipts", "execution", "components", "parent_components", "comparisons", "classification", "invariants", "status", "terminal", "errors"],
+      "properties": {
+        "identity": {"$ref": "#/$defs/identity"},
+        "parent_receipts": {"$ref": "#/$defs/parents3"},
+        "execution": {"$ref": "#/$defs/execution"},
+        "components": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["controls", "instrumented", "isolated"],
+          "properties": {
+            "controls": {"type": "array", "minItems": 2, "maxItems": 2, "items": {"$ref": "#/$defs/control"}},
+            "instrumented": {"type": "array", "minItems": 5, "maxItems": 5, "items": {"$ref": "#/$defs/instrumented"}},
+            "isolated": {"type": "array", "minItems": 5, "maxItems": 5, "items": {"$ref": "#/$defs/isolated"}}
+          }
+        },
+        "parent_components": {"type": "array", "minItems": 12, "maxItems": 12, "items": {"$ref": "#/$defs/parentComponent"}},
+        "comparisons": {"$ref": "#/$defs/comparisons"},
+        "classification": {"$ref": "#/$defs/classification"},
+        "invariants": {"$ref": "#/$defs/invariants"},
+        "status": {"enum": ["ATTRIBUTED", "NOT_ATTRIBUTED", "INCONCLUSIVE"]},
+        "terminal": {"enum": [
+          "WAVE0_A7_DIAGNOSTIC_ATTRIBUTED / WAVE0_NOT_PASSED / WAVE1_FORBIDDEN",
+          "WAVE0_A7_DIAGNOSTIC_NOT_ATTRIBUTED / WAVE0_NOT_PASSED / WAVE1_FORBIDDEN",
+          "WAVE0_A7_DIAGNOSTIC_INCONCLUSIVE / WAVE0_NOT_PASSED / WAVE1_FORBIDDEN"
+        ]},
+        "errors": {"type": "array", "items": {"type": "string"}}
+      }
+    },
+    "metadata": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["timestamp", "run_id"],
+      "properties": {
+        "timestamp": {"type": "string"},
+        "run_id": {"type": "string", "pattern": "^wave0-a7-[A-Za-z0-9._-]+$"},
+        "receipt_content_sha256": {"$ref": "#/$defs/sha"}
+      }
+    }
+  }
+}

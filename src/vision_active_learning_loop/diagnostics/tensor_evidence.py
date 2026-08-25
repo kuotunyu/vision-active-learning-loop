@@ -172,6 +172,7 @@ def compare_tensors(
         cosine = 0.0
     else:
         cosine = float(torch.dot(left64, right64).item()) / (left_norm * right_norm)
+        cosine = max(-1.0, min(1.0, cosine))
     metrics = (difference_l2, relative_l2, cosine)
     if not all(math.isfinite(value) for value in metrics):
         raise TensorEvidenceError("tensor comparison metrics must be finite")

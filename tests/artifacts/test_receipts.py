@@ -10,6 +10,15 @@ from typing import BinaryIO, Self
 
 import pytest
 
+from tests.diagnostics.test_grid_sample_attribution import (
+    _SCHEMA as GRID_SAMPLE_ATTRIBUTION_SCHEMA,
+)
+from tests.diagnostics.test_grid_sample_attribution import (
+    OPERATION_IDS,
+    _comparison_inventory,
+    build_aggregate_receipt,
+    build_component_receipt,
+)
 from vision_active_learning_loop.artifacts import receipts
 from vision_active_learning_loop.artifacts.digests import canonical_json_sha256
 from vision_active_learning_loop.artifacts.no_clobber import (
@@ -1291,3 +1300,207 @@ def test_schema_forbids_receipt_declared_volatile_fields(
 
 def _schema_path(name: str) -> Path:
     return Path(__file__).parents[2] / "schemas" / name
+
+
+def test_schema_validator_enforces_max_items() -> None:
+    with pytest.raises(ReceiptValidationError, match=r"\$ has too many items"):
+        receipts._validate_schema([1, 2], {"type": "array", "maxItems": 1})
+
+
+def test_schema_validator_enforces_exactly_one_matching_branch() -> None:
+    schema = {"oneOf": [{"const": 1}, {"const": 1}]}
+    with pytest.raises(ReceiptValidationError, match="must match exactly one schema"):
+        receipts._validate_schema(1, schema)
+    receipts._validate_schema(2, {"oneOf": [{"const": 1}, {"const": 2}]})
+
+
+@pytest.mark.parametrize(
+    "document",
+    [
+        build_component_receipt("control", 0),
+        build_component_receipt("instrumented", 0),
+        build_component_receipt("isolated-vjp", 0),
+        build_aggregate_receipt(),
+    ],
+)
+def test_registered_grid_sample_attribution_receipts_validate(
+    document: dict[str, object],
+) -> None:
+    validate_receipt(document, GRID_SAMPLE_ATTRIBUTION_SCHEMA)
+
+
+@pytest.mark.parametrize("case", ["missing_zero", "present_other"])
+def test_grid_sample_attribution_schema_closes_instrumented_snapshot_branch(
+    case: str,
+) -> None:
+    document = build_component_receipt(
+        "instrumented", 0 if case == "missing_zero" else 1
+    )
+    if case == "missing_zero":
+        document["normative"].pop("vjp_snapshot")
+    else:
+        document["normative"]["vjp_snapshot"] = copy.deepcopy(
+            build_component_receipt("instrumented", 0)["normative"]["vjp_snapshot"]
+        )
+    schema = json.loads(GRID_SAMPLE_ATTRIBUTION_SCHEMA.read_text(encoding="utf-8"))
+
+    with pytest.raises(ReceiptValidationError):
+        receipts._validate_schema(document, schema)
+
+
+def test_grid_sample_attribution_semantics_reject_metadata_run_forgery() -> None:
+    document = build_component_receipt("control", 0)
+    document["metadata"]["run_id"] = "different-run"
+    document["metadata"].pop("receipt_content_sha256")
+    document["metadata"]["receipt_content_sha256"] = canonical_json_sha256(document)
+
+    with pytest.raises(ReceiptValidationError, match="run_id"):
+        validate_receipt(document, GRID_SAMPLE_ATTRIBUTION_SCHEMA)
+
+
+def test_grid_sample_attribution_semantics_recomputes_aggregate_classification() -> None:
+    document = build_aggregate_receipt()
+    classification = document["normative"]["classification"]
+    classification["candidate_operation"] = OPERATION_IDS[1]
+    document["metadata"].pop("receipt_content_sha256")
+    document["metadata"]["receipt_content_sha256"] = canonical_json_sha256(document)
+
+    with pytest.raises(ReceiptValidationError, match="classification"):
+        validate_receipt(document, GRID_SAMPLE_ATTRIBUTION_SCHEMA)
+
+
+def test_grid_sample_attribution_semantics_rejects_forged_source_inventory() -> None:
+    document = build_component_receipt("control", 0)
+    document["normative"]["identity"]["source_sha256"] = "b" * 64
+    document["metadata"].pop("receipt_content_sha256")
+    document["metadata"]["receipt_content_sha256"] = canonical_json_sha256(document)
+
+    with pytest.raises(ReceiptValidationError, match="source"):
+        validate_receipt(document, GRID_SAMPLE_ATTRIBUTION_SCHEMA)
+
+
+def test_grid_sample_attribution_semantics_rejects_false_embedded_invariant() -> None:
+    document = build_aggregate_receipt()
+    document["normative"]["components"]["instrumented"][0]["invariants"][
+        "warnings_verified"
+    ] = False
+    document["metadata"].pop("receipt_content_sha256")
+    document["metadata"]["receipt_content_sha256"] = canonical_json_sha256(document)
+
+    with pytest.raises(ReceiptValidationError, match="invariant"):
+        validate_receipt(document, GRID_SAMPLE_ATTRIBUTION_SCHEMA)
+
+
+def test_not_attributed_rejects_isolated_operands_that_differ_from_snapshot() -> None:
+    document = build_aggregate_receipt(attributed=False)
+    normative = document["normative"]
+    components = normative["components"]
+    components["instrumented"][1]["parameter_gradients"] = copy.deepcopy(
+        build_component_receipt("instrumented", 1, parameter_variant="drift")[
+            "normative"
+        ]["parameter_gradients"]
+    )
+    for component in components["isolated"]:
+        component["operations"][0]["tensors"][0]["sha256"] = "b" * 64
+    normative["comparisons"] = _comparison_inventory(
+        components["controls"], components["instrumented"], components["isolated"]
+    )
+    normative["classification"] = {
+        "status": "NOT_ATTRIBUTED",
+        "candidate_operation": None,
+        "candidate_role": None,
+        "reason_codes": [],
+        "terminal": (
+            "WAVE0_A7_DIAGNOSTIC_NOT_ATTRIBUTED / WAVE0_NOT_PASSED / " "WAVE1_FORBIDDEN"
+        ),
+    }
+    normative["status"] = "NOT_ATTRIBUTED"
+    normative["terminal"] = normative["classification"]["terminal"]
+    normative["errors"] = []
+    document["metadata"].pop("receipt_content_sha256")
+    document["metadata"]["receipt_content_sha256"] = canonical_json_sha256(document)
+
+    with pytest.raises(ReceiptValidationError, match="classification|snapshot"):
+        validate_receipt(document, GRID_SAMPLE_ATTRIBUTION_SCHEMA)
+
+
+@pytest.mark.parametrize("mutation", ["comparison", "snapshot_path", "tensor_name"])
+def test_grid_sample_attribution_semantics_rejects_review_forgeries(
+    mutation: str,
+) -> None:
+    document = (
+        build_aggregate_receipt()
+        if mutation == "comparison"
+        else build_component_receipt("instrumented", 0)
+    )
+    normative = document["normative"]
+    if mutation == "comparison":
+        comparison = normative["comparisons"]["parameter_pairs"][0]["tensors"][0]
+        comparison["exact_digest_equal"] = not comparison["exact_digest_equal"]
+    elif mutation == "snapshot_path":
+        normative["vjp_snapshot"][
+            "path"
+        ] = "a7/components/instrumented-1/vjp-snapshot.vala7"
+    else:
+        normative["operations"][0]["tensors"][0]["name"] = "wrong-name"
+    document["metadata"].pop("receipt_content_sha256")
+    document["metadata"]["receipt_content_sha256"] = canonical_json_sha256(document)
+
+    with pytest.raises(ReceiptValidationError):
+        validate_receipt(document, GRID_SAMPLE_ATTRIBUTION_SCHEMA)
+
+
+def test_grid_sample_attribution_rejects_reserved_vram_below_allocated() -> None:
+    document = build_component_receipt("control", 0)
+    document["normative"]["execution"]["peak_reserved_vram_bytes"] = 512
+    document["metadata"].pop("receipt_content_sha256")
+    document["metadata"]["receipt_content_sha256"] = canonical_json_sha256(document)
+
+    with pytest.raises(ReceiptValidationError, match="VRAM"):
+        validate_receipt(document, GRID_SAMPLE_ATTRIBUTION_SCHEMA)
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "aggregate_identity",
+        "aggregate_parent",
+        "isolated_snapshot_parent",
+        "isolated_receipt_parent",
+        "parent_component_size",
+        "peak_vram",
+        "parent_path",
+    ],
+)
+def test_grid_sample_attribution_semantics_rejects_identity_runtime_and_parent_forgery(
+    mutation: str,
+) -> None:
+    document = (
+        build_component_receipt("control", 0)
+        if mutation in {"peak_vram", "parent_path"}
+        else build_aggregate_receipt()
+    )
+    normative = document["normative"]
+    if mutation == "aggregate_identity":
+        normative["identity"]["source_commit"] = "b" * 40
+    elif mutation == "aggregate_parent":
+        normative["parent_receipts"]["environment"]["sha256"] = "b" * 64
+    elif mutation == "isolated_snapshot_parent":
+        normative["components"]["isolated"][0]["vjp_snapshot"]["sha256"] = "b" * 64
+    elif mutation == "isolated_receipt_parent":
+        normative["components"]["isolated"][0]["parent_receipts"]["instrumented"][
+            "sha256"
+        ] = ("b" * 64)
+    elif mutation == "parent_component_size":
+        normative["parent_components"][0]["receipt"]["size"] = 0
+    elif mutation == "peak_vram":
+        normative["execution"]["peak_vram_bytes"] = 22 * 1024**3 + 1
+    else:
+        normative["parent_receipts"]["environment"][
+            "path"
+        ] = "wave0/receipts/wrong.json"
+    document["metadata"].pop("receipt_content_sha256")
+    document["metadata"]["receipt_content_sha256"] = canonical_json_sha256(document)
+
+    with pytest.raises(ReceiptValidationError):
+        validate_receipt(document, GRID_SAMPLE_ATTRIBUTION_SCHEMA)

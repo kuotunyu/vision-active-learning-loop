@@ -10,6 +10,7 @@ import math
 import os
 import re
 from collections.abc import Mapping
+from itertools import combinations
 from pathlib import Path
 
 from .digests import canonical_json_sha256
@@ -27,6 +28,9 @@ _ALLOWED_SCHEMAS = {
     ("feasibility", 3): _SCHEMA_ROOT / "feasibility-receipt.schema.json",
     ("model-assets", 1): _SCHEMA_ROOT / "model-asset-receipt.schema.json",
     ("wave0-gate", 2): _SCHEMA_ROOT / "wave0-gate-receipt.schema.json",
+    ("grid-sample-attribution", 1): (
+        _SCHEMA_ROOT / "grid-sample-attribution-receipt.schema.json"
+    ),
 }
 _APPROVED_ENVIRONMENT_CONTRACT = {
     "schema_version": 1,
@@ -251,6 +255,7 @@ def _validate_receipt(
         "model-contract",
         "feasibility",
         "wave0-gate",
+        "grid-sample-attribution",
     }:
         run_id = metadata.get("run_id")
         if not isinstance(run_id, str) or not run_id.strip():
@@ -267,6 +272,8 @@ def _validate_receipt(
         _validate_model_assets_consistency(normative)
     elif receipt_type == "wave0-gate":
         _validate_wave0_gate_consistency(normative)
+    elif receipt_type == "grid-sample-attribution":
+        _validate_grid_sample_attribution_consistency(normative, metadata)
     invariants = normative.get("invariants")
     if not isinstance(invariants, Mapping):
         raise ReceiptValidationError("invariants must be an object")
@@ -1624,6 +1631,732 @@ def _load_schema(path: Path) -> Mapping[str, object]:
     return schema
 
 
+_A7_OPERATION_IDS = tuple(
+    f"decoder-{decoder}/feature-{feature}"
+    for decoder in range(3)
+    for feature in range(3)
+)
+_A7_ROLES = (
+    "forward_value",
+    "forward_grid",
+    "forward_result",
+    "incoming_result_gradient",
+    "outgoing_value_gradient",
+    "outgoing_grid_gradient",
+)
+_A7_TERMINALS = {
+    "ATTRIBUTED": (
+        "WAVE0_A7_DIAGNOSTIC_ATTRIBUTED / WAVE0_NOT_PASSED / WAVE1_FORBIDDEN"
+    ),
+    "NOT_ATTRIBUTED": (
+        "WAVE0_A7_DIAGNOSTIC_NOT_ATTRIBUTED / WAVE0_NOT_PASSED / WAVE1_FORBIDDEN"
+    ),
+    "INCONCLUSIVE": (
+        "WAVE0_A7_DIAGNOSTIC_INCONCLUSIVE / WAVE0_NOT_PASSED / WAVE1_FORBIDDEN"
+    ),
+}
+
+
+def _a7_expected_source_identity() -> dict[str, str]:
+    project_root = Path(__file__).resolve().parents[3]
+    source_files = [
+        (
+            "src/vision_active_learning_loop/diagnostics/grid_sample_attribution.py",
+            project_root
+            / "src/vision_active_learning_loop/diagnostics/grid_sample_attribution.py",
+        ),
+        (
+            "src/vision_active_learning_loop/diagnostics/tensor_evidence.py",
+            project_root
+            / "src/vision_active_learning_loop/diagnostics/tensor_evidence.py",
+        ),
+    ]
+    inventory = []
+    hashes: dict[str, str] = {}
+    for name, path in source_files:
+        if not path.is_file() or path.is_symlink():
+            raise ReceiptValidationError("A7 diagnostic source is not a regular file")
+        digest = hashlib.sha256(path.read_bytes()).hexdigest()
+        inventory.append({"path": name, "sha256": digest})
+        hashes[name] = digest
+    return {
+        "model_loss_source_sha256": _APPROVED_MODEL_CONTRACT_ASSET_HASHES[
+            "loss_source_sha256"
+        ],
+        "adapter_source_sha256": hashes[source_files[0][0]],
+        "tensor_evidence_source_sha256": hashes[source_files[1][0]],
+        "source_sha256": canonical_json_sha256({"files": inventory}),
+    }
+
+
+def _validate_a7_source_identity(identity: Mapping[str, object]) -> None:
+    if any(
+        identity.get(name) != value
+        for name, value in _a7_expected_source_identity().items()
+    ):
+        raise ReceiptValidationError("A7 diagnostic source identity mismatch")
+
+
+def _validate_grid_sample_attribution_consistency(
+    normative: Mapping[str, object], metadata: Mapping[str, object]
+) -> None:
+    """Independently reject forged A7 identities, inventories, and decisions."""
+    identity = _a7_mapping(normative.get("identity"), "A7 identity")
+    kind = identity.get("component_kind")
+    component_id = identity.get("component_id")
+    run_id = identity.get("run_id")
+    if metadata.get("run_id") != run_id:
+        raise ReceiptValidationError("A7 metadata run_id mismatch")
+    expected_ids = {
+        "control": {f"control-{index}" for index in range(2)},
+        "instrumented": {f"instrumented-{index}" for index in range(5)},
+        "isolated-vjp": {f"isolated-vjp-{index}" for index in range(5)},
+        "aggregate": {"aggregate"},
+    }
+    if kind not in expected_ids or component_id not in expected_ids[kind]:
+        raise ReceiptValidationError("A7 component kind/ID mismatch")
+    _validate_a7_source_identity(identity)
+    invariants = _a7_mapping(normative.get("invariants"), "A7 invariants")
+    if not invariants or any(value is not True for value in invariants.values()):
+        raise ReceiptValidationError(
+            "A7 recorded receipt requires every invariant true"
+        )
+    if kind != "aggregate" and normative.get("errors") != []:
+        raise ReceiptValidationError("A7 recorded receipt requires empty errors")
+    if kind == "aggregate":
+        _validate_a7_aggregate(normative)
+    else:
+        _validate_a7_component(normative, str(kind), str(component_id))
+
+
+def _validate_a7_component(
+    normative: Mapping[str, object], kind: str, component_id: str
+) -> None:
+    if normative.get("status") != "RECORDED":
+        raise ReceiptValidationError("A7 component status must be RECORDED")
+    parents = _a7_mapping(normative.get("parent_receipts"), "A7 parents")
+    if set(parents) not in (
+        {"environment", "model_assets", "model_contract"},
+        {"environment", "model_assets", "model_contract", "instrumented"},
+    ):
+        raise ReceiptValidationError("A7 parent receipt inventory mismatch")
+    expected_parent_paths = {
+        "environment": "wave0/receipts/environment.json",
+        "model_assets": "wave0/receipts/model-assets.json",
+        "model_contract": "wave0/receipts/model-contract.json",
+    }
+    if kind == "isolated-vjp":
+        expected_parent_paths[
+            "instrumented"
+        ] = "a7/components/instrumented-0/receipt.json"
+    if set(parents) != set(expected_parent_paths):
+        raise ReceiptValidationError("A7 parent receipt kind mismatch")
+    for name, expected_path in expected_parent_paths.items():
+        artifact = _a7_mapping(parents.get(name), f"A7 {name} parent")
+        if (
+            artifact.get("path") != expected_path
+            or type(artifact.get("size")) is not int
+            or int(artifact["size"]) <= 0
+        ):
+            raise ReceiptValidationError("A7 parent receipt identity mismatch")
+    _validate_a7_execution(normative.get("execution"), kind)
+    parameters = normative.get("parameter_gradients")
+    operations = normative.get("operations")
+    expected_names: list[str] = []
+    if kind in {"control", "instrumented"}:
+        parameter_document = _a7_mapping(parameters, "A7 parameter gradients")
+        records = parameter_document.get("parameters")
+        if not isinstance(records, list) or not records:
+            raise ReceiptValidationError("A7 parameter inventory is empty")
+        names = [
+            record.get("name") for record in records if isinstance(record, Mapping)
+        ]
+        for record in records:
+            parameter = _a7_mapping(record, "A7 parameter tensor")
+            _validate_a7_tensor_record(
+                parameter,
+                str(parameter.get("name")),
+                "parameter_gradient",
+                "model",
+            )
+        if (
+            len(names) != len(records)
+            or len(names) != len(set(names))
+            or parameter_document.get("count") != len(records)
+            or parameter_document.get("inventory_sha256")
+            != canonical_json_sha256({"parameters": records})
+        ):
+            raise ReceiptValidationError(
+                "A7 parameter inventory digest/order/count mismatch"
+            )
+        expected_names.extend(str(name) for name in names)
+    elif parameters is not None:
+        raise ReceiptValidationError("isolated VJP cannot contain parameter gradients")
+
+    if kind in {"instrumented", "isolated-vjp"}:
+        operation_records = _a7_parse_operations(operations)
+        expected_names.extend(
+            str(tensor["name"])
+            for operation_id in _A7_OPERATION_IDS
+            for tensor in operation_records[operation_id]["tensors"].values()
+        )
+    elif operations is not None:
+        raise ReceiptValidationError("control cannot contain operation tensors")
+
+    bundle = _a7_mapping(normative.get("tensor_bundle"), "A7 tensor bundle")
+    if bundle.get("path") != f"a7/components/{component_id}/tensor-bundle.vala7":
+        raise ReceiptValidationError("A7 tensor bundle path mismatch")
+    _validate_a7_bundle(bundle, sorted(expected_names))
+
+    snapshot = normative.get("vjp_snapshot")
+    snapshot_names = sorted(
+        f"{operation_id}.{role}"
+        for operation_id in _A7_OPERATION_IDS
+        for role in (
+            "forward_value",
+            "forward_grid",
+            "incoming_result_gradient",
+        )
+    )
+    if kind == "instrumented":
+        if component_id == "instrumented-0":
+            snapshot_document = _a7_mapping(snapshot, "A7 VJP snapshot")
+            if snapshot_document.get("path") != (
+                "a7/components/instrumented-0/vjp-snapshot.vala7"
+            ):
+                raise ReceiptValidationError("A7 VJP snapshot path mismatch")
+            _validate_a7_bundle(snapshot_document, snapshot_names)
+        elif snapshot is not None:
+            raise ReceiptValidationError("VJP snapshot is forbidden on this replica")
+    elif kind == "isolated-vjp":
+        snapshot_document = _a7_mapping(snapshot, "A7 VJP snapshot")
+        if snapshot_document.get("path") != (
+            "a7/components/instrumented-0/vjp-snapshot.vala7"
+        ):
+            raise ReceiptValidationError("A7 VJP snapshot path mismatch")
+        _validate_a7_bundle(snapshot_document, snapshot_names)
+        if parents.get("instrumented", {}).get("path") != (
+            "a7/components/instrumented-0/receipt.json"
+        ):
+            raise ReceiptValidationError("isolated VJP parent receipt mismatch")
+    elif snapshot is not None:
+        raise ReceiptValidationError("control cannot contain a VJP snapshot")
+
+
+def _validate_a7_execution(value: object, kind: str) -> None:
+    execution = _a7_mapping(value, "A7 execution")
+    runtime = execution.get("runtime_seconds")
+    peak = execution.get("peak_vram_bytes")
+    peak_reserved = execution.get("peak_reserved_vram_bytes")
+    argv = execution.get("argv")
+    expected_subcommand = {
+        "control": "control",
+        "instrumented": "instrumented",
+        "isolated-vjp": "isolated-vjp",
+        "aggregate": "aggregate",
+    }[kind]
+    if (
+        type(runtime) not in (int, float)
+        or not math.isfinite(float(runtime))
+        or float(runtime) < 0.0
+        or type(peak) is not int
+        or not 0 <= int(peak) <= 22 * 1024**3
+        or type(peak_reserved) is not int
+        or int(peak_reserved) < int(peak)
+        or not isinstance(argv, list)
+        or argv[:4]
+        != ["val", "diagnose", "grid-sample-attribution", expected_subcommand]
+    ):
+        raise ReceiptValidationError("A7 execution runtime/VRAM/argv mismatch")
+
+
+def _validate_a7_bundle(bundle: Mapping[str, object], names: list[str]) -> None:
+    if type(bundle.get("size")) is not int or int(bundle["size"]) <= 0:
+        raise ReceiptValidationError("A7 tensor file size must be positive")
+    if bundle.get("names") != names:
+        raise ReceiptValidationError("A7 tensor inventory names mismatch")
+    if bundle.get("inventory_sha256") != canonical_json_sha256({"names": names}):
+        raise ReceiptValidationError("A7 tensor inventory hash mismatch")
+    if bundle.get("public_export_candidate") is not False:
+        raise ReceiptValidationError("A7 tensors cannot be public export candidates")
+
+
+def _a7_parse_operations(value: object) -> dict[str, dict[str, object]]:
+    if not isinstance(value, list) or len(value) != 9:
+        raise ReceiptValidationError("A7 operation count mismatch")
+    parsed: dict[str, dict[str, object]] = {}
+    orders: list[int] = []
+    for operation in value:
+        document = _a7_mapping(operation, "A7 operation")
+        operation_id = document.get("operation_id")
+        if operation_id not in _A7_OPERATION_IDS or operation_id in parsed:
+            raise ReceiptValidationError("A7 operation ID mismatch")
+        order = document.get("callback_order")
+        if type(order) is not int:
+            raise ReceiptValidationError("A7 callback order must be integer")
+        orders.append(order)
+        tensors = document.get("tensors")
+        if not isinstance(tensors, list) or len(tensors) != 6:
+            raise ReceiptValidationError("A7 operation tensor count mismatch")
+        roles: dict[str, Mapping[str, object]] = {}
+        for tensor in tensors:
+            record = _a7_mapping(tensor, "A7 tensor evidence")
+            role = record.get("role")
+            if role not in _A7_ROLES or role in roles:
+                raise ReceiptValidationError("A7 tensor role mismatch")
+            if record.get("operation_id") != operation_id:
+                raise ReceiptValidationError("A7 tensor operation ID mismatch")
+            _validate_a7_tensor_record(
+                record,
+                f"{operation_id}.{role}",
+                str(role),
+                str(operation_id),
+            )
+            roles[str(role)] = record
+        if set(roles) != set(_A7_ROLES):
+            raise ReceiptValidationError("A7 tensor role inventory mismatch")
+        parsed[str(operation_id)] = {"order": order, "tensors": roles}
+    if set(parsed) != set(_A7_OPERATION_IDS) or sorted(orders) != list(range(9)):
+        raise ReceiptValidationError("A7 operation/callback inventory mismatch")
+    return parsed
+
+
+def _validate_a7_tensor_record(
+    record: Mapping[str, object], name: str, role: str, operation_id: str
+) -> None:
+    shape = record.get("shape")
+    element_count = record.get("element_count")
+    if (
+        record.get("name") != name
+        or record.get("role") != role
+        or record.get("operation_id") != operation_id
+        or not isinstance(shape, list)
+        or not shape
+        or any(type(size) is not int or size < 0 for size in shape)
+        or type(element_count) is not int
+        or element_count <= 0
+        or math.prod(shape) != element_count
+        or record.get("finite_count") != element_count
+        or record.get("non_finite_count") != 0
+    ):
+        raise ReceiptValidationError("A7 tensor evidence identity/count mismatch")
+
+
+def _validate_a7_aggregate(normative: Mapping[str, object]) -> None:
+    _validate_a7_execution(normative.get("execution"), "aggregate")
+    components = _a7_mapping(normative.get("components"), "A7 components")
+    controls = components.get("controls")
+    instrumented = components.get("instrumented")
+    isolated = components.get("isolated")
+    if not isinstance(controls, list) or len(controls) != 2:
+        raise ReceiptValidationError("A7 aggregate control count mismatch")
+    if not isinstance(instrumented, list) or len(instrumented) != 5:
+        raise ReceiptValidationError("A7 aggregate instrumented count mismatch")
+    if not isinstance(isolated, list) or len(isolated) != 5:
+        raise ReceiptValidationError("A7 aggregate isolated count mismatch")
+    all_components = [*controls, *instrumented, *isolated]
+    for component in all_components:
+        document = _a7_mapping(component, "A7 embedded component")
+        identity = _a7_mapping(document.get("identity"), "A7 embedded identity")
+        embedded_invariants = _a7_mapping(
+            document.get("invariants"), "A7 embedded invariants"
+        )
+        if not embedded_invariants or any(
+            value is not True for value in embedded_invariants.values()
+        ):
+            raise ReceiptValidationError("A7 embedded component invariant false")
+        if document.get("errors") != []:
+            raise ReceiptValidationError("A7 embedded component errors must be empty")
+        _validate_a7_source_identity(identity)
+        _validate_a7_component(
+            document,
+            str(identity.get("component_kind")),
+            str(identity.get("component_id")),
+        )
+    expected_ids = [
+        *(f"control-{index}" for index in range(2)),
+        *(f"instrumented-{index}" for index in range(5)),
+        *(f"isolated-vjp-{index}" for index in range(5)),
+    ]
+    actual_ids = [
+        _a7_mapping(component.get("identity"), "A7 embedded identity").get(
+            "component_id"
+        )
+        for component in all_components
+    ]
+    if actual_ids != expected_ids:
+        raise ReceiptValidationError("A7 aggregate component ID order mismatch")
+    aggregate_identity = _a7_mapping(normative.get("identity"), "A7 identity")
+    expected_static_identity = {
+        key: value
+        for key, value in aggregate_identity.items()
+        if key not in {"component_kind", "component_id"}
+    }
+    aggregate_parents = _a7_mapping(
+        normative.get("parent_receipts"), "A7 aggregate parents"
+    )
+    for component in all_components:
+        document = _a7_mapping(component, "A7 embedded component")
+        identity = _a7_mapping(document.get("identity"), "A7 embedded identity")
+        static_identity = {
+            key: value
+            for key, value in identity.items()
+            if key not in {"component_kind", "component_id"}
+        }
+        parents = _a7_mapping(document.get("parent_receipts"), "A7 embedded parents")
+        common_parents = {
+            key: parents.get(key)
+            for key in ("environment", "model_assets", "model_contract")
+        }
+        if static_identity != expected_static_identity:
+            raise ReceiptValidationError("A7 aggregate identity binding mismatch")
+        if common_parents != aggregate_parents:
+            raise ReceiptValidationError("A7 aggregate parent binding mismatch")
+    parent_components = normative.get("parent_components")
+    if not isinstance(parent_components, list) or len(parent_components) != 12:
+        raise ReceiptValidationError("A7 aggregate parent count mismatch")
+    parent_by_id: dict[str, Mapping[str, object]] = {}
+    for parent, component, component_id in zip(
+        parent_components, all_components, expected_ids, strict=True
+    ):
+        record = _a7_mapping(parent, "A7 aggregate parent")
+        if record.get("component_id") != component_id:
+            raise ReceiptValidationError("A7 aggregate parent ID mismatch")
+        if record.get("tensor_bundle") != component.get("tensor_bundle"):
+            raise ReceiptValidationError("A7 aggregate parent bundle mismatch")
+        receipt = _a7_mapping(record.get("receipt"), "A7 aggregate parent receipt")
+        if (
+            receipt.get("path") != f"a7/components/{component_id}/receipt.json"
+            or type(receipt.get("size")) is not int
+            or int(receipt["size"]) <= 0
+        ):
+            raise ReceiptValidationError("A7 aggregate parent receipt path mismatch")
+        parent_by_id[component_id] = record
+
+    instrumented_zero = _a7_mapping(instrumented[0], "A7 instrumented-0 component")
+    expected_snapshot = instrumented_zero.get("vjp_snapshot")
+    expected_parent_receipt = parent_by_id["instrumented-0"].get("receipt")
+    for component in isolated:
+        document = _a7_mapping(component, "A7 isolated component")
+        parents = _a7_mapping(document.get("parent_receipts"), "A7 isolated parents")
+        if document.get("vjp_snapshot") != expected_snapshot:
+            raise ReceiptValidationError("A7 isolated VJP snapshot parent mismatch")
+        if parents.get("instrumented") != expected_parent_receipt:
+            raise ReceiptValidationError(
+                "A7 isolated instrumented receipt parent mismatch"
+            )
+
+    _validate_a7_comparisons(
+        normative.get("comparisons"), controls, instrumented, isolated
+    )
+    recomputed = _a7_recompute_classification(controls, instrumented, isolated)
+    if normative.get("classification") != recomputed:
+        raise ReceiptValidationError("A7 aggregate classification mismatch")
+    if normative.get("status") != recomputed["status"]:
+        raise ReceiptValidationError("A7 aggregate status mismatch")
+    if normative.get("terminal") != recomputed["terminal"]:
+        raise ReceiptValidationError("A7 aggregate terminal mismatch")
+    expected_errors = (
+        recomputed["reason_codes"] if recomputed["status"] == "INCONCLUSIVE" else []
+    )
+    if normative.get("errors") != expected_errors:
+        raise ReceiptValidationError("A7 aggregate error classification mismatch")
+
+
+def _validate_a7_comparisons(
+    value: object,
+    controls: list[object],
+    instrumented: list[object],
+    isolated: list[object],
+) -> None:
+    comparisons_document = _a7_mapping(value, "A7 comparisons")
+    instrumented_documents = [
+        _a7_mapping(component, "A7 instrumented comparison component")
+        for component in instrumented
+    ]
+    callback_order = [
+        operation_id
+        for operation_id, _ in sorted(
+            _a7_parse_operations(instrumented_documents[0]["operations"]).items(),
+            key=lambda item: int(item[1]["order"]),
+        )
+    ]
+    if comparisons_document.get("callback_order") != callback_order:
+        raise ReceiptValidationError("A7 comparison callback order mismatch")
+    model_documents = [
+        _a7_mapping(component, "A7 model comparison component")
+        for component in [*controls, *instrumented]
+    ]
+    isolated_documents = [
+        _a7_mapping(component, "A7 isolated comparison component")
+        for component in isolated
+    ]
+    _validate_a7_pair_set(
+        comparisons_document.get("parameter_pairs"),
+        list(combinations(model_documents, 2)),
+        parameters=True,
+    )
+    _validate_a7_pair_set(
+        comparisons_document.get("instrumented_pairs"),
+        list(combinations(instrumented_documents, 2)),
+        parameters=False,
+    )
+    _validate_a7_pair_set(
+        comparisons_document.get("isolated_pairs"),
+        list(combinations(isolated_documents, 2)),
+        parameters=False,
+    )
+
+
+def _validate_a7_pair_set(
+    value: object,
+    expected_pairs: list[tuple[Mapping[str, object], Mapping[str, object]]],
+    *,
+    parameters: bool,
+) -> None:
+    if not isinstance(value, list) or len(value) != len(expected_pairs):
+        raise ReceiptValidationError("A7 comparison pair count mismatch")
+    for stored, (left, right) in zip(value, expected_pairs, strict=True):
+        pair = _a7_mapping(stored, "A7 comparison pair")
+        left_id = _a7_mapping(left.get("identity"), "A7 left identity").get(
+            "component_id"
+        )
+        right_id = _a7_mapping(right.get("identity"), "A7 right identity").get(
+            "component_id"
+        )
+        if pair.get("left_replica") != left_id or pair.get("right_replica") != right_id:
+            raise ReceiptValidationError("A7 comparison replica identity mismatch")
+        left_records = _a7_comparison_records(left, parameters=parameters)
+        right_records = _a7_comparison_records(right, parameters=parameters)
+        if set(left_records) != set(right_records):
+            raise ReceiptValidationError("A7 comparison tensor inventory mismatch")
+        expected_inventory_equal = (
+            _a7_mapping(left.get("parameter_gradients"), "A7 left parameters").get(
+                "inventory_sha256"
+            )
+            == _a7_mapping(right.get("parameter_gradients"), "A7 right parameters").get(
+                "inventory_sha256"
+            )
+            if parameters
+            else True
+        )
+        if pair.get("inventory_digest_equal") is not expected_inventory_equal:
+            raise ReceiptValidationError("A7 comparison inventory claim mismatch")
+        tensor_comparisons = pair.get("tensors")
+        names = sorted(left_records)
+        if not isinstance(tensor_comparisons, list) or len(tensor_comparisons) != len(
+            names
+        ):
+            raise ReceiptValidationError("A7 tensor comparison count mismatch")
+        for comparison, name in zip(tensor_comparisons, names, strict=True):
+            record = _a7_mapping(comparison, "A7 tensor comparison")
+            if (
+                record.get("left_replica") != left_id
+                or record.get("right_replica") != right_id
+                or record.get("name") != name
+            ):
+                raise ReceiptValidationError("A7 tensor comparison identity mismatch")
+            exact = left_records[name].get("sha256") == right_records[name].get(
+                "sha256"
+            )
+            if record.get("exact_digest_equal") is not exact:
+                raise ReceiptValidationError(
+                    "A7 exact-digest comparison claim mismatch"
+                )
+            difference = record.get("difference_l2")
+            relative = record.get("relative_l2")
+            cosine = record.get("cosine")
+            if exact:
+                if (difference, relative, cosine) != (0.0, 0.0, 1.0):
+                    raise ReceiptValidationError("A7 exact comparison metrics mismatch")
+            elif (
+                type(difference) not in (int, float)
+                or difference < 0
+                or type(relative) not in (int, float)
+                or relative < 0
+                or type(cosine) not in (int, float)
+                or not -1.0 <= cosine <= 1.0
+            ):
+                raise ReceiptValidationError("A7 non-exact comparison metrics invalid")
+
+
+def _a7_comparison_records(
+    component: Mapping[str, object], *, parameters: bool
+) -> dict[str, Mapping[str, object]]:
+    if parameters:
+        parameter_document = _a7_mapping(
+            component.get("parameter_gradients"), "A7 comparison parameters"
+        )
+        records = parameter_document.get("parameters")
+        if not isinstance(records, list):
+            raise ReceiptValidationError("A7 comparison parameter list missing")
+        return {
+            str(record["name"]): _a7_mapping(record, "A7 comparison parameter")
+            for record in records
+            if isinstance(record, Mapping)
+        }
+    operations = _a7_parse_operations(component.get("operations"))
+    return {
+        str(record["name"]): record
+        for operation_id in _A7_OPERATION_IDS
+        for record in operations[operation_id]["tensors"].values()
+    }
+
+
+def _a7_recompute_classification(
+    controls: list[object], instrumented: list[object], isolated: list[object]
+) -> dict[str, object]:
+    components = [
+        _a7_mapping(component, "A7 classification component")
+        for component in [*controls, *instrumented, *isolated]
+    ]
+    static_identities = []
+    parent_sets = []
+    for component in components:
+        identity = _a7_mapping(component.get("identity"), "A7 classification identity")
+        static_identities.append(
+            {
+                key: value
+                for key, value in identity.items()
+                if key not in {"component_kind", "component_id"}
+            }
+        )
+        parents = _a7_mapping(
+            component.get("parent_receipts"), "A7 classification parents"
+        )
+        parent_sets.append(
+            {
+                key: parents.get(key)
+                for key in ("environment", "model_assets", "model_contract")
+            }
+        )
+    if any(item != static_identities[0] for item in static_identities[1:]) or any(
+        item != parent_sets[0] for item in parent_sets[1:]
+    ):
+        return _a7_inconclusive("static_identity_mismatch")
+    model_components = [
+        _a7_mapping(component, "A7 model component")
+        for component in [*controls, *instrumented]
+    ]
+    executions = [
+        {
+            key: _a7_mapping(component.get("execution"), "A7 execution").get(key)
+            for key in ("loss_hex", "warning_evidence", "backend")
+        }
+        for component in model_components
+    ]
+    if any(item != executions[0] for item in executions[1:]):
+        return _a7_inconclusive("instrumentation_execution_mismatch")
+    instrumented_ops = [
+        _a7_parse_operations(component.get("operations"))
+        for component in instrumented
+        if isinstance(component, Mapping)
+    ]
+    isolated_ops = [
+        _a7_parse_operations(component.get("operations"))
+        for component in isolated
+        if isinstance(component, Mapping)
+    ]
+    callback_orders = [
+        tuple(
+            operation_id
+            for operation_id, _ in sorted(
+                records.items(), key=lambda item: int(item[1]["order"])
+            )
+        )
+        for records in instrumented_ops
+    ]
+    if len(callback_orders) != 5 or any(
+        order != callback_orders[0] for order in callback_orders[1:]
+    ):
+        return _a7_inconclusive("callback_order_mismatch")
+    candidates: list[tuple[str, str]] = []
+    for operation_id in callback_orders[0]:
+        for role in _A7_ROLES[:4]:
+            if not _a7_role_exact(instrumented_ops, operation_id, role):
+                return _a7_inconclusive("instrumented_forward_or_incoming_mismatch")
+        for role in _A7_ROLES[4:]:
+            if not _a7_role_exact(instrumented_ops, operation_id, role):
+                candidates.append((operation_id, role))
+        if candidates:
+            break
+    for candidate, candidate_role in candidates:
+        for role in _A7_ROLES[:4]:
+            if not _a7_role_exact(isolated_ops, candidate, role):
+                return _a7_inconclusive("isolated_operand_or_result_mismatch")
+            reference = instrumented_ops[0][candidate]["tensors"][role]["sha256"]
+            if any(
+                records[candidate]["tensors"][role]["sha256"] != reference
+                for records in isolated_ops
+            ):
+                return _a7_inconclusive("isolated_snapshot_parent_mismatch")
+        if not _a7_role_exact(isolated_ops, candidate, candidate_role):
+            return {
+                "status": "ATTRIBUTED",
+                "candidate_operation": candidate,
+                "candidate_role": candidate_role,
+                "reason_codes": [],
+                "terminal": _A7_TERMINALS["ATTRIBUTED"],
+            }
+    if candidates:
+        return _a7_inconclusive("isolated_outgoing_divergence_absent")
+    if any(
+        not _a7_role_exact(isolated_ops, operation_id, role)
+        for operation_id in _A7_OPERATION_IDS
+        for role in _A7_ROLES
+    ):
+        return _a7_inconclusive("isolated_divergence_without_model_candidate")
+    if any(
+        records[operation_id]["tensors"][role]["sha256"]
+        != instrumented_ops[0][operation_id]["tensors"][role]["sha256"]
+        for records in isolated_ops
+        for operation_id in _A7_OPERATION_IDS
+        for role in _A7_ROLES[:4]
+    ):
+        return _a7_inconclusive("isolated_snapshot_parent_mismatch")
+    parameter_digests = {
+        _a7_mapping(component.get("parameter_gradients"), "A7 parameters").get(
+            "inventory_sha256"
+        )
+        for component in instrumented
+        if isinstance(component, Mapping)
+    }
+    if len(parameter_digests) < 2:
+        return _a7_inconclusive("model_divergence_not_reproduced")
+    return {
+        "status": "NOT_ATTRIBUTED",
+        "candidate_operation": None,
+        "candidate_role": None,
+        "reason_codes": [],
+        "terminal": _A7_TERMINALS["NOT_ATTRIBUTED"],
+    }
+
+
+def _a7_role_exact(
+    replicas: list[dict[str, dict[str, object]]], operation_id: str, role: str
+) -> bool:
+    return (
+        len({replica[operation_id]["tensors"][role]["sha256"] for replica in replicas})
+        == 1
+    )
+
+
+def _a7_inconclusive(reason: str) -> dict[str, object]:
+    return {
+        "status": "INCONCLUSIVE",
+        "candidate_operation": None,
+        "candidate_role": None,
+        "reason_codes": [reason],
+        "terminal": _A7_TERMINALS["INCONCLUSIVE"],
+    }
+
+
+def _a7_mapping(value: object, name: str) -> Mapping[str, object]:
+    if not isinstance(value, Mapping):
+        raise ReceiptValidationError(f"{name} must be an object")
+    return value
+
+
 def _validate_schema(
     value: object,
     schema: Mapping[str, object],
@@ -1632,6 +2365,19 @@ def _validate_schema(
 ) -> None:
     if root_schema is None:
         root_schema = schema
+    one_of = schema.get("oneOf")
+    if isinstance(one_of, list):
+        matches = 0
+        for candidate in one_of:
+            if not isinstance(candidate, Mapping):
+                raise ReceiptValidationError("schema oneOf entries must be objects")
+            try:
+                _validate_schema(value, candidate, location, root_schema)
+            except ReceiptValidationError:
+                continue
+            matches += 1
+        if matches != 1:
+            raise ReceiptValidationError(f"{location} must match exactly one schema")
     reference = schema.get("$ref")
     if isinstance(reference, str):
         resolved = _resolve_local_schema_reference(reference, root_schema)
@@ -1688,6 +2434,9 @@ def _validate_schema(
         minimum = schema.get("minItems")
         if isinstance(minimum, int) and len(value) < minimum:
             raise ReceiptValidationError(f"{location} has too few items")
+        maximum = schema.get("maxItems")
+        if isinstance(maximum, int) and len(value) > maximum:
+            raise ReceiptValidationError(f"{location} has too many items")
         items = schema.get("items")
         if isinstance(items, Mapping):
             for index, member in enumerate(value):

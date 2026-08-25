@@ -185,6 +185,16 @@ def test_compare_tensors_rejects_incompatible_or_nonfinite_inputs(
         compare_tensors("a", "b", "x", left, right)
 
 
+def test_compare_tensors_clamps_roundoff_to_the_closed_cosine_range() -> None:
+    left = torch.tensor([0.42502921342344874, -2.347860196470522], dtype=torch.float64)
+    right = torch.tensor([0.42502921342344896, -2.347860196470522], dtype=torch.float64)
+
+    comparison = compare_tensors("a", "b", "x", left, right)
+
+    assert comparison.exact_digest_equal is False
+    assert -1.0 <= comparison.cosine <= 1.0
+
+
 def test_snapshot_encoding_is_deterministic_sorted_and_self_describing() -> None:
     tensors = _snapshot_tensors()
 
