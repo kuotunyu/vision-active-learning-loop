@@ -1,17 +1,19 @@
 # Vision Active Learning Loop — Formal Design Specification
 
-**Status:** A2 owner written review approved / A2 implementation planning authorized
-**Milestone:** M0 complete for the original design; A2 amendment pending owner written-spec review
+**Status:** A3 determinism design amendment owner-authorized / implementation plan pending
+**Milestone:** M0 complete for the original design; A2 implementation evidence frozen at a normative determinism failure; A3 amendment active
 **Owner approval date:** 2026-08-23
 **Approved commit baseline:** `8b456800077d45fa9a6bb0dcd4ecb70c0edc89c6`
 **A2 amendment authorization date:** 2026-08-24
 **A2 amendment baseline:** `97d5789c0ca657f58e79f761a353f275e97a147b`
+**A3 amendment authorization date:** 2026-08-25
+**A3 amendment baseline:** `db0dc52e10d5e58852b84e1d321c2efa06a82d30`
 **Original specification date:** 2026-08-23
 **Repository:** `vision-active-learning-loop`
 **Target roles:** Computer Vision Engineer, Machine Learning Engineer, AI Engineer
 **Design choice:** Modified Option B — multi-country object-detection active learning
-**Runtime gate:** Wave 0 must verify every executable model-contract invariant from a new run-scoped evidence chain. The environment, model-contract, and feasibility receipts must share a non-empty run identity and exact parent bindings; each runtime observation must independently report uv `0.8.15` and SciPy `1.18.0`. Historical or fixed-name evidence is never current by implication. Any failure stops execution and returns the protocol to design review.
-**Implementation status:** Approval records the design baseline only. The A2 amendment authorizes this written specification change, not an implementation plan or implementation. It does not mean that a dataset or model was downloaded, a dependency was installed, a new GPU experiment was executed, or a publication/remote repository was created.
+**Runtime gate:** Wave 0 must verify every executable model-contract invariant from a new run-scoped evidence chain. The environment, model-contract, and feasibility receipts must share a non-empty run identity and exact parent bindings; each runtime observation must independently report uv `0.8.15` and SciPy `1.18.0`. Historical or fixed-name evidence is never current by implication. The only permitted nondeterministic CUDA operation is the exact A3 backward exception in Section 5.2.5; any other warning, missing observation, or gate failure stops execution and returns the protocol to design review.
+**Implementation status:** Owner authorization records the A3 design decision only. This commit amends the authoritative specification; it does not itself authorize old evidence to be reinterpreted, make any prior failure pass, or claim that A3 implementation or execution has completed.
 
 ## 1. Executive decision
 
@@ -261,17 +263,61 @@ The expected intermediate tensor order follows the pinned [RT-DETR source](https
 
 The probe emits a schema-validated, machine-readable `model_contract_receipt` containing the model repository/revision, canonical config JSON SHA-256, safetensors SHA-256, Transformers package version and source-tree commit/hash, hashes of the RT-DETR model/config/processor/loss source files, observed module identities and tensor shapes from both paths, processor JSON and its SHA-256, synthetic-input and synthetic-target fixture digests, probe source SHA-256, timestamp, canonical environment fingerprint, invariant-by-invariant booleans, and final `PASS`/`FAIL`. The receipt itself is content-addressed and becomes an input to every later manifest and run.
 
-The existing BF16 backward, finite-gradient, parameter-update, peak-VRAM, checkpoint round-trip, and clean A/B deterministic replay gates remain mandatory and unchanged; the new finite labeled-forward invariant supplements rather than weakens them. Any failed or unobservable invariant halts the protocol. The detector, uncertainty formula, extractor, package, or checkpoint cannot be changed ad hoc; a different contract requires a new reviewed spec version, new probe, and new receipt.
+The existing BF16 backward, finite-gradient, parameter-update, peak-VRAM, checkpoint round-trip, and clean A/B replay gates remain mandatory. A3 changes only the executable meaning of the CUDA backward determinism gate as specified in Section 5.2.5; the finite labeled-forward invariant continues to supplement rather than replace the training gates. Any failed or unobservable invariant halts the protocol. The detector, uncertainty formula, extractor, package, or checkpoint cannot be changed ad hoc; a different contract requires a new reviewed spec version, new probe, and new receipt.
 
 #### 5.2.4 No-clobber and evidence-preservation invariants
 
-Every subsequent A2 execution uses a new run ID and a new run-scoped evidence chain. Before any A2 feasibility-A, feasibility-B, or clean A/B replay process starts, both its exact checkpoint destination and its checkpoint root must not exist. Either pre-existing path is a fail-closed condition: it cannot be reused, cleaned, merged, or overwritten by the run.
+Every subsequent A3 execution uses a new run ID and a new run-scoped evidence chain. Before any A3 feasibility-A, feasibility-B, or clean A/B replay process starts, both its exact checkpoint destination and its checkpoint root must not exist. Either pre-existing path is a fail-closed condition: it cannot be reused, cleaned, merged, or overwritten by the run.
 
 Receipt publication uses atomic no-clobber semantics. A separate existence check followed by an overwriting replace is insufficient because it permits a check-then-replace race. The destination-creating filesystem operation itself must fail atomically when the destination already exists; if the target filesystem cannot provide that guarantee, publication stops without changing the destination. Temporary publication artifacts remain run-unique and cannot make a failed receipt appear current.
 
-All earlier commits, OCI images, receipts, checkpoints, logs, failure records, and audit corrections remain immutable historical evidence. No prior `FAIL` can be rewritten as `PASS`, and no prior narrower `PASS` can satisfy A2 by implication. Current A2 evidence requires the fresh run ID, exact parent receipt bindings, the complete Section 5.2 receipt, and all unchanged downstream gates.
+All earlier commits, OCI images, receipts, checkpoints, logs, failure records, and audit corrections remain immutable historical evidence. No prior `FAIL` can be rewritten as `PASS`, and no prior narrower `PASS` can satisfy A3 by implication. Current A3 evidence requires a fresh run ID, exact parent receipt bindings, the complete Section 5.2 receipt chain, and every A3 downstream gate.
 
-Existing whole-tree Black and Ruff debt is outside the A2 correction boundary. A future A2 implementation may change only files required by these invariants and must run targeted formatting, lint, and tests over those touched files; broad formatting, unrelated cleanup, and refactoring are prohibited.
+Existing whole-tree Black and Ruff debt is outside the A3 correction boundary. A future A3 implementation may change only files required by these invariants and must run targeted formatting, lint, and tests over those touched files; broad formatting, unrelated cleanup, and refactoring are prohibited.
+
+#### 5.2.5 A3 bounded CUDA determinism contract
+
+The fresh A2 campaign `wave0-a2-20260825T025943120Z`, bound to source commit `db0dc52e10d5e58852b84e1d321c2efa06a82d30` and OCI image `sha256:9b43ab192f1014f960c8db1d0ea1da1a559dd4005250e5fb6e4aa2716d3f47e3`, passed environment, model-assets, and the complete four-class model contract, then failed during feasibility-A backward before publishing a feasibility receipt or checkpoint. The preserved stage record has SHA-256 `2dc1585974a86c02a1b02f7ba92c419ea3ccd8c90455c8c9a79a65b92b4a1fc8`; the stage log has SHA-256 `28fc5121e2ccfa55fe55bf24d6b7f74704e3dfece16873aa192f0589fa125ea4`; and the no-clobber failure record has SHA-256 `c0889697ba23b9ec775d7f66d47c2542c5f4c128f7309149db283ca8294f630f`. Its terminal verdict remains `WAVE0_A2_NORMATIVE_FAIL / WAVE1_FORBIDDEN`.
+
+The exact error identifies `grid_sampler_2d_backward_cuda`. This is a pinned-stack capability conflict, not evidence corruption or a detector/reset failure:
+
+1. Transformers 5.15.0 `MultiScaleDeformableAttention.forward` calls `torch.nn.functional.grid_sample` once per decoder layer and feature level, using bilinear mode, zero padding, and `align_corners=False`.
+2. The pinned RT-DETR config has `decoder_layers == 3`, `num_feature_levels == 3`, and `disable_custom_kernels == true`; one labeled backward therefore reaches exactly `3 × 3 = 9` fallback grid-sample backward operations.
+3. PyTorch 2.12.0 documents CUDA `torch.nn.functional.grid_sample` differentiation among the operations that throw when `torch.use_deterministic_algorithms(True, warn_only=False)` is active; its grid-sample documentation separately states that CUDA backward may be nondeterministic and cannot be easily switched off.
+4. Full detector and backbone fine-tuning necessarily differentiates through deformable attention. Freezing the transformer, using CPU backward, changing detector identity, or introducing an unpinned custom kernel would change the approved research model more materially than a narrow, measured exception.
+
+The inspected pinned wheel sources are normative inputs: Transformers `modeling_rt_detr.py` SHA-256 is `fce24c79c8599e52f3648f549502879e9b396cc86f593c3a07baf10c002cead3`, PyTorch `torch/__init__.py` SHA-256 is `b508de5a66ebc368fc8fa2161b1e0e88ae0034d9d9540e7c020460237a5464a9`, and PyTorch `torch/nn/functional.py` SHA-256 is `e409a97896241e0dfb8c23fbf1f09967ecf5e65ec9626aec0d97d9cc5d727d50`. A3 execution must verify these exact hashes before the exception can be enabled.
+
+A3 retains RT-DETR-R18, the pinned model revision and assets, 300 queries, four RDD classes, full detector/backbone optimization, BF16, RTX 4090 execution, dependency versions, seeds, datasets, budgets, acquisition arms, fit counts, and all non-determinism-related gates. It permits one exception under these fail-closed rules:
+
+- strict deterministic error mode remains active for initialization, preprocessing, labeled forward, loss construction, gradient clipping, optimizer/scheduler steps, checkpointing, and every operation outside `loss.backward()`;
+- immediately around `loss.backward()` only, deterministic algorithms remain enabled but unsupported operations emit warnings instead of throwing;
+- warning capture uses `warnings.simplefilter("always")`; after backward the probe restores strict deterministic error mode even when backward raises;
+- the normalized operation identifier inventory must contain exactly nine occurrences of `grid_sampler_2d_backward_cuda`, derived as `decoder_layers × num_feature_levels`; zero, an incorrect count, a different identifier, an unparsable warning, or any additional nondeterministic warning is a normative failure;
+- every raw warning message, normalized identifier, warning category, count, pinned PyTorch source hash, and pinned Transformers deformable-attention source hash is recorded in the feasibility receipt; and
+- the allowed exception is called `allowlisted_grid_sample_backward`, never `deterministic`, and cannot support a claim of bitwise-identical training.
+
+The six feasibility observations—primary A/B, clean-a A/B, and clean-b A/B—must use one non-empty A3 run ID and the same exact source, image, model, processor, config, dependency, and semantic environment identities. Every observation validates the exact content hash of its own parent chain; parent receipt hashes are not required to equal across independently created attempts. Attempt IDs, container IDs, paths, timestamps, durations, receipt content hashes, and checkpoint file hashes are observational and may differ. Using primary A as the canonical observation, every other observation must match it exactly on:
+
+- pre-update trainable-parameter digest and ordered parameter inventory;
+- synthetic input, target, item-order, fixture, and sampler digests;
+- scalar forward loss in hexadecimal representation;
+- optimizer parameter-group names, learning rates, weight decay, scheduler state before update, RNG states after update, warning inventory, and all discrete checkpoint fields; and
+- model-state key order, tensor shapes, tensor dtypes, integer/bool tensors, and non-training buffers.
+
+Each run still requires finite loss and gradients, a finite clipped gradient norm, a real parameter update, BF16 autocast, TF32 disabled, peak allocated VRAM at most 22 GiB, and an exact within-run checkpoint save/load round-trip. Checkpoint file hashes and post-update floating-state digests remain content-addressed identities for their own runs but are observational, not required to be equal across runs.
+
+For the post-backward floating update, the gate compares each of the five non-canonical observations with primary A over the exact ordered trainable-parameter inventory. Let `delta_r` be the concatenated post-update minus pre-update vector for replay `r`; because the pre-update digest is exact, `||delta_r - delta_primary||_2` can be reproduced from the two post-update checkpoints. The single global pre-clip gradient norm must satisfy the first bound below. Detector and backbone parameter-update groups must separately satisfy the second and third bounds:
+
+```text
+gradient_norm: math.isclose(rel_tol=1e-5, abs_tol=1e-7)
+relative_update_l2 = ||delta_r - delta_primary||_2 / max(||delta_r||_2, ||delta_primary||_2) <= 1e-3
+update_cosine = <delta_r, delta_primary> / (||delta_r||_2 ||delta_primary||_2) >= 0.99999
+```
+
+The gate also compares the checkpointed AdamW `exp_avg` and `exp_avg_sq` tensors by optimizer group and state name. Their ordered parameter-to-state mapping, shapes, and dtypes must be exact; each nonzero concatenated floating state must independently satisfy `relative_state_l2 <= 1e-3` and `state_cosine >= 0.99999`, using the same formulas as the update-vector bounds. Missing, unexpected, or non-finite optimizer state fails closed.
+
+Every norm is accumulated in canonical parameter-name order using CPU float64. A zero, non-finite, missing, reordered, shape-mismatched, or dtype-mismatched update fails closed. The receipt records per-group update L2 norms and the gate records the pairwise difference, relative L2, and cosine values for model updates and optimizer states. These thresholds are fixed before any A3 GPU execution and cannot be adjusted after observing a run; changing them requires another reviewed protocol version and a new run ID. Passing A3 supports only the claim that the pinned full-training step is seed-controlled and numerically replayable within these registered same-host bounds despite one disclosed CUDA operation. It does not support bitwise training identity.
 
 ### 5.3 Frozen diversity encoder
 
@@ -360,9 +406,9 @@ Every primary and ceiling fit uses:
 - batch size: 8 images, BF16 automatic mixed precision, gradient norm clipping at 0.1;
 - checkpoint: final epoch; no early stopping and no test-driven checkpoint selection;
 - sampler: seed-deterministic shuffle with a recorded ordered-item digest; and
-- determinism: `torch.use_deterministic_algorithms(True)`, cuDNN benchmark off, deterministic workspace settings, and recorded RNG states.
+- reproducibility: `torch.use_deterministic_algorithms(True)`, cuDNN benchmark off, deterministic workspace settings, recorded RNG states, and the exact Section 5.2.5 allowlisted grid-sample backward exception.
 
-The pilot must fail rather than silently relax deterministic algorithms. The design claims reproducibility on the canonical locked environment, not bitwise identity across different GPUs or libraries.
+The pilot must fail on any unregistered nondeterministic operation, incorrect warning count, missing replay evidence, or numerical replay bound violation. It cannot silently broaden the Section 5.2.5 exception. The design claims registered same-host numerical reproducibility on the canonical locked environment, not bitwise identity across runs, GPUs, or libraries.
 
 Acquired images assigned to the calibration/dev partition in Section 9 count against the budget but are excluded from weight training. Consequently, the model normally trains on approximately 80% of the acquired images; this is identical across arms and is explicitly reported.
 
@@ -718,7 +764,7 @@ The pilot does not access either frozen test. It evaluates engineering validity 
 Formal execution starts only if all conditions pass:
 
 1. the Section 5.2 model-contract receipt is `PASS` and hash-bound to the run;
-2. all nine fits complete on RTX 4090 with no OOM, NaN, Inf, or deterministic-algorithm fallback;
+2. all nine fits complete on RTX 4090 with no OOM, NaN, Inf, unauthorized deterministic-algorithm fallback, or Section 5.2.5 replay-bound violation;
 3. detector loss is finite and decreases from the median of the first 10% of steps to the median of the final 10%;
 4. each uncertainty strategy has score standard deviation at least `1e-6` over at least 100 unlabeled pilot images;
 5. core-set/hybrid produce the exact reference item-ID sequences on registered toy matrices and pilot subsamples;
@@ -894,6 +940,7 @@ Every figure/table identifies dataset role, arm, seed aggregation, budget unit, 
 - [x] The A2 reset contract covers decoder heads, the denoising embedding, `enc_score_head`, and exact frozen RDD label mappings in one fixed seed-17 RNG order without reusing COCO rows.
 - [x] The A2 executable contract covers both label-free and labeled RT-DETR paths, including encoder/top-k and every decoder/encoder/denoising auxiliary classification tensor reachable by labeled loss.
 - [x] The recorded 80-vs-4 failure remains immutable evidence of the narrower Option A contract and cannot be reinterpreted as a pass.
+- [x] The recorded A2 `grid_sampler_2d_backward_cuda` failure remains immutable evidence; A3 permits exactly nine disclosed backward warnings and requires fixed same-host numerical replay bounds without claiming bitwise training identity.
 - [x] Checkpoint roots and destinations fail closed when pre-existing, and receipt publication requires atomic no-clobber semantics rather than check-then-replace.
 - [x] Formal source/shift evaluation stays embargoed until a complete 66-fit artifact seal exists; premature output invalidates the experiment ID.
 - [x] The 2% reference is one shared fit; `1 + 5×4 + 1 = 22` per seed and `22×3 = 66` primary fits.
@@ -912,4 +959,4 @@ Every figure/table identifies dataset role, arm, seed aggregation, budget unit, 
 
 The following cannot be changed as an implementation convenience: included countries, dataset roles, split ranges/salt, global group/dedup thresholds and exclusions, detector/encoder identity, executable model-contract invariants, uncertainty equations, hybrid factor, canonical distance quantization/order, formal seeds/budgets, evaluation embargo, calibration split/gates, 30-epoch recipe, primary metrics/AUBC, censoring/claim gates, component-aware pilot caps, and 66-fit definition.
 
-A required change must produce a written spec revision, explain the trigger, invalidate incompatible pilot/formal artifacts, and receive user approval before execution. This A2 amendment is committed only for owner written-spec review. Only after that written review explicitly approves the amended spec may the next deliverable be a separate implementation-plan update; no implementation should begin directly from this document.
+A required change must produce a written spec revision, explain the trigger, invalidate incompatible pilot/formal artifacts, and receive user approval before execution. On 2026-08-25 the owner delegated the A3 design and execution decision after reviewing the incompatibility finding and recommended bounded-exception approach. That authorization permits a separate A3 implementation-plan commit after this specification passes its recorded self-review; implementation still begins only from that plan, never directly from an unreviewed draft.
