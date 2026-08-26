@@ -426,7 +426,11 @@ function New-A7AugmentedBaseline {
             if (-not [IO.File]::Exists($FullPath) -or [IO.Directory]::Exists($FullPath)) {
                 throw 'A7 required regular file is missing'
             }
-            $Current = [IO.FileInfo]::new($FullPath)
+            $File = [IO.FileInfo]::new($FullPath)
+            if (($File.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+                throw 'A7 history path link or junction is forbidden'
+            }
+            $Current = $File.Directory
         }
         else {
             if (-not [IO.Directory]::Exists($FullPath)) {

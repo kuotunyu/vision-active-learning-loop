@@ -502,6 +502,18 @@ def test_history_augments_exact_original_subset_with_preserved_failures(
     )
 
 
+def test_history_accepts_regular_baseline_file_under_strict_mode(
+    tmp_path: Path,
+) -> None:
+    fixture = _history_fixture(tmp_path)
+    body = "Set-StrictMode -Version Latest\n" + _history_body(fixture)
+
+    completed = _invoke_functions(("Write-A7NewText", "New-A7AugmentedBaseline"), body)
+
+    assert completed.returncode == 0, completed.stderr
+    assert Path(fixture["output"]).is_file()
+
+
 @pytest.mark.parametrize(
     "mutation",
     [
