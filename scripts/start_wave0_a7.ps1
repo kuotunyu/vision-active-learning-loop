@@ -775,6 +775,64 @@ function New-A7AugmentedBaseline {
     }
 }
 
+function Select-A7ProjectContainers {
+    param(
+        [Parameter(Mandatory = $true)][string]$ContainerRecordsJson,
+        [Parameter(Mandatory = $true)][string]$RegisteredImageIdsJson
+    )
+    try {
+        $Records = @($ContainerRecordsJson | ConvertFrom-Json)
+        $RegisteredImageIds = @($RegisteredImageIdsJson | ConvertFrom-Json)
+    }
+    catch {
+        throw 'A7 project-container inventory JSON is invalid'
+    }
+    $Registered = [System.Collections.Generic.HashSet[string]]::new(
+        [System.StringComparer]::Ordinal
+    )
+    foreach ($ImageId in $RegisteredImageIds) {
+        $Value = [string]$ImageId
+        if ($Value -cnotmatch '^sha256:[0-9a-f]{64}$' -or -not $Registered.Add($Value)) {
+            throw 'A7 registered image ID is invalid or duplicated'
+        }
+    }
+    $SeenContainers = [System.Collections.Generic.HashSet[string]]::new(
+        [System.StringComparer]::Ordinal
+    )
+    $Selected = [System.Collections.Generic.List[object]]::new()
+    foreach ($Record in $Records) {
+        $Properties = @($Record.PSObject.Properties.Name | Sort-Object -CaseSensitive)
+        if (($Properties -join '|') -cne 'configured_image|id|image_id|name') {
+            throw 'A7 project-container record property set is not closed'
+        }
+        $ContainerId = [string]$Record.id
+        $Name = [string]$Record.name
+        $ConfiguredImage = [string]$Record.configured_image
+        $ImageId = [string]$Record.image_id
+        if ($ContainerId -cnotmatch '^[0-9a-f]{64}$' -or
+            -not $SeenContainers.Add($ContainerId) -or
+            [string]::IsNullOrWhiteSpace($Name) -or $Name.StartsWith('/') -or
+            [string]::IsNullOrWhiteSpace($ConfiguredImage) -or $ConfiguredImage -match '\s' -or
+            $ImageId -cnotmatch '^sha256:[0-9a-f]{64}$') {
+            throw 'A7 project-container record is invalid or duplicated'
+        }
+        if ($Name.StartsWith('val-a7-', [StringComparison]::Ordinal) -or
+            $Name.StartsWith('val-wave0-', [StringComparison]::Ordinal) -or
+            $ConfiguredImage.StartsWith(
+                'vision-active-learning-loop:wave0-',
+                [StringComparison]::Ordinal
+            ) -or $Registered.Contains($ImageId)) {
+            [void]$Selected.Add([pscustomobject][ordered]@{
+                    id = $ContainerId
+                    name = $Name
+                    configured_image = $ConfiguredImage
+                    image_id = $ImageId
+                })
+        }
+    }
+    return @($Selected)
+}
+
 function Test-A7DockerGpuPreflight {
     param(
         [Parameter(Mandatory = $true)][string]$DockerContext,
@@ -894,6 +952,7 @@ function New-A7Lease {
         [Parameter(Mandatory = $true)][string]$SourceCommit,
         [Parameter(Mandatory = $true)][string]$SpecCommit,
         [Parameter(Mandatory = $true)][string]$PlanCommit,
+        [Parameter(Mandatory = $true)][string]$Branch,
         [Parameter(Mandatory = $true)][string]$ImageTag,
         [Parameter(Mandatory = $true)][string]$ImageId,
         [Parameter(Mandatory = $true)][string]$BaseImageDigest,
@@ -921,6 +980,9 @@ function New-A7Lease {
         if ($Commit -cnotmatch '^[0-9a-f]{40}$') {
             throw 'A7 lease commit identity is invalid'
         }
+    }
+    if ([string]::IsNullOrWhiteSpace($Branch)) {
+        throw 'A7 lease branch identity is required'
     }
     if ([string]::IsNullOrWhiteSpace($ImageTag) -or $ImageTag -match '\s') {
         throw 'A7 lease image tag is invalid'
@@ -1004,6 +1066,191 @@ function New-A7Lease {
         throw 'A7 lease-bound audit hash changed before lease claim'
     }
     try {
+        $BuildAudit = [IO.File]::ReadAllText($BuildPath, [Text.Encoding]::UTF8) | ConvertFrom-Json
+        $MicrocheckAudit = [IO.File]::ReadAllText($MicrocheckPath, [Text.Encoding]::UTF8) | ConvertFrom-Json
+    }
+    catch {
+        throw 'A7 lease-bound Task 7 audit JSON is invalid'
+    }
+    $AssertProperties = {
+        param(
+            [Parameter(Mandatory = $true)][object]$Document,
+            [Parameter(Mandatory = $true)][string[]]$Expected,
+            [Parameter(Mandatory = $true)][string]$Name
+        )
+        $Actual = @($Document.PSObject.Properties.Name | Sort-Object -CaseSensitive)
+        $SortedExpected = @($Expected | Sort-Object -CaseSensitive)
+        if (($Actual -join '|') -cne ($SortedExpected -join '|')) {
+            throw "A7 $Name property set is not closed"
+        }
+    }
+    $BuildProperties = @(
+        'schema_version', 'owner_authorization_id', 'run_id', 'source_commit',
+        'spec_commit', 'plan_commit', 'branch', 'image_tag', 'image_id',
+        'base_image_digest', 'argv', 'augmented_baseline_path',
+        'augmented_baseline_sha256', 'argv_audit_path', 'argv_audit_sha256',
+        'stdout_path', 'stdout_sha256', 'stderr_path', 'stderr_sha256',
+        'exit_code', 'started_at', 'completed_at'
+    )
+    $MicrocheckProperties = @(
+        'schema_version', 'owner_authorization_id', 'run_id', 'source_commit',
+        'spec_commit', 'plan_commit', 'branch', 'image_tag', 'image_id',
+        'base_image_digest', 'augmented_baseline_path', 'augmented_baseline_sha256',
+        'source_inventory_path', 'source_inventory_sha256', 'payload_path',
+        'payload_sha256', 'payload', 'docker_argv', 'stdout_path', 'stdout_sha256',
+        'stderr_path', 'stderr_sha256', 'exit_code', 'started_at', 'completed_at'
+    )
+    & $AssertProperties $BuildAudit $BuildProperties 'build audit'
+    & $AssertProperties $MicrocheckAudit $MicrocheckProperties 'micro-check audit'
+    foreach ($Audit in @($BuildAudit, $MicrocheckAudit)) {
+        if ([int]$Audit.schema_version -ne 1 -or
+            [string]$Audit.owner_authorization_id -cne $OwnerAuthorizationId -or
+            [string]$Audit.run_id -cne $RunId -or
+            [string]$Audit.source_commit -cne $SourceCommit -or
+            [string]$Audit.spec_commit -cne $SpecCommit -or
+            [string]$Audit.plan_commit -cne $PlanCommit -or
+            [string]$Audit.branch -cne $Branch -or
+            [string]$Audit.image_tag -cne $ImageTag -or
+            [string]$Audit.image_id -cne $ImageId -or
+            [string]$Audit.base_image_digest -cne $BaseImageDigest -or
+            [string]$Audit.augmented_baseline_path -cne $HistoricalPath -or
+            [string]$Audit.augmented_baseline_sha256 -cne $HistoricalBaselineSha256 -or
+            [int]$Audit.exit_code -ne 0) {
+            throw 'A7 lease-bound Task 7 audit identity mismatch'
+        }
+        $StartedAt = [DateTimeOffset]::MinValue
+        $CompletedAt = [DateTimeOffset]::MinValue
+        $StartedValid = if ($Audit.started_at -is [DateTime]) {
+            $StartedAt = [DateTimeOffset]$Audit.started_at
+            $true
+        }
+        else {
+            [DateTimeOffset]::TryParseExact(
+                [string]$Audit.started_at,
+                'o',
+                [Globalization.CultureInfo]::InvariantCulture,
+                [Globalization.DateTimeStyles]::RoundtripKind,
+                [ref]$StartedAt
+            )
+        }
+        $CompletedValid = if ($Audit.completed_at -is [DateTime]) {
+            $CompletedAt = [DateTimeOffset]$Audit.completed_at
+            $true
+        }
+        else {
+            [DateTimeOffset]::TryParseExact(
+                [string]$Audit.completed_at,
+                'o',
+                [Globalization.CultureInfo]::InvariantCulture,
+                [Globalization.DateTimeStyles]::RoundtripKind,
+                [ref]$CompletedAt
+            )
+        }
+        if (-not $StartedValid -or -not $CompletedValid -or $CompletedAt -lt $StartedAt) {
+            throw 'A7 lease-bound Task 7 audit timestamp is invalid'
+        }
+    }
+    $AuditRoot = [IO.Path]::GetDirectoryName($BuildPath)
+    if ([IO.Path]::GetDirectoryName($MicrocheckPath) -cne $AuditRoot) {
+        throw 'A7 Task 7 binding audits must share one audit root'
+    }
+    $ExpectedPaths = [ordered]@{
+        build_argv = [IO.Path]::Combine($AuditRoot, '19-image-build-argv.json')
+        build_stdout = [IO.Path]::Combine($AuditRoot, '20-image-build.stdout.log')
+        build_stderr = [IO.Path]::Combine($AuditRoot, '20-image-build.stderr.log')
+        source_inventory = [IO.Path]::Combine($AuditRoot, '21-a7-source-inventory.json')
+        payload = [IO.Path]::Combine($AuditRoot, '22-a7-cpu-micro-check-payload.json')
+        microcheck_stdout = [IO.Path]::Combine($AuditRoot, '22-a7-cpu-micro-check.stdout.log')
+        microcheck_stderr = [IO.Path]::Combine($AuditRoot, '22-a7-cpu-micro-check.stderr.log')
+    }
+    if ([string]$BuildAudit.argv_audit_path -cne $ExpectedPaths.build_argv -or
+        [string]$BuildAudit.stdout_path -cne $ExpectedPaths.build_stdout -or
+        [string]$BuildAudit.stderr_path -cne $ExpectedPaths.build_stderr -or
+        [string]$MicrocheckAudit.source_inventory_path -cne $ExpectedPaths.source_inventory -or
+        [string]$MicrocheckAudit.payload_path -cne $ExpectedPaths.payload -or
+        [string]$MicrocheckAudit.stdout_path -cne $ExpectedPaths.microcheck_stdout -or
+        [string]$MicrocheckAudit.stderr_path -cne $ExpectedPaths.microcheck_stderr) {
+        throw 'A7 lease-bound Task 7 audit path mismatch'
+    }
+    foreach ($Path in $ExpectedPaths.Values) { [void](& $AssertRegularPath $Path $true) }
+    $HashBindings = [ordered]@{
+        build_argv = [string]$BuildAudit.argv_audit_sha256
+        build_stdout = [string]$BuildAudit.stdout_sha256
+        build_stderr = [string]$BuildAudit.stderr_sha256
+        source_inventory = [string]$MicrocheckAudit.source_inventory_sha256
+        payload = [string]$MicrocheckAudit.payload_sha256
+        microcheck_stdout = [string]$MicrocheckAudit.stdout_sha256
+        microcheck_stderr = [string]$MicrocheckAudit.stderr_sha256
+    }
+    foreach ($Name in $ExpectedPaths.Keys) {
+        if ($HashBindings[$Name] -cnotmatch '^[0-9a-f]{64}$' -or
+            (& $GetSha256 $ExpectedPaths[$Name]) -cne $HashBindings[$Name]) {
+            throw "A7 lease-bound Task 7 audit file hash mismatch: $Name"
+        }
+    }
+    try {
+        $ArgvAudit = [IO.File]::ReadAllText($ExpectedPaths.build_argv, [Text.Encoding]::UTF8) |
+            ConvertFrom-Json
+        $SourceInventory = [IO.File]::ReadAllText(
+            $ExpectedPaths.source_inventory,
+            [Text.Encoding]::UTF8
+        ) | ConvertFrom-Json
+        $PayloadText = [IO.File]::ReadAllText($ExpectedPaths.payload, [Text.Encoding]::UTF8)
+        $Payload = $PayloadText | ConvertFrom-Json
+    }
+    catch {
+        throw 'A7 lease-bound Task 7 supporting audit JSON is invalid'
+    }
+    & $AssertProperties $ArgvAudit @(
+        'schema_version', 'run_id', 'source_commit', 'argv', 'recorded_before_build'
+    ) 'build argv audit'
+    if ([int]$ArgvAudit.schema_version -ne 1 -or
+        [string]$ArgvAudit.run_id -cne $RunId -or
+        [string]$ArgvAudit.source_commit -cne $SourceCommit -or
+        -not [bool]$ArgvAudit.recorded_before_build) {
+        throw 'A7 lease-bound build argv audit mismatch'
+    }
+    if ([string]$SourceInventory.source_commit -cne $SourceCommit -or
+        [string]$Payload.source_commit -cne $SourceCommit -or
+        [string]$Payload.source_inventory_sha256 -cne $HashBindings.source_inventory -or
+        (ConvertTo-Json -InputObject $MicrocheckAudit.payload -Depth 8 -Compress) -cne $PayloadText) {
+        throw 'A7 lease-bound micro-check payload identity mismatch'
+    }
+    if ((ConvertTo-Json -InputObject @($BuildAudit.argv) -Compress) -cne
+        (ConvertTo-Json -InputObject @($ArgvAudit.argv) -Compress)) {
+        throw 'A7 lease-bound build argv mismatch'
+    }
+    $MicrocheckArgv = @($MicrocheckAudit.docker_argv)
+    if ($MicrocheckArgv.Count -ne 19 -or
+        [string]$MicrocheckArgv[0] -cne 'docker' -or
+        [string]$MicrocheckArgv[1] -cne 'run' -or
+        [string]$MicrocheckArgv[2] -cne '--rm' -or
+        [string]$MicrocheckArgv[3] -cne '--network' -or
+        [string]$MicrocheckArgv[4] -cne 'none' -or
+        [string]$MicrocheckArgv[5] -cne '--workdir' -or
+        [string]$MicrocheckArgv[6] -cne '/workspace' -or
+        [string]$MicrocheckArgv[7] -cne '--entrypoint' -or
+        [string]$MicrocheckArgv[8] -cne 'python' -or
+        [string]$MicrocheckArgv[9] -cne '-v' -or
+        -not ([string]$MicrocheckArgv[10]).EndsWith(':/workspace:ro', [StringComparison]::Ordinal) -or
+        [string]$MicrocheckArgv[11] -cne '-v' -or
+        [string]$MicrocheckArgv[12] -cne "${AuditRoot}:/audit:ro" -or
+        [string]$MicrocheckArgv[13] -cne $ImageId -or
+        [string]$MicrocheckArgv[14] -cne '/workspace/scripts/run_wave0_a7_cpu_microcheck.py' -or
+        [string]$MicrocheckArgv[15] -cne '--workspace-root' -or
+        [string]$MicrocheckArgv[16] -cne '/workspace' -or
+        [string]$MicrocheckArgv[17] -cne '--source-inventory' -or
+        [string]$MicrocheckArgv[18] -cne '/audit/21-a7-source-inventory.json') {
+        throw 'A7 lease-bound micro-check Docker argv mismatch'
+    }
+    $StdoutLines = @([IO.File]::ReadAllText(
+            $ExpectedPaths.microcheck_stdout,
+            [Text.Encoding]::UTF8
+        ) -split "`r?`n" | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+    if ($StdoutLines.Count -ne 1 -or $StdoutLines[0] -cne $PayloadText) {
+        throw 'A7 lease-bound micro-check stdout does not equal the raw payload'
+    }
+    try {
         $HostProcesses = @($HostProcessesJson | ConvertFrom-Json)
         $Containers = @($ContainersJson | ConvertFrom-Json)
     }
@@ -1030,6 +1277,7 @@ function New-A7Lease {
         source_commit = $SourceCommit
         spec_commit = $SpecCommit
         plan_commit = $PlanCommit
+        branch = $Branch
         image_tag = $ImageTag
         image_id = $ImageId
         base_image_digest = $BaseImageDigest
@@ -1509,22 +1757,28 @@ function Invoke-A7Launch {
             -PlanCommit $ExpectedPlanCommit `
             -BaseDigest $BaseDigest `
             -ImageTag $ImageTag
+        $BuildLogicalArgv = @('docker') + $BuildArguments
         $BuildArgvAudit = [ordered]@{
             schema_version = 1
             run_id = $RunId
             source_commit = $ExpectedSourceCommit
-            argv = @('docker') + $BuildArguments
+            argv = $BuildLogicalArgv
             recorded_before_build = $true
         }
+        $BuildArgvAuditPath = [IO.Path]::Combine($AuditRoot, '19-image-build-argv.json')
         Write-A7NewText `
-            -Path ([IO.Path]::Combine($AuditRoot, '19-image-build-argv.json')) `
+            -Path $BuildArgvAuditPath `
             -Text ($BuildArgvAudit | ConvertTo-Json -Depth 6 -Compress)
+        $BuildStdoutPath = [IO.Path]::Combine($AuditRoot, '20-image-build.stdout.log')
+        $BuildStderrPath = [IO.Path]::Combine($AuditRoot, '20-image-build.stderr.log')
+        $BuildStartedAt = [DateTimeOffset]::UtcNow.ToString('o')
         $BuildResult = Invoke-A7Native `
             -Executable $DockerExecutable `
             -Arguments (@($DockerPrefixArguments) + $BuildArguments) `
-            -StdoutPath ([IO.Path]::Combine($AuditRoot, '20-image-build.stdout.log')) `
-            -StderrPath ([IO.Path]::Combine($AuditRoot, '20-image-build.stderr.log')) `
+            -StdoutPath $BuildStdoutPath `
+            -StderrPath $BuildStderrPath `
             -WorkingDirectory $WorktreePath
+        $BuildCompletedAt = [DateTimeOffset]::UtcNow.ToString('o')
         if ($BuildResult.exit_code -ne 0) {
             throw "A7 image build exited $($BuildResult.exit_code)"
         }
@@ -1559,15 +1813,27 @@ function Invoke-A7Launch {
         [void]$CurrentImages.Add([pscustomobject]@{ tag = $ImageTag; image_id = $ImageId })
         $BuildAudit = [ordered]@{
             schema_version = 1
+            owner_authorization_id = $OwnerAuthorizationId
             run_id = $RunId
             source_commit = $ExpectedSourceCommit
+            spec_commit = $ExpectedSpecCommit
+            plan_commit = $ExpectedPlanCommit
+            branch = $ExpectedBranch
             image_tag = $ImageTag
             image_id = $ImageId
-            argv = @('docker') + $BuildArguments
+            base_image_digest = $BaseDigest
+            argv = $BuildLogicalArgv
+            augmented_baseline_path = $HistoricalPath
+            augmented_baseline_sha256 = $HistoricalBaselineSha256
+            argv_audit_path = $BuildArgvAuditPath
+            argv_audit_sha256 = & $GetSha256 $BuildArgvAuditPath
+            stdout_path = $BuildStdoutPath
+            stdout_sha256 = & $GetSha256 $BuildStdoutPath
+            stderr_path = $BuildStderrPath
+            stderr_sha256 = & $GetSha256 $BuildStderrPath
             exit_code = [int]$BuildResult.exit_code
-            stdout_sha256 = & $GetSha256 ([IO.Path]::Combine($AuditRoot, '20-image-build.stdout.log'))
-            stderr_sha256 = & $GetSha256 ([IO.Path]::Combine($AuditRoot, '20-image-build.stderr.log'))
-            verified_at = [DateTimeOffset]::UtcNow.ToString('o')
+            started_at = $BuildStartedAt
+            completed_at = $BuildCompletedAt
         }
         $BuildAuditPath = [IO.Path]::Combine($AuditRoot, '20-image-build-result.json')
         Write-A7NewText -Path $BuildAuditPath -Text ($BuildAudit | ConvertTo-Json -Depth 6 -Compress)
@@ -1615,12 +1881,17 @@ function Invoke-A7Launch {
             '--workspace-root', '/workspace',
             '--source-inventory', '/audit/21-a7-source-inventory.json'
         )
+        $MicrocheckLogicalArgv = @('docker') + $MicrocheckArguments
+        $MicrocheckStdoutPath = [IO.Path]::Combine($AuditRoot, '22-a7-cpu-micro-check.stdout.log')
+        $MicrocheckStderrPath = [IO.Path]::Combine($AuditRoot, '22-a7-cpu-micro-check.stderr.log')
+        $MicrocheckStartedAt = [DateTimeOffset]::UtcNow.ToString('o')
         $MicrocheckResult = Invoke-A7Native `
             -Executable $DockerExecutable `
             -Arguments (@($DockerPrefixArguments) + $MicrocheckArguments) `
-            -StdoutPath ([IO.Path]::Combine($AuditRoot, '22-a7-cpu-micro-check.stdout.log')) `
-            -StderrPath ([IO.Path]::Combine($AuditRoot, '22-a7-cpu-micro-check.stderr.log')) `
+            -StdoutPath $MicrocheckStdoutPath `
+            -StderrPath $MicrocheckStderrPath `
             -WorkingDirectory $WorktreePath
+        $MicrocheckCompletedAt = [DateTimeOffset]::UtcNow.ToString('o')
         if ($MicrocheckResult.exit_code -ne 0 -or -not [string]::IsNullOrEmpty($MicrocheckResult.stderr)) {
             throw 'A7 CPU micro-check process failed or wrote stderr'
         }
@@ -1658,8 +1929,42 @@ function Invoke-A7Launch {
         ) {
             throw 'A7 CPU micro-check result binding mismatch'
         }
+        $MicrocheckPayloadPath = [IO.Path]::Combine(
+            $AuditRoot,
+            '22-a7-cpu-micro-check-payload.json'
+        )
+        Write-A7NewText -Path $MicrocheckPayloadPath -Text $MicrocheckLines[0]
+        $MicrocheckAudit = [ordered]@{
+            schema_version = 1
+            owner_authorization_id = $OwnerAuthorizationId
+            run_id = $RunId
+            source_commit = $ExpectedSourceCommit
+            spec_commit = $ExpectedSpecCommit
+            plan_commit = $ExpectedPlanCommit
+            branch = $ExpectedBranch
+            image_tag = $ImageTag
+            image_id = $ImageId
+            base_image_digest = $BaseDigest
+            augmented_baseline_path = $HistoricalPath
+            augmented_baseline_sha256 = $HistoricalBaselineSha256
+            source_inventory_path = $SourceInventoryPath
+            source_inventory_sha256 = $SourceInventorySha256
+            payload_path = $MicrocheckPayloadPath
+            payload_sha256 = & $GetSha256 $MicrocheckPayloadPath
+            payload = $Microcheck
+            docker_argv = $MicrocheckLogicalArgv
+            stdout_path = $MicrocheckStdoutPath
+            stdout_sha256 = & $GetSha256 $MicrocheckStdoutPath
+            stderr_path = $MicrocheckStderrPath
+            stderr_sha256 = & $GetSha256 $MicrocheckStderrPath
+            exit_code = [int]$MicrocheckResult.exit_code
+            started_at = $MicrocheckStartedAt
+            completed_at = $MicrocheckCompletedAt
+        }
         $MicrocheckAuditPath = [IO.Path]::Combine($AuditRoot, '22-a7-cpu-micro-check.json')
-        Write-A7NewText -Path $MicrocheckAuditPath -Text $MicrocheckLines[0]
+        Write-A7NewText `
+            -Path $MicrocheckAuditPath `
+            -Text ($MicrocheckAudit | ConvertTo-Json -Depth 8 -Compress)
         $MicrocheckAuditSha256 = & $GetSha256 $MicrocheckAuditPath
 
         $Stage = 'gpu_lease'
@@ -1670,6 +1975,7 @@ function Invoke-A7Launch {
             -SourceCommit $ExpectedSourceCommit `
             -SpecCommit $ExpectedSpecCommit `
             -PlanCommit $ExpectedPlanCommit `
+            -Branch $ExpectedBranch `
             -ImageTag $ImageTag `
             -ImageId $ImageId `
             -BaseImageDigest $BaseDigest `
@@ -1862,7 +2168,7 @@ function Invoke-A7Production {
     if ([string]$Resolved.worktree -cne $ScriptWorktree) {
         throw 'A7 launcher script is not running from the reviewed registered worktree'
     }
-    $PlanRelativePath = 'docs/superpowers/plans/2026-08-26-val-wave0-a7-launcher-hardening.md'
+    $PlanRelativePath = 'docs/superpowers/plans/2026-08-26-val-wave0-a7-history-compatibility.md'
     $SpecRelativePath = 'docs/superpowers/specs/2026-08-23-vision-active-learning-loop-design.md'
     $PlanLog = & $InvokeReadOnly $GitExecutable @(
         '-C', $ScriptWorktree, 'log', '-1', '--format=%H', '--', $PlanRelativePath
@@ -1919,39 +2225,6 @@ function Invoke-A7Production {
                 '--format=csv,noheader,nounits'
             )) `
         'host compute-process'
-    $DockerPsText = & $RequireSuccess `
-        (& $InvokeReadOnly $DockerExecutable @('ps', '--format', '{{json .}}')) `
-        'Docker project-container'
-    $ProjectContainers = [System.Collections.Generic.List[object]]::new()
-    foreach ($Line in @($DockerPsText -split "`r?`n" | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })) {
-        $Container = $Line | ConvertFrom-Json
-        if (
-            [string]$Container.Image -like 'vision-active-learning-loop:*' -or
-            [string]$Container.Names -like '*vision-active-learning-loop*' -or
-            [string]$Container.Names -like 'val-wave0*'
-        ) {
-            [void]$ProjectContainers.Add($Container)
-        }
-    }
-    $ArtifactRoot = 'D:\vision-active-learning-loop-artifacts\wave0'
-    $LeaseRoot = [IO.Path]::Combine($ArtifactRoot, 'leases')
-    if (-not [IO.Directory]::Exists($LeaseRoot)) { throw 'A7 project lease root is missing' }
-    $ActiveLeasePaths = @(
-        [IO.Directory]::EnumerateFiles($LeaseRoot, '*.json', [IO.SearchOption]::TopDirectoryOnly) |
-            Where-Object { -not $_.EndsWith('.release.json', [StringComparison]::OrdinalIgnoreCase) } |
-            Sort-Object -CaseSensitive
-    )
-    $Preflight = Test-A7DockerGpuPreflight `
-        -DockerContext $DockerContext `
-        -DockerVersionJson $DockerVersionJson `
-        -DockerInfoJson $DockerInfoJson `
-        -DockerDesktopWslState $DockerDesktopWslState `
-        -DockerGpuCsv $DockerGpuCsv `
-        -HostComputeCsv $HostComputeCsv `
-        -ProjectContainersJson (ConvertTo-Json -InputObject @($ProjectContainers) -Depth 6 -Compress) `
-        -ActiveLeasePathsJson (ConvertTo-Json -InputObject @($ActiveLeasePaths) -Compress) `
-        -ValDataRoot ([string]$env:VAL_DATA_ROOT)
-
     $ImageListText = & $RequireSuccess `
         (& $InvokeReadOnly $DockerExecutable @(
                 'image', 'ls', '--filter', 'reference=vision-active-learning-loop:wave0-*',
@@ -1971,6 +2244,60 @@ function Invoke-A7Production {
         }
         [void]$HistoricalImages.Add([pscustomobject][ordered]@{ tag = $Tag; image_id = $ImageId })
     }
+    $RegisteredImageIds = @($HistoricalImages | ForEach-Object { [string]$_.image_id })
+    $DockerPsText = & $RequireSuccess `
+        (& $InvokeReadOnly $DockerExecutable @('ps', '--no-trunc', '--quiet')) `
+        'Docker project-container list'
+    $ContainerRecords = [System.Collections.Generic.List[object]]::new()
+    $ContainerIds = @($DockerPsText -split "`r?`n" | Where-Object {
+            -not [string]::IsNullOrWhiteSpace($_)
+        })
+    foreach ($ContainerId in $ContainerIds) {
+        if ($ContainerId -cnotmatch '^[0-9a-f]{64}$') {
+            throw 'A7 running container ID is invalid'
+        }
+        $InspectText = & $RequireSuccess `
+            (& $InvokeReadOnly $DockerExecutable @(
+                    'container', 'inspect', '--format', '{{json .}}', '--', $ContainerId
+                )) `
+            "Docker project-container inspect $ContainerId"
+        try { $Inspected = @($InspectText | ConvertFrom-Json) }
+        catch { throw "A7 running container inspect JSON is invalid: $ContainerId" }
+        if ($Inspected.Count -ne 1 -or [string]$Inspected[0].Id -cne $ContainerId) {
+            throw "A7 running container inspect identity mismatch: $ContainerId"
+        }
+        $ContainerName = [string]$Inspected[0].Name
+        if ($ContainerName.StartsWith('/', [StringComparison]::Ordinal)) {
+            $ContainerName = $ContainerName.Substring(1)
+        }
+        [void]$ContainerRecords.Add([pscustomobject][ordered]@{
+                id = $ContainerId
+                name = $ContainerName
+                configured_image = [string]$Inspected[0].Config.Image
+                image_id = [string]$Inspected[0].Image
+            })
+    }
+    $ProjectContainers = @(Select-A7ProjectContainers `
+            -ContainerRecordsJson (ConvertTo-Json -InputObject @($ContainerRecords) -Depth 6 -Compress) `
+            -RegisteredImageIdsJson (ConvertTo-Json -InputObject $RegisteredImageIds -Compress))
+    $ArtifactRoot = 'D:\vision-active-learning-loop-artifacts\wave0'
+    $LeaseRoot = [IO.Path]::Combine($ArtifactRoot, 'leases')
+    if (-not [IO.Directory]::Exists($LeaseRoot)) { throw 'A7 project lease root is missing' }
+    $ActiveLeasePaths = @(
+        [IO.Directory]::EnumerateFiles($LeaseRoot, '*.json', [IO.SearchOption]::TopDirectoryOnly) |
+            Where-Object { -not $_.EndsWith('.release.json', [StringComparison]::OrdinalIgnoreCase) } |
+            Sort-Object -CaseSensitive
+    )
+    $Preflight = Test-A7DockerGpuPreflight `
+        -DockerContext $DockerContext `
+        -DockerVersionJson $DockerVersionJson `
+        -DockerInfoJson $DockerInfoJson `
+        -DockerDesktopWslState $DockerDesktopWslState `
+        -DockerGpuCsv $DockerGpuCsv `
+        -HostComputeCsv $HostComputeCsv `
+        -ProjectContainersJson (ConvertTo-Json -InputObject $ProjectContainers -Depth 6 -Compress) `
+        -ActiveLeasePathsJson (ConvertTo-Json -InputObject @($ActiveLeasePaths) -Compress) `
+        -ValDataRoot ([string]$env:VAL_DATA_ROOT)
 
     $RootBaselinePath = [IO.Path]::Combine(
         [IO.Path]::GetTempPath(),

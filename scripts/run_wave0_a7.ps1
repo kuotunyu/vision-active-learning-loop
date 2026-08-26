@@ -98,23 +98,204 @@ function Release-A7Lease {
 }
 
 function Test-Task7AuditBinding {
-    $Bindings = [ordered]@{
-        '20-image-build-result.json' = [string]$Lease.build_audit_sha256
-        '22-a7-cpu-micro-check.json' = [string]$Lease.microcheck_audit_sha256
+    $BuildPath = Join-Path $AuditRoot '20-image-build-result.json'
+    $MicrocheckPath = Join-Path $AuditRoot '22-a7-cpu-micro-check.json'
+    $AssertRegularFile = {
+        param([Parameter(Mandatory = $true)][string]$Path)
+        $FullPath = [IO.Path]::GetFullPath($Path)
+        if (-not [IO.File]::Exists($FullPath) -or [IO.Directory]::Exists($FullPath)) {
+            throw 'Task 7 audit-bound file is missing'
+        }
+        $Current = [IO.FileInfo]::new($FullPath)
+        while ($null -ne $Current) {
+            if (($Current.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+                throw 'Task 7 audit-bound link or junction is forbidden'
+            }
+            $Current = $Current.Parent
+        }
+        return $FullPath
     }
-    foreach ($Name in $Bindings.Keys) {
-        $Path = Join-Path $AuditRoot $Name
-        if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
-            throw "Task 7 audit is missing: $Name"
+    $GetSha256 = {
+        param([Parameter(Mandatory = $true)][string]$Path)
+        return (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant()
+    }
+    foreach ($Path in @($BuildPath, $MicrocheckPath)) { [void](& $AssertRegularFile $Path) }
+    if ([string]$Lease.build_audit_sha256 -cnotmatch '^[0-9a-f]{64}$' -or
+        [string]$Lease.microcheck_audit_sha256 -cnotmatch '^[0-9a-f]{64}$' -or
+        (& $GetSha256 $BuildPath) -cne [string]$Lease.build_audit_sha256 -or
+        (& $GetSha256 $MicrocheckPath) -cne [string]$Lease.microcheck_audit_sha256) {
+        throw 'Task 7 binding-audit identity mismatch'
+    }
+    try {
+        $BuildAudit = Get-Content -LiteralPath $BuildPath -Raw -Encoding UTF8 | ConvertFrom-Json
+        $MicrocheckAudit = Get-Content -LiteralPath $MicrocheckPath -Raw -Encoding UTF8 | ConvertFrom-Json
+    }
+    catch {
+        throw 'Task 7 binding-audit JSON is invalid'
+    }
+    $AssertProperties = {
+        param(
+            [Parameter(Mandatory = $true)][object]$Document,
+            [Parameter(Mandatory = $true)][string[]]$Expected,
+            [Parameter(Mandatory = $true)][string]$Name
+        )
+        $Actual = @($Document.PSObject.Properties.Name | Sort-Object -CaseSensitive)
+        $SortedExpected = @($Expected | Sort-Object -CaseSensitive)
+        if (($Actual -join '|') -cne ($SortedExpected -join '|')) {
+            throw "Task 7 $Name property set is not closed"
         }
-        $Item = Get-Item -LiteralPath $Path -Force
-        if (($Item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
-            throw "Task 7 audit is linked: $Name"
+    }
+    & $AssertProperties $BuildAudit @(
+        'schema_version', 'owner_authorization_id', 'run_id', 'source_commit',
+        'spec_commit', 'plan_commit', 'branch', 'image_tag', 'image_id',
+        'base_image_digest', 'argv', 'augmented_baseline_path',
+        'augmented_baseline_sha256', 'argv_audit_path', 'argv_audit_sha256',
+        'stdout_path', 'stdout_sha256', 'stderr_path', 'stderr_sha256',
+        'exit_code', 'started_at', 'completed_at'
+    ) 'build audit'
+    & $AssertProperties $MicrocheckAudit @(
+        'schema_version', 'owner_authorization_id', 'run_id', 'source_commit',
+        'spec_commit', 'plan_commit', 'branch', 'image_tag', 'image_id',
+        'base_image_digest', 'augmented_baseline_path', 'augmented_baseline_sha256',
+        'source_inventory_path', 'source_inventory_sha256', 'payload_path',
+        'payload_sha256', 'payload', 'docker_argv', 'stdout_path', 'stdout_sha256',
+        'stderr_path', 'stderr_sha256', 'exit_code', 'started_at', 'completed_at'
+    ) 'micro-check audit'
+    foreach ($Audit in @($BuildAudit, $MicrocheckAudit)) {
+        if ([int]$Audit.schema_version -ne 1 -or
+            [string]::IsNullOrWhiteSpace([string]$Lease.branch) -or
+            [string]$Audit.owner_authorization_id -cne [string]$Lease.owner_authorization_id -or
+            [string]$Audit.run_id -cne [string]$Lease.run_id -or
+            [string]$Audit.source_commit -cne [string]$Lease.source_commit -or
+            [string]$Audit.spec_commit -cne [string]$Lease.spec_commit -or
+            [string]$Audit.plan_commit -cne [string]$Lease.plan_commit -or
+            [string]$Audit.branch -cne [string]$Lease.branch -or
+            [string]$Audit.image_tag -cne [string]$Lease.image_tag -or
+            [string]$Audit.image_id -cne [string]$Lease.image_id -or
+            [string]$Audit.base_image_digest -cne [string]$Lease.base_image_digest -or
+            [string]$Audit.augmented_baseline_path -cne [string]$Lease.historical_baseline_path -or
+            [string]$Audit.augmented_baseline_sha256 -cne [string]$Lease.historical_baseline_sha256 -or
+            [int]$Audit.exit_code -ne 0) {
+            throw 'Task 7 binding-audit lease identity mismatch'
         }
-        $Observed = (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant()
-        if ($Bindings[$Name] -notmatch '^[0-9a-f]{64}$' -or $Observed -ne $Bindings[$Name]) {
-            throw "Task 7 audit identity mismatch: $Name"
+        $StartedAt = [DateTimeOffset]::MinValue
+        $CompletedAt = [DateTimeOffset]::MinValue
+        $StartedValid = if ($Audit.started_at -is [DateTime]) {
+            $StartedAt = [DateTimeOffset]$Audit.started_at
+            $true
         }
+        else {
+            [DateTimeOffset]::TryParseExact(
+                [string]$Audit.started_at,
+                'o',
+                [Globalization.CultureInfo]::InvariantCulture,
+                [Globalization.DateTimeStyles]::RoundtripKind,
+                [ref]$StartedAt
+            )
+        }
+        $CompletedValid = if ($Audit.completed_at -is [DateTime]) {
+            $CompletedAt = [DateTimeOffset]$Audit.completed_at
+            $true
+        }
+        else {
+            [DateTimeOffset]::TryParseExact(
+                [string]$Audit.completed_at,
+                'o',
+                [Globalization.CultureInfo]::InvariantCulture,
+                [Globalization.DateTimeStyles]::RoundtripKind,
+                [ref]$CompletedAt
+            )
+        }
+        if (-not $StartedValid -or -not $CompletedValid -or $CompletedAt -lt $StartedAt) {
+            throw 'Task 7 binding-audit timestamp is invalid'
+        }
+    }
+    $Paths = [ordered]@{
+        build_argv = Join-Path $AuditRoot '19-image-build-argv.json'
+        build_stdout = Join-Path $AuditRoot '20-image-build.stdout.log'
+        build_stderr = Join-Path $AuditRoot '20-image-build.stderr.log'
+        source_inventory = Join-Path $AuditRoot '21-a7-source-inventory.json'
+        payload = Join-Path $AuditRoot '22-a7-cpu-micro-check-payload.json'
+        microcheck_stdout = Join-Path $AuditRoot '22-a7-cpu-micro-check.stdout.log'
+        microcheck_stderr = Join-Path $AuditRoot '22-a7-cpu-micro-check.stderr.log'
+    }
+    if ([string]$BuildAudit.argv_audit_path -cne $Paths.build_argv -or
+        [string]$BuildAudit.stdout_path -cne $Paths.build_stdout -or
+        [string]$BuildAudit.stderr_path -cne $Paths.build_stderr -or
+        [string]$MicrocheckAudit.source_inventory_path -cne $Paths.source_inventory -or
+        [string]$MicrocheckAudit.payload_path -cne $Paths.payload -or
+        [string]$MicrocheckAudit.stdout_path -cne $Paths.microcheck_stdout -or
+        [string]$MicrocheckAudit.stderr_path -cne $Paths.microcheck_stderr) {
+        throw 'Task 7 binding-audit supporting path mismatch'
+    }
+    $Hashes = [ordered]@{
+        build_argv = [string]$BuildAudit.argv_audit_sha256
+        build_stdout = [string]$BuildAudit.stdout_sha256
+        build_stderr = [string]$BuildAudit.stderr_sha256
+        source_inventory = [string]$MicrocheckAudit.source_inventory_sha256
+        payload = [string]$MicrocheckAudit.payload_sha256
+        microcheck_stdout = [string]$MicrocheckAudit.stdout_sha256
+        microcheck_stderr = [string]$MicrocheckAudit.stderr_sha256
+    }
+    foreach ($Name in $Paths.Keys) {
+        [void](& $AssertRegularFile $Paths[$Name])
+        if ($Hashes[$Name] -cnotmatch '^[0-9a-f]{64}$' -or
+            (& $GetSha256 $Paths[$Name]) -cne $Hashes[$Name]) {
+            throw "Task 7 binding-audit supporting hash mismatch: $Name"
+        }
+    }
+    try {
+        $ArgvAudit = Get-Content -LiteralPath $Paths.build_argv -Raw -Encoding UTF8 | ConvertFrom-Json
+        $SourceInventory = Get-Content -LiteralPath $Paths.source_inventory -Raw -Encoding UTF8 |
+            ConvertFrom-Json
+        $PayloadText = Get-Content -LiteralPath $Paths.payload -Raw -Encoding UTF8
+        $Payload = $PayloadText | ConvertFrom-Json
+    }
+    catch { throw 'Task 7 binding-audit supporting JSON is invalid' }
+    & $AssertProperties $ArgvAudit @(
+        'schema_version', 'run_id', 'source_commit', 'argv', 'recorded_before_build'
+    ) 'build argv audit'
+    if ([int]$ArgvAudit.schema_version -ne 1 -or
+        [string]$ArgvAudit.run_id -cne [string]$Lease.run_id -or
+        [string]$ArgvAudit.source_commit -cne [string]$Lease.source_commit -or
+        -not [bool]$ArgvAudit.recorded_before_build -or
+        (ConvertTo-Json -InputObject @($BuildAudit.argv) -Compress) -cne
+        (ConvertTo-Json -InputObject @($ArgvAudit.argv) -Compress)) {
+        throw 'Task 7 build argv audit binding mismatch'
+    }
+    if ([string]$SourceInventory.source_commit -cne [string]$Lease.source_commit -or
+        [string]$Payload.source_commit -cne [string]$Lease.source_commit -or
+        [string]$Payload.source_inventory_sha256 -cne $Hashes.source_inventory -or
+        (ConvertTo-Json -InputObject $MicrocheckAudit.payload -Depth 8 -Compress) -cne $PayloadText) {
+        throw 'Task 7 micro-check payload binding mismatch'
+    }
+    $MicrocheckArgv = @($MicrocheckAudit.docker_argv)
+    if ($MicrocheckArgv.Count -ne 19 -or
+        [string]$MicrocheckArgv[0] -cne 'docker' -or
+        [string]$MicrocheckArgv[1] -cne 'run' -or
+        [string]$MicrocheckArgv[2] -cne '--rm' -or
+        [string]$MicrocheckArgv[3] -cne '--network' -or
+        [string]$MicrocheckArgv[4] -cne 'none' -or
+        [string]$MicrocheckArgv[5] -cne '--workdir' -or
+        [string]$MicrocheckArgv[6] -cne '/workspace' -or
+        [string]$MicrocheckArgv[7] -cne '--entrypoint' -or
+        [string]$MicrocheckArgv[8] -cne 'python' -or
+        [string]$MicrocheckArgv[9] -cne '-v' -or
+        -not ([string]$MicrocheckArgv[10]).EndsWith(':/workspace:ro', [StringComparison]::Ordinal) -or
+        [string]$MicrocheckArgv[11] -cne '-v' -or
+        [string]$MicrocheckArgv[12] -cne "${AuditRoot}:/audit:ro" -or
+        [string]$MicrocheckArgv[13] -cne [string]$Lease.image_id -or
+        [string]$MicrocheckArgv[14] -cne '/workspace/scripts/run_wave0_a7_cpu_microcheck.py' -or
+        [string]$MicrocheckArgv[15] -cne '--workspace-root' -or
+        [string]$MicrocheckArgv[16] -cne '/workspace' -or
+        [string]$MicrocheckArgv[17] -cne '--source-inventory' -or
+        [string]$MicrocheckArgv[18] -cne '/audit/21-a7-source-inventory.json') {
+        throw 'Task 7 micro-check Docker argv binding mismatch'
+    }
+    $StdoutLines = @(Get-Content -LiteralPath $Paths.microcheck_stdout -Encoding UTF8 |
+        Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+    if ($StdoutLines.Count -ne 1 -or [string]$StdoutLines[0] -cne $PayloadText) {
+        throw 'Task 7 micro-check stdout does not equal the raw payload'
     }
 }
 

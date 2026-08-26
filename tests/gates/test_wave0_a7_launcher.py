@@ -1088,29 +1088,133 @@ def test_docker_gpu_preflight_rejects_unapproved_or_contended_state(
     assert completed.returncode != 0
 
 
-def _lease_fixture(tmp_path: Path) -> dict[str, object]:
-    campaign = tmp_path / "campaign"
-    audit = campaign / "audit"
-    lease_root = tmp_path / "leases"
-    campaign.mkdir()
-    audit.mkdir()
-    lease_root.mkdir()
-    baseline = tmp_path / "augmented-baseline.json"
-    build = audit / "20-image-build.json"
-    microcheck = audit / "22-a7-cpu-micro-check.json"
-    baseline.write_text('{"baseline":true}', encoding="utf-8")
-    build.write_text('{"build":"verified"}', encoding="utf-8")
-    microcheck.write_text('{"microcheck":"verified"}', encoding="utf-8")
-    return {
-        "campaign": campaign,
-        "lease": lease_root / "gpu-0.json",
-        "baseline": baseline,
-        "baseline_hash": _sha256(baseline),
-        "build": build,
-        "build_hash": _sha256(build),
-        "microcheck": microcheck,
-        "microcheck_hash": _sha256(microcheck),
+def _project_container_body(
+    records: list[dict[str, str]], registered_image_ids: list[str]
+) -> str:
+    return f"""
+$Result = Select-A7ProjectContainers `
+    -ContainerRecordsJson {_powershell_literal(json.dumps(records))} `
+    -RegisteredImageIdsJson {_powershell_literal(json.dumps(registered_image_ids))}
+ConvertTo-Json -InputObject @($Result) -Depth 6 -Compress
+"""
+
+
+def _container_record(**overrides: str) -> dict[str, str]:
+    record = {
+        "id": "a" * 64,
+        "name": "unrelated",
+        "configured_image": "nvidia/cuda@sha256:" + "b" * 64,
+        "image_id": "sha256:" + "c" * 64,
     }
+    record.update(overrides)
+    return record
+
+
+@pytest.mark.parametrize(
+    ("overrides", "registered_image_ids"),
+    [
+        ({"name": "val-a7-worker"}, []),
+        ({"name": "val-wave0-worker"}, []),
+        ({"configured_image": "vision-active-learning-loop:wave0-a7-fixture"}, []),
+        ({}, ["sha256:" + "c" * 64]),
+    ],
+)
+def test_project_container_selector_matches_only_approved_ownership_signals(
+    overrides: dict[str, str], registered_image_ids: list[str]
+) -> None:
+    record = _container_record(**overrides)
+
+    completed = _invoke_functions(
+        ("Select-A7ProjectContainers",),
+        _project_container_body([record], registered_image_ids),
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert json.loads(completed.stdout) == [record]
+
+
+def test_digest_launched_project_container_matches_registered_image_id() -> None:
+    record = _container_record(
+        configured_image="nvidia/cuda@sha256:" + "b" * 64,
+        image_id="sha256:" + "d" * 64,
+    )
+
+    completed = _invoke_functions(
+        ("Select-A7ProjectContainers",),
+        _project_container_body([record], ["sha256:" + "d" * 64]),
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert json.loads(completed.stdout) == [record]
+
+
+@pytest.mark.parametrize(
+    "record",
+    [
+        _container_record(name="other-val-a7-worker"),
+        _container_record(configured_image="vision-active-learning-loop:not-wave0"),
+        _container_record(image_id="sha256:" + "e" * 64),
+    ],
+)
+def test_project_container_selector_rejects_substring_and_unrelated_matches(
+    record: dict[str, str],
+) -> None:
+    completed = _invoke_functions(
+        ("Select-A7ProjectContainers",),
+        _project_container_body([record], ["sha256:" + "d" * 64]),
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert json.loads(completed.stdout) == []
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "duplicate_container_id",
+        "missing_field",
+        "extra_field",
+        "malformed_container_id",
+        "malformed_image_id",
+        "duplicate_registered_image_id",
+    ],
+)
+def test_project_container_selector_fails_closed_on_malformed_inventory(
+    mutation: str,
+) -> None:
+    records = [_container_record()]
+    registered = ["sha256:" + "d" * 64]
+    if mutation == "duplicate_container_id":
+        duplicate = _container_record(name="second")
+        records.append(duplicate)
+    elif mutation == "missing_field":
+        records[0].pop("configured_image")
+    elif mutation == "extra_field":
+        records[0]["status"] = "running"
+    elif mutation == "malformed_container_id":
+        records[0]["id"] = "short"
+    elif mutation == "malformed_image_id":
+        records[0]["image_id"] = "d" * 64
+    elif mutation == "duplicate_registered_image_id":
+        registered.append(registered[0])
+
+    completed = _invoke_functions(
+        ("Select-A7ProjectContainers",),
+        _project_container_body(records, registered),
+    )
+
+    assert completed.returncode != 0
+
+
+def _lease_fixture(tmp_path: Path) -> dict[str, object]:
+    fixture = _closed_audit_fixture(tmp_path)
+    lease_root = tmp_path / "leases"
+    lease_root.mkdir()
+    fixture["lease"] = lease_root / "gpu-0.json"
+    fixture["baseline_hash"] = _sha256(Path(fixture["baseline"]))
+    fixture["build_hash"] = _sha256(Path(fixture["build"]))
+    fixture["microcheck_hash"] = _sha256(Path(fixture["microcheck"]))
+    return fixture
 
 
 def _lease_body(fixture: dict[str, object]) -> str:
@@ -1122,6 +1226,7 @@ $Result = New-A7Lease `
     -SourceCommit {_powershell_literal(_SOURCE)} `
     -SpecCommit {_powershell_literal(_SPEC)} `
     -PlanCommit {_powershell_literal(_PLAN)} `
+    -Branch 'codex/fixture' `
     -ImageTag {_powershell_literal(_TAG)} `
     -ImageId 'sha256:{'d' * 64}' `
     -BaseImageDigest {_powershell_literal(_BASE)} `
@@ -1581,6 +1686,422 @@ $Result = Invoke-A7Launch `
     -Task8RunnerPath {_powershell_literal(str(fixture['task8_adapter']))}
 $Result | ConvertTo-Json -Depth 8 -Compress
 """
+
+
+_BUILD_AUDIT_FIELDS = {
+    "schema_version",
+    "owner_authorization_id",
+    "run_id",
+    "source_commit",
+    "spec_commit",
+    "plan_commit",
+    "branch",
+    "image_tag",
+    "image_id",
+    "base_image_digest",
+    "argv",
+    "augmented_baseline_path",
+    "augmented_baseline_sha256",
+    "argv_audit_path",
+    "argv_audit_sha256",
+    "stdout_path",
+    "stdout_sha256",
+    "stderr_path",
+    "stderr_sha256",
+    "exit_code",
+    "started_at",
+    "completed_at",
+}
+_MICROCHECK_AUDIT_FIELDS = {
+    "schema_version",
+    "owner_authorization_id",
+    "run_id",
+    "source_commit",
+    "spec_commit",
+    "plan_commit",
+    "branch",
+    "image_tag",
+    "image_id",
+    "base_image_digest",
+    "augmented_baseline_path",
+    "augmented_baseline_sha256",
+    "source_inventory_path",
+    "source_inventory_sha256",
+    "payload_path",
+    "payload_sha256",
+    "payload",
+    "docker_argv",
+    "stdout_path",
+    "stdout_sha256",
+    "stderr_path",
+    "stderr_sha256",
+    "exit_code",
+    "started_at",
+    "completed_at",
+}
+
+
+def _microcheck_payload(source_inventory_sha256: str) -> dict[str, object]:
+    return {
+        "schema_version": 1,
+        "status": "RECORDED",
+        "source_commit": _SOURCE,
+        "source_inventory_sha256": source_inventory_sha256,
+        "source_files": [],
+        "manifest_target": (
+            "vision_active_learning_loop.diagnostics.grid_sample_attribution:main"
+        ),
+        "canonical_dtypes": ["bfloat16", "float16", "float32", "float64"],
+        "snapshot_tensor_count": 27,
+        "snapshot_names": [f"tensor-{index:02d}" for index in range(27)],
+        "snapshot_corruption_rejected": True,
+        "receipt_kinds": [
+            "control",
+            "instrumented",
+            "isolated-vjp",
+            "aggregate",
+        ],
+        "classifier_statuses": ["ATTRIBUTED", "INCONCLUSIVE", "NOT_ATTRIBUTED"],
+        "cuda_initialized": False,
+    }
+
+
+def _closed_audit_fixture(tmp_path: Path) -> dict[str, object]:
+    campaign = tmp_path / "campaign"
+    audit = campaign / "audit"
+    audit.mkdir(parents=True)
+    baseline = tmp_path / "augmented-baseline.json"
+    baseline.write_text('{"baseline":true}', encoding="utf-8")
+    image_id = "sha256:" + "d" * 64
+    build_argv = ["docker", "build", "--tag", _TAG, "."]
+    microcheck_argv = [
+        "docker",
+        "run",
+        "--rm",
+        "--network",
+        "none",
+        "--workdir",
+        "/workspace",
+        "--entrypoint",
+        "python",
+        "-v",
+        f"{tmp_path / 'worktree'}:/workspace:ro",
+        "-v",
+        f"{audit}:/audit:ro",
+        image_id,
+        "/workspace/scripts/run_wave0_a7_cpu_microcheck.py",
+        "--workspace-root",
+        "/workspace",
+        "--source-inventory",
+        "/audit/21-a7-source-inventory.json",
+    ]
+    argv_audit = audit / "19-image-build-argv.json"
+    argv_audit.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "run_id": _RUN_ID,
+                "source_commit": _SOURCE,
+                "argv": build_argv,
+                "recorded_before_build": True,
+            },
+            separators=(",", ":"),
+        ),
+        encoding="utf-8",
+    )
+    build_stdout = audit / "20-image-build.stdout.log"
+    build_stderr = audit / "20-image-build.stderr.log"
+    build_stdout.write_text("", encoding="utf-8")
+    build_stderr.write_text("", encoding="utf-8")
+    source_inventory = audit / "21-a7-source-inventory.json"
+    source_inventory.write_text(
+        json.dumps(
+            {"schema_version": 1, "source_commit": _SOURCE, "files": []},
+            separators=(",", ":"),
+        ),
+        encoding="utf-8",
+    )
+    payload_document = _microcheck_payload(_sha256(source_inventory))
+    payload_text = json.dumps(payload_document, separators=(",", ":"))
+    payload = audit / "22-a7-cpu-micro-check-payload.json"
+    payload.write_text(payload_text, encoding="utf-8")
+    micro_stdout = audit / "22-a7-cpu-micro-check.stdout.log"
+    micro_stderr = audit / "22-a7-cpu-micro-check.stderr.log"
+    micro_stdout.write_text(payload_text + "\n", encoding="utf-8")
+    micro_stderr.write_text("", encoding="utf-8")
+    started = "2026-08-26T12:00:00.0000000+00:00"
+    completed = "2026-08-26T12:00:01.0000000+00:00"
+    build_document = {
+        "schema_version": 1,
+        "owner_authorization_id": "owner-a7-fixture",
+        "run_id": _RUN_ID,
+        "source_commit": _SOURCE,
+        "spec_commit": _SPEC,
+        "plan_commit": _PLAN,
+        "branch": "codex/fixture",
+        "image_tag": _TAG,
+        "image_id": image_id,
+        "base_image_digest": _BASE,
+        "argv": build_argv,
+        "augmented_baseline_path": str(baseline),
+        "augmented_baseline_sha256": _sha256(baseline),
+        "argv_audit_path": str(argv_audit),
+        "argv_audit_sha256": _sha256(argv_audit),
+        "stdout_path": str(build_stdout),
+        "stdout_sha256": _sha256(build_stdout),
+        "stderr_path": str(build_stderr),
+        "stderr_sha256": _sha256(build_stderr),
+        "exit_code": 0,
+        "started_at": started,
+        "completed_at": completed,
+    }
+    microcheck_document = {
+        "schema_version": 1,
+        "owner_authorization_id": "owner-a7-fixture",
+        "run_id": _RUN_ID,
+        "source_commit": _SOURCE,
+        "spec_commit": _SPEC,
+        "plan_commit": _PLAN,
+        "branch": "codex/fixture",
+        "image_tag": _TAG,
+        "image_id": image_id,
+        "base_image_digest": _BASE,
+        "augmented_baseline_path": str(baseline),
+        "augmented_baseline_sha256": _sha256(baseline),
+        "source_inventory_path": str(source_inventory),
+        "source_inventory_sha256": _sha256(source_inventory),
+        "payload_path": str(payload),
+        "payload_sha256": _sha256(payload),
+        "payload": payload_document,
+        "docker_argv": microcheck_argv,
+        "stdout_path": str(micro_stdout),
+        "stdout_sha256": _sha256(micro_stdout),
+        "stderr_path": str(micro_stderr),
+        "stderr_sha256": _sha256(micro_stderr),
+        "exit_code": 0,
+        "started_at": started,
+        "completed_at": completed,
+    }
+    build = audit / "20-image-build-result.json"
+    microcheck = audit / "22-a7-cpu-micro-check.json"
+    build.write_text(
+        json.dumps(build_document, separators=(",", ":")), encoding="utf-8"
+    )
+    microcheck.write_text(
+        json.dumps(microcheck_document, separators=(",", ":")),
+        encoding="utf-8",
+    )
+    return {
+        "audit": audit,
+        "baseline": baseline,
+        "build": build,
+        "build_argv": build_argv,
+        "build_document": build_document,
+        "campaign": campaign,
+        "image_id": image_id,
+        "lease": tmp_path / "lease.json",
+        "microcheck": microcheck,
+        "microcheck_argv": microcheck_argv,
+        "microcheck_document": microcheck_document,
+        "payload": payload,
+        "payload_text": payload_text,
+    }
+
+
+def _rewrite_closed_audit(fixture: dict[str, object], kind: str) -> None:
+    path = Path(fixture[kind])
+    path.write_text(
+        json.dumps(fixture[f"{kind}_document"], separators=(",", ":")),
+        encoding="utf-8",
+    )
+
+
+def _mutate_closed_audit(fixture: dict[str, object], kind: str, mutation: str) -> None:
+    document = fixture[f"{kind}_document"]
+    if mutation == "missing_field":
+        document.pop("owner_authorization_id")
+    elif mutation == "extra_field":
+        document["unapproved"] = True
+    elif mutation == "wrong_identity":
+        document["source_commit"] = "f" * 40
+    elif mutation == "wrong_path":
+        document["stdout_path"] = str(Path(fixture["audit"]) / "wrong.log")
+    elif mutation == "changed_log_hash":
+        document["stdout_sha256"] = "f" * 64
+    elif mutation == "changed_argv":
+        field = "argv" if kind == "build" else "docker_argv"
+        document[field] = [*document[field], "--unapproved"]
+    elif mutation == "nonzero_exit":
+        document["exit_code"] = 9
+    elif mutation == "malformed_timestamp":
+        document["completed_at"] = "tomorrow"
+    elif mutation == "changed_payload_hash":
+        assert kind == "microcheck"
+        document["payload_sha256"] = "f" * 64
+    _rewrite_closed_audit(fixture, kind)
+
+
+def _closed_audit_lease_body(fixture: dict[str, object]) -> str:
+    return f"""
+$Result = New-A7Lease `
+    -LeasePath {_powershell_literal(str(fixture['lease']))} `
+    -OwnerAuthorizationId 'owner-a7-fixture' `
+    -RunId {_powershell_literal(_RUN_ID)} `
+    -SourceCommit {_powershell_literal(_SOURCE)} `
+    -SpecCommit {_powershell_literal(_SPEC)} `
+    -PlanCommit {_powershell_literal(_PLAN)} `
+    -Branch 'codex/fixture' `
+    -ImageTag {_powershell_literal(_TAG)} `
+    -ImageId {_powershell_literal(str(fixture['image_id']))} `
+    -BaseImageDigest {_powershell_literal(_BASE)} `
+    -GpuUuid 'GPU-12345678' `
+    -CampaignRoot {_powershell_literal(str(fixture['campaign']))} `
+    -HistoricalBaselinePath {_powershell_literal(str(fixture['baseline']))} `
+    -HistoricalBaselineSha256 {_powershell_literal(_sha256(Path(fixture['baseline'])))} `
+    -BuildAuditPath {_powershell_literal(str(fixture['build']))} `
+    -BuildAuditSha256 {_powershell_literal(_sha256(Path(fixture['build'])))} `
+    -MicrocheckAuditPath {_powershell_literal(str(fixture['microcheck']))} `
+    -MicrocheckAuditSha256 {_powershell_literal(_sha256(Path(fixture['microcheck'])))} `
+    -HostProcessesJson '[]' `
+    -ContainersJson '[]' `
+    -ClaimedAt '2026-08-26T12:00:02.0000000Z'
+$Result | ConvertTo-Json -Depth 8 -Compress
+"""
+
+
+def _task7_audit_binding_body(fixture: dict[str, object]) -> str:
+    lease = {
+        "owner_authorization_id": "owner-a7-fixture",
+        "run_id": _RUN_ID,
+        "source_commit": _SOURCE,
+        "spec_commit": _SPEC,
+        "plan_commit": _PLAN,
+        "branch": "codex/fixture",
+        "image_tag": _TAG,
+        "image_id": fixture["image_id"],
+        "base_image_digest": _BASE,
+        "historical_baseline_path": str(fixture["baseline"]),
+        "historical_baseline_sha256": _sha256(Path(fixture["baseline"])),
+        "build_audit_sha256": _sha256(Path(fixture["build"])),
+        "microcheck_audit_sha256": _sha256(Path(fixture["microcheck"])),
+    }
+    return f"""
+$AuditRoot = {_powershell_literal(str(fixture['audit']))}
+$Lease = {_powershell_literal(json.dumps(lease))} | ConvertFrom-Json
+Test-Task7AuditBinding
+'PASS'
+"""
+
+
+def test_build_audit_and_microcheck_audit_are_closed_in_controlled_launch(
+    tmp_path: Path,
+) -> None:
+    fixture = _launch_fixture(tmp_path)
+
+    completed = _invoke_functions(_LAUNCH_FUNCTIONS, _launch_body(fixture))
+
+    assert completed.returncode == 0, completed.stderr
+    audit = Path(fixture["campaign"]) / "audit"
+    build = json.loads(
+        (audit / "20-image-build-result.json").read_text(encoding="utf-8")
+    )
+    microcheck = json.loads(
+        (audit / "22-a7-cpu-micro-check.json").read_text(encoding="utf-8")
+    )
+    payload_path = audit / "22-a7-cpu-micro-check-payload.json"
+    stdout_line = (
+        (audit / "22-a7-cpu-micro-check.stdout.log")
+        .read_text(encoding="utf-8")
+        .splitlines()[0]
+    )
+    assert set(build) == _BUILD_AUDIT_FIELDS
+    assert set(microcheck) == _MICROCHECK_AUDIT_FIELDS
+    assert payload_path.read_bytes() == stdout_line.encode("utf-8")
+    assert microcheck["payload"] == json.loads(stdout_line)
+
+
+def test_audit_binding_gpu_lease_accepts_closed_task7_audits(tmp_path: Path) -> None:
+    fixture = _closed_audit_fixture(tmp_path)
+
+    completed = _invoke_functions(
+        ("Write-A7NewText", "New-A7Lease"), _closed_audit_lease_body(fixture)
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert Path(fixture["lease"]).is_file()
+
+
+@pytest.mark.parametrize("kind", ["build", "microcheck"])
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "missing_field",
+        "extra_field",
+        "wrong_identity",
+        "wrong_path",
+        "changed_log_hash",
+        "changed_argv",
+        "nonzero_exit",
+        "malformed_timestamp",
+        "changed_payload_hash",
+    ],
+)
+def test_audit_binding_gpu_lease_rejects_mutated_task7_audits(
+    tmp_path: Path, kind: str, mutation: str
+) -> None:
+    if mutation == "changed_payload_hash" and kind == "build":
+        pytest.skip("payload belongs only to the micro-check audit")
+    fixture = _closed_audit_fixture(tmp_path)
+    _mutate_closed_audit(fixture, kind, mutation)
+
+    completed = _invoke_functions(
+        ("Write-A7NewText", "New-A7Lease"), _closed_audit_lease_body(fixture)
+    )
+
+    assert completed.returncode != 0
+    assert not Path(fixture["lease"]).exists()
+
+
+def test_task8_accepts_closed_task7_binding_audits(tmp_path: Path) -> None:
+    fixture = _closed_audit_fixture(tmp_path)
+
+    completed = _invoke_runner_functions(
+        ("Test-Task7AuditBinding",), _task7_audit_binding_body(fixture)
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert completed.stdout.strip() == "PASS"
+
+
+@pytest.mark.parametrize("kind", ["build", "microcheck"])
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "missing_field",
+        "extra_field",
+        "wrong_identity",
+        "wrong_path",
+        "changed_log_hash",
+        "changed_argv",
+        "nonzero_exit",
+        "malformed_timestamp",
+        "changed_payload_hash",
+    ],
+)
+def test_task8_audit_binding_rejects_mutated_task7_audits(
+    tmp_path: Path, kind: str, mutation: str
+) -> None:
+    if mutation == "changed_payload_hash" and kind == "build":
+        pytest.skip("payload belongs only to the micro-check audit")
+    fixture = _closed_audit_fixture(tmp_path)
+    _mutate_closed_audit(fixture, kind, mutation)
+
+    completed = _invoke_runner_functions(
+        ("Test-Task7AuditBinding",), _task7_audit_binding_body(fixture)
+    )
+
+    assert completed.returncode != 0
+    assert not Path(fixture["lease"]).exists()
 
 
 def test_microcheck_invocation_is_cpu_networkless_and_before_gpu_lease(
