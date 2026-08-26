@@ -118,6 +118,249 @@ function Test-Task7AuditBinding {
     }
 }
 
+function Test-A7ProtectedGitLineage {
+    param(
+        [Parameter(Mandatory = $true)][string]$RootBaselinePath,
+        [Parameter(Mandatory = $true)][string]$RootBaselineSha256,
+        [Parameter(Mandatory = $true)][string]$AugmentedBaselinePath,
+        [Parameter(Mandatory = $true)][string]$AugmentedBaselineSha256,
+        [Parameter(Mandatory = $true)][string]$ProjectRoot,
+        [Parameter(Mandatory = $true)][string]$SourceCommit,
+        [Parameter(Mandatory = $true)][string]$SpecCommit,
+        [Parameter(Mandatory = $true)][string]$PlanCommit
+    )
+    $TransitionPath = 'docs/superpowers/specs/2026-08-23-vision-active-learning-loop-design.md'
+    $PlanPath = 'docs/superpowers/plans/2026-08-26-val-wave0-a7-history-compatibility.md'
+    $TransitionReason = 'owner-approved-design-amendment'
+    foreach ($Commit in @($SourceCommit, $SpecCommit, $PlanCommit)) {
+        if ($Commit -cnotmatch '^[0-9a-f]{40}$') {
+            throw 'A7 protected Git commit identity is invalid'
+        }
+    }
+    foreach ($ExpectedHash in @($RootBaselineSha256, $AugmentedBaselineSha256)) {
+        if ($ExpectedHash -cnotmatch '^[0-9a-f]{64}$') {
+            throw 'A7 protected Git baseline identity is invalid'
+        }
+    }
+    foreach ($Path in @($RootBaselinePath, $AugmentedBaselinePath)) {
+        if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+            throw 'A7 protected Git baseline is unavailable'
+        }
+        $Item = Get-Item -LiteralPath $Path -Force
+        if (($Item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+            throw 'A7 protected Git baseline must not be linked'
+        }
+    }
+    $ObservedRootHash = (Get-FileHash -LiteralPath $RootBaselinePath -Algorithm SHA256).Hash.ToLowerInvariant()
+    $ObservedAugmentedHash = (
+        Get-FileHash -LiteralPath $AugmentedBaselinePath -Algorithm SHA256
+    ).Hash.ToLowerInvariant()
+    if ($ObservedRootHash -cne $RootBaselineSha256 -or
+        $ObservedAugmentedHash -cne $AugmentedBaselineSha256) {
+        throw 'A7 protected Git baseline hash mismatch'
+    }
+    $RootBaseline = Get-Content -LiteralPath $RootBaselinePath -Raw -Encoding UTF8 | ConvertFrom-Json
+    $AugmentedBaseline = Get-Content -LiteralPath $AugmentedBaselinePath -Raw -Encoding UTF8 | ConvertFrom-Json
+    $RootRecords = @($RootBaseline.protected_git)
+    $AugmentedRootRecords = @($AugmentedBaseline.protected_git)
+    $CurrentRecords = @($AugmentedBaseline.current_protected_git)
+    $Transitions = @($AugmentedBaseline.approved_protected_git_transitions)
+    if ($RootRecords.Count -ne 68 -or $AugmentedRootRecords.Count -ne 68 -or
+        $CurrentRecords.Count -ne 68 -or $Transitions.Count -ne 1) {
+        throw 'A7 protected Git inventory or transition count mismatch'
+    }
+    if ((ConvertTo-Json -InputObject $RootRecords -Depth 6 -Compress) -cne
+        (ConvertTo-Json -InputObject $AugmentedRootRecords -Depth 6 -Compress)) {
+        throw 'A7 augmented baseline changes the immutable protected Git root array'
+    }
+    $AssertProperties = {
+        param(
+            [Parameter(Mandatory = $true)][object]$Record,
+            [Parameter(Mandatory = $true)][string[]]$Expected,
+            [Parameter(Mandatory = $true)][string]$Description
+        )
+        $Actual = @($Record.PSObject.Properties.Name | Sort-Object -CaseSensitive)
+        $SortedExpected = @($Expected | Sort-Object -CaseSensitive)
+        if (($Actual -join '|') -cne ($SortedExpected -join '|')) {
+            throw "A7 protected Git $Description property set mismatch"
+        }
+    }
+    $RecordProperties = @('path', 'size', 'sha256')
+    $TransitionProperties = @(
+        'path',
+        'root_size',
+        'root_sha256',
+        'current_size',
+        'current_sha256',
+        'spec_commit',
+        'spec_git_object',
+        'plan_commit',
+        'reason'
+    )
+    $RootByPath = [System.Collections.Generic.Dictionary[string, object]]::new(
+        [System.StringComparer]::Ordinal
+    )
+    $CurrentByPath = [System.Collections.Generic.Dictionary[string, object]]::new(
+        [System.StringComparer]::Ordinal
+    )
+    foreach ($Record in $RootRecords) {
+        & $AssertProperties $Record $RecordProperties 'root record'
+        $RelativePath = [string]$Record.path
+        if ([string]::IsNullOrWhiteSpace($RelativePath) -or
+            $RelativePath.Contains('\') -or [IO.Path]::IsPathRooted($RelativePath) -or
+            [string]$Record.sha256 -cnotmatch '^[0-9a-f]{64}$' -or
+            $null -eq $Record.size -or [long]$Record.size -lt 0) {
+            throw 'A7 protected Git root record is invalid'
+        }
+        try { $RootByPath.Add($RelativePath, $Record) } catch {
+            throw "A7 protected Git root path is duplicated: $RelativePath"
+        }
+    }
+    foreach ($Record in $CurrentRecords) {
+        & $AssertProperties $Record $RecordProperties 'current record'
+        $RelativePath = [string]$Record.path
+        if ([string]::IsNullOrWhiteSpace($RelativePath) -or
+            $RelativePath.Contains('\') -or [IO.Path]::IsPathRooted($RelativePath) -or
+            [string]$Record.sha256 -cnotmatch '^[0-9a-f]{64}$' -or
+            $null -eq $Record.size -or [long]$Record.size -lt 0) {
+            throw 'A7 protected Git current record is invalid'
+        }
+        try { $CurrentByPath.Add($RelativePath, $Record) } catch {
+            throw "A7 protected Git current path is duplicated: $RelativePath"
+        }
+    }
+    $RootPaths = @($RootByPath.Keys | Sort-Object -CaseSensitive)
+    $CurrentPaths = @($CurrentByPath.Keys | Sort-Object -CaseSensitive)
+    if (($RootPaths -join "`n") -cne ($CurrentPaths -join "`n")) {
+        throw 'A7 protected Git current inventory differs from the root inventory'
+    }
+    $Transition = $Transitions[0]
+    & $AssertProperties $Transition $TransitionProperties 'transition'
+    if ([string]$Transition.path -cne $TransitionPath -or
+        [string]$Transition.reason -cne $TransitionReason -or
+        [string]$Transition.spec_commit -cne $SpecCommit -or
+        [string]$Transition.plan_commit -cne $PlanCommit -or
+        [string]$Transition.spec_git_object -cnotmatch '^[0-9a-f]{40}$') {
+        throw 'A7 protected Git approved transition identity mismatch'
+    }
+    if (-not $RootByPath.ContainsKey($TransitionPath) -or
+        -not $CurrentByPath.ContainsKey($TransitionPath)) {
+        throw 'A7 protected Git approved transition path is absent'
+    }
+    $RootTransition = $RootByPath[$TransitionPath]
+    $CurrentTransition = $CurrentByPath[$TransitionPath]
+    if ([long]$Transition.root_size -ne [long]$RootTransition.size -or
+        [string]$Transition.root_sha256 -cne [string]$RootTransition.sha256 -or
+        [long]$Transition.current_size -ne [long]$CurrentTransition.size -or
+        [string]$Transition.current_sha256 -cne [string]$CurrentTransition.sha256 -or
+        ([long]$RootTransition.size -eq [long]$CurrentTransition.size -and
+            [string]$RootTransition.sha256 -ceq [string]$CurrentTransition.sha256)) {
+        throw 'A7 protected Git transition record does not bind root and current identities'
+    }
+    foreach ($RelativePath in $RootPaths) {
+        if ($RelativePath -ceq $TransitionPath) { continue }
+        $RootRecord = $RootByPath[$RelativePath]
+        $CurrentRecord = $CurrentByPath[$RelativePath]
+        if ([long]$RootRecord.size -ne [long]$CurrentRecord.size -or
+            [string]$RootRecord.sha256 -cne [string]$CurrentRecord.sha256) {
+            throw "A7 unapproved protected Git transition detected: $RelativePath"
+        }
+    }
+    $ProjectRootFull = [IO.Path]::GetFullPath($ProjectRoot).TrimEnd('\', '/')
+    $ProjectItem = Get-Item -LiteralPath $ProjectRootFull -Force -ErrorAction Stop
+    if (-not $ProjectItem.PSIsContainer -or
+        ($ProjectItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+        throw 'A7 protected Git project root is missing or linked'
+    }
+    $ProjectPrefix = $ProjectRootFull + [IO.Path]::DirectorySeparatorChar
+    foreach ($RelativePath in $CurrentPaths) {
+        $Candidate = [IO.Path]::GetFullPath(
+            (Join-Path $ProjectRootFull $RelativePath.Replace('/', [IO.Path]::DirectorySeparatorChar))
+        )
+        if (-not $Candidate.StartsWith($ProjectPrefix, [StringComparison]::OrdinalIgnoreCase)) {
+            throw "A7 protected Git path escapes the project root: $RelativePath"
+        }
+        $Cursor = $Candidate
+        while ($Cursor.StartsWith($ProjectPrefix, [StringComparison]::OrdinalIgnoreCase)) {
+            $Item = Get-Item -LiteralPath $Cursor -Force -ErrorAction Stop
+            if (($Item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+                throw "A7 protected Git path is linked: $RelativePath"
+            }
+            if ($Cursor -ceq $Candidate -and $Item.PSIsContainer) {
+                throw "A7 protected Git path is not a file: $RelativePath"
+            }
+            $Cursor = Split-Path -Parent $Cursor
+        }
+        $Record = $CurrentByPath[$RelativePath]
+        $Hash = (Get-FileHash -LiteralPath $Candidate -Algorithm SHA256).Hash.ToLowerInvariant()
+        if ([long](Get-Item -LiteralPath $Candidate -Force).Length -ne [long]$Record.size -or
+            $Hash -cne [string]$Record.sha256) {
+            throw "A7 protected Git checkout identity mismatch: $RelativePath"
+        }
+    }
+    $GitCommand = Get-Command -Name 'git' -CommandType Application -ErrorAction Stop |
+        Select-Object -First 1
+    $GitItem = Get-Item -LiteralPath $GitCommand.Source -Force
+    if (($GitItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+        throw 'A7 protected Git executable is linked'
+    }
+    $InvokeGit = {
+        param([Parameter(Mandatory = $true)][string[]]$Arguments)
+        $Output = @(& $GitCommand.Source @Arguments 2>&1)
+        if ($LASTEXITCODE -ne 0) {
+            throw "A7 protected Git command failed: $($Output -join '; ')"
+        }
+        return ($Output -join "`n").Trim()
+    }
+    if ((& $InvokeGit @('-C', $ProjectRootFull, 'rev-parse', 'HEAD')) -cne $SourceCommit -or
+        -not [string]::IsNullOrEmpty([string](& $InvokeGit @(
+                    '-C', $ProjectRootFull, 'status', '--porcelain=v1'
+                )))) {
+        throw 'A7 protected Git checkout identity or cleanliness mismatch'
+    }
+    if ((& $InvokeGit @('-C', $ProjectRootFull, 'rev-parse', "$PlanCommit^")) -cne $SpecCommit) {
+        throw 'A7 protected Git plan is not the direct child of the specification'
+    }
+    if ((& $InvokeGit @(
+                '-C', $ProjectRootFull, 'log', '-1', '--format=%H', '--', $TransitionPath
+            )) -cne $SpecCommit -or
+        (& $InvokeGit @(
+                '-C', $ProjectRootFull, 'log', '-1', '--format=%H', '--', $PlanPath
+            )) -cne $PlanCommit) {
+        throw 'A7 protected Git last-touch lineage mismatch'
+    }
+    $SpecFiles = @((& $InvokeGit @(
+                '-C', $ProjectRootFull, 'diff-tree', '--no-commit-id', '--name-only', '-r', $SpecCommit
+            )) -split "`n" | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+    $PlanFiles = @((& $InvokeGit @(
+                '-C', $ProjectRootFull, 'diff-tree', '--no-commit-id', '--name-only', '-r', $PlanCommit
+            )) -split "`n" | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+    if ($SpecFiles.Count -ne 1 -or $SpecFiles[0] -cne $TransitionPath -or
+        $PlanFiles.Count -ne 1 -or $PlanFiles[0] -cne $PlanPath) {
+        throw 'A7 protected Git specification or plan commit scope mismatch'
+    }
+    $SpecGitObject = & $InvokeGit @(
+        '-C', $ProjectRootFull, 'rev-parse', "${SpecCommit}:$TransitionPath"
+    )
+    $TransitionFullPath = [IO.Path]::GetFullPath(
+        (Join-Path $ProjectRootFull $TransitionPath.Replace('/', [IO.Path]::DirectorySeparatorChar))
+    )
+    $CheckoutGitObject = & $InvokeGit @(
+        '-C', $ProjectRootFull, 'hash-object', "--path=$TransitionPath", '--', $TransitionFullPath
+    )
+    if ($SpecGitObject -cnotmatch '^[0-9a-f]{40}$' -or
+        $CheckoutGitObject -cne $SpecGitObject -or
+        [string]$Transition.spec_git_object -cne $SpecGitObject) {
+        throw 'A7 protected Git specification object mismatch'
+    }
+    return [ordered]@{
+        root_protected_git_count = $RootRecords.Count
+        current_protected_git_count = $CurrentRecords.Count
+        approved_transition_count = $Transitions.Count
+        status = 'PRESERVED'
+    }
+}
+
 function Test-HistoricalBaseline {
     param(
         [Parameter(Mandatory = $true)][string]$RootBaselinePath,
@@ -224,15 +467,6 @@ function Test-HistoricalBaseline {
     if ($CurrentHistoricalPaths.Count -ne $ExpectedArtifactPaths.Count -or
         @($CurrentHistoricalPaths | Where-Object { -not $ExpectedArtifactPaths.Contains($_) }).Count -ne 0) {
         throw 'historical artifact set drift'
-    }
-    foreach ($Record in $Baseline.protected_git) {
-        $Path = Join-Path $ProjectRoot ([string]$Record.path).Replace('/', '\')
-        if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { throw "protected Git file missing: $($Record.path)" }
-        $Item = Get-Item -LiteralPath $Path -Force
-        $Hash = (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant()
-        if ($Item.Length -ne [long]$Record.size -or $Hash -ne [string]$Record.sha256) {
-            throw "protected Git file drift: $($Record.path)"
-        }
     }
     $ExpectedImages = @{}
     foreach ($Record in $Baseline.images) { $ExpectedImages[[string]$Record.tag] = [string]$Record.image_id }
@@ -505,9 +739,20 @@ try {
 } finally {
     try {
         try {
+            $RootBaselinePath = Join-Path $env:TEMP 'val-a7-baseline-11a6b1929b0b4d44acc0a090887b50dd670357ea.json'
+            $RootBaselineSha256 = '4715e35d4ed693d74577cc40781f51a65bf7f34089b97d6610fb43f4d675cadd'
+            $ProtectedGit = Test-A7ProtectedGitLineage `
+                -RootBaselinePath $RootBaselinePath `
+                -RootBaselineSha256 $RootBaselineSha256 `
+                -AugmentedBaselinePath ([string]$Lease.historical_baseline_path) `
+                -AugmentedBaselineSha256 ([string]$Lease.historical_baseline_sha256) `
+                -ProjectRoot $ProjectRoot `
+                -SourceCommit $SourceCommit `
+                -SpecCommit ([string]$Lease.spec_commit) `
+                -PlanCommit ([string]$Lease.plan_commit)
             $Historical = Test-HistoricalBaseline `
-                -RootBaselinePath (Join-Path $env:TEMP 'val-a7-baseline-11a6b1929b0b4d44acc0a090887b50dd670357ea.json') `
-                -RootBaselineSha256 '4715e35d4ed693d74577cc40781f51a65bf7f34089b97d6610fb43f4d675cadd' `
+                -RootBaselinePath $RootBaselinePath `
+                -RootBaselineSha256 $RootBaselineSha256 `
                 -AugmentedBaselinePath ([string]$Lease.historical_baseline_path) `
                 -AugmentedBaselineSha256 ([string]$Lease.historical_baseline_sha256)
         } catch {

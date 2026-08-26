@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -12,6 +13,7 @@ import pytest
 
 _ROOT = Path(__file__).resolve().parents[2]
 _LAUNCHER = _ROOT / "scripts" / "start_wave0_a7.ps1"
+_RUNNER = _ROOT / "scripts" / "run_wave0_a7.ps1"
 _SOURCE = "a" * 40
 _SPEC = "b" * 40
 _PLAN = "c" * 40
@@ -32,10 +34,45 @@ def _invoke_functions(
     launcher = _powershell_literal(str(_LAUNCHER))
     requested = ",".join(_powershell_literal(name) for name in names)
     script = f"""
+$ErrorActionPreference = 'Stop'
 $Tokens = $null
 $Errors = $null
 $Ast = [Management.Automation.Language.Parser]::ParseFile(
     {launcher}, [ref]$Tokens, [ref]$Errors
+)
+if ($Errors.Count -ne 0) {{ throw ($Errors | ForEach-Object Message) -join '; ' }}
+foreach ($FunctionName in @({requested})) {{
+    $Matches = @($Ast.FindAll({{
+        param($Node)
+        $Node -is [Management.Automation.Language.FunctionDefinitionAst] -and
+            $Node.Name -eq $FunctionName
+    }}, $true))
+    if ($Matches.Count -ne 1) {{ throw "function AST mismatch: $FunctionName" }}
+    Invoke-Expression $Matches[0].Extent.Text
+}}
+{body}
+"""
+    return subprocess.run(
+        ["pwsh", "-NoProfile", "-NonInteractive", "-Command", script],
+        cwd=_ROOT,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=False,
+    )
+
+
+def _invoke_runner_functions(
+    names: tuple[str, ...], body: str
+) -> subprocess.CompletedProcess[str]:
+    runner = _powershell_literal(str(_RUNNER))
+    requested = ",".join(_powershell_literal(name) for name in names)
+    script = f"""
+$ErrorActionPreference = 'Stop'
+$Tokens = $null
+$Errors = $null
+$Ast = [Management.Automation.Language.Parser]::ParseFile(
+    {runner}, [ref]$Tokens, [ref]$Errors
 )
 if ($Errors.Count -ne 0) {{ throw ($Errors | ForEach-Object Message) -join '; ' }}
 foreach ($FunctionName in @({requested})) {{
@@ -395,22 +432,13 @@ def _sha256(path: Path) -> str:
 
 
 def _history_fixture(tmp_path: Path) -> dict[str, object]:
-    artifact_root = tmp_path / "artifacts"
-    protected_root = tmp_path / "protected"
-    artifact_root.mkdir()
-    protected_root.mkdir()
-    original_artifact = artifact_root / "original.txt"
-    original_artifact.write_text("original\n", encoding="utf-8")
+    fixture = _protected_git_lineage_fixture(tmp_path)
+    artifact_root = Path(fixture["artifact_root"])
     for name in ("failed-b/evidence.txt", "failed-a/evidence.txt"):
         path = artifact_root / name
         path.parent.mkdir()
         path.write_text(name + "\n", encoding="utf-8")
-    protected = protected_root / "contract.txt"
-    protected.write_text("protected\n", encoding="utf-8")
-    original_image = {
-        "tag": "vision-active-learning-loop:wave0-original",
-        "image_id": f"sha256:{'1' * 64}",
-    }
+    original_image = fixture["current_images"][0]
     current_images = [
         {
             "tag": "vision-active-learning-loop:wave0-failed-b",
@@ -422,41 +450,10 @@ def _history_fixture(tmp_path: Path) -> dict[str, object]:
             "image_id": f"sha256:{'2' * 64}",
         },
     ]
-    baseline = {
-        "schema_version": 1,
-        "plan_commit": _PLAN,
-        "parent_baseline_sha256": "4" * 64,
-        "artifact_root": str(artifact_root),
-        "artifact_files": [
-            {
-                "path": "original.txt",
-                "size": original_artifact.stat().st_size,
-                "sha256": _sha256(original_artifact),
-            }
-        ],
-        "images": [original_image],
-        "protected_git": [
-            {
-                "path": "contract.txt",
-                "size": protected.stat().st_size,
-                "sha256": _sha256(protected),
-            }
-        ],
-    }
-    baseline_path = tmp_path / "baseline.json"
-    baseline_path.write_text(
-        json.dumps(baseline, sort_keys=True, separators=(",", ":")),
-        encoding="utf-8",
-    )
-    return {
-        "artifact_root": artifact_root,
-        "protected_root": protected_root,
-        "baseline": baseline,
-        "baseline_path": baseline_path,
-        "baseline_sha256": _sha256(baseline_path),
-        "current_images": current_images,
-        "output": tmp_path / "augmented.json",
-    }
+    fixture["current_images"] = current_images
+    fixture["output"] = tmp_path / "augmented.json"
+    fixture["protected_root"] = fixture["repository"]
+    return fixture
 
 
 def _history_body(fixture: dict[str, object]) -> str:
@@ -467,7 +464,10 @@ $Result = New-A7AugmentedBaseline `
     -ArtifactRoot {_powershell_literal(str(fixture['artifact_root']))} `
     -ProtectedGitRoot {_powershell_literal(str(fixture['protected_root']))} `
     -ImageRecordsJson {_powershell_literal(json.dumps(fixture['current_images']))} `
-    -SourceCommit {_powershell_literal(_SOURCE)} `
+    -SourceCommit {_powershell_literal(str(fixture['source_commit']))} `
+    -GitExecutable {_powershell_literal(str(fixture['git']))} `
+    -ExpectedSpecCommit {_powershell_literal(str(fixture['spec_commit']))} `
+    -ExpectedPlanCommit {_powershell_literal(str(fixture['plan_commit']))} `
     -OutputPath {_powershell_literal(str(fixture['output']))}
 $Result | ConvertTo-Json -Compress
 """
@@ -489,8 +489,8 @@ def test_history_augments_exact_original_subset_with_preserved_failures(
     assert result["sha256"] == _sha256(output)
     assert result["artifact_count"] == 3
     assert result["image_count"] == 3
-    assert result["protected_git_count"] == 1
-    assert document["source_commit"] == _SOURCE
+    assert result["protected_git_count"] == 68
+    assert document["source_commit"] == fixture["source_commit"]
     assert document["parent_baseline_sha256"] == "4" * 64
     assert [entry["path"] for entry in document["artifact_files"]] == [
         "failed-a/evidence.txt",
@@ -534,7 +534,7 @@ def test_history_rejects_drift_duplicates_and_existing_destination(
             {"path": "phantom.txt", "size": 0, "sha256": "0" * 64}
         )
     elif mutation == "changed_protected_git":
-        (Path(fixture["protected_root"]) / "contract.txt").write_text(
+        (Path(fixture["protected_root"]) / "protected/record-00.txt").write_text(
             "changed\n", encoding="utf-8"
         )
     elif mutation == "changed_image_id":
@@ -575,6 +575,426 @@ def test_history_rejects_symlinked_baseline_path(tmp_path: Path) -> None:
     )
 
     assert completed.returncode != 0
+
+
+_TRANSITION_PATH = (
+    "docs/superpowers/specs/2026-08-23-vision-active-learning-loop-design.md"
+)
+_COMPATIBILITY_PLAN_PATH = (
+    "docs/superpowers/plans/2026-08-26-val-wave0-a7-history-compatibility.md"
+)
+
+
+def _git_stdout(repository: Path, *arguments: str) -> str:
+    completed = subprocess.run(
+        ["git", "-C", str(repository), *arguments],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=False,
+    )
+    assert completed.returncode == 0, completed.stderr
+    return completed.stdout.strip()
+
+
+def _protected_record(repository: Path, relative_path: str) -> dict[str, object]:
+    path = repository / Path(relative_path)
+    return {
+        "path": relative_path,
+        "size": path.stat().st_size,
+        "sha256": _sha256(path),
+    }
+
+
+def _rewrite_lineage_baseline(fixture: dict[str, object]) -> None:
+    path = Path(fixture["baseline_path"])
+    path.write_text(
+        json.dumps(fixture["baseline"], sort_keys=True, separators=(",", ":")),
+        encoding="utf-8",
+    )
+    fixture["baseline_sha256"] = _sha256(path)
+
+
+def _protected_git_lineage_fixture(tmp_path: Path) -> dict[str, object]:
+    repository = tmp_path / "protected-repository"
+    repository.mkdir()
+    _git_stdout(repository, "init", "--initial-branch=fixture-main")
+    _git_stdout(repository, "config", "core.autocrlf", "false")
+    _git_stdout(repository, "config", "user.name", "fixture")
+    _git_stdout(repository, "config", "user.email", "fixture@example.invalid")
+
+    unchanged_paths = [f"protected/record-{index:02d}.txt" for index in range(67)]
+    for index, relative_path in enumerate(unchanged_paths):
+        path = repository / relative_path
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(f"immutable-{index:02d}\n", encoding="utf-8")
+    spec_path = repository / _TRANSITION_PATH
+    spec_path.parent.mkdir(parents=True)
+    spec_path.write_text("approved spec before compatibility\n", encoding="utf-8")
+    _git_stdout(repository, "add", "--", "protected", _TRANSITION_PATH)
+    _git_stdout(repository, "commit", "-m", "fixture: root protected state")
+
+    root_paths = sorted([*unchanged_paths, _TRANSITION_PATH])
+    root_records = [_protected_record(repository, path) for path in root_paths]
+
+    spec_path.write_text("approved spec with compatibility\n", encoding="utf-8")
+    _git_stdout(repository, "add", "--", _TRANSITION_PATH)
+    _git_stdout(repository, "commit", "-m", "docs: approve compatibility")
+    spec_commit = _git_stdout(repository, "rev-parse", "HEAD")
+    spec_git_object = _git_stdout(repository, "rev-parse", f"HEAD:{_TRANSITION_PATH}")
+
+    plan_path = repository / _COMPATIBILITY_PLAN_PATH
+    plan_path.parent.mkdir(parents=True)
+    plan_path.write_text("approved compatibility plan\n", encoding="utf-8")
+    _git_stdout(repository, "add", "--", _COMPATIBILITY_PLAN_PATH)
+    _git_stdout(repository, "commit", "-m", "docs: plan compatibility")
+    plan_commit = _git_stdout(repository, "rev-parse", "HEAD")
+
+    marker = repository / "implementation-marker.txt"
+    marker.write_text("candidate\n", encoding="utf-8")
+    _git_stdout(repository, "add", "--", marker.name)
+    _git_stdout(repository, "commit", "-m", "fix: candidate marker")
+    source_commit = _git_stdout(repository, "rev-parse", "HEAD")
+
+    artifact_root = tmp_path / "artifacts"
+    artifact_root.mkdir()
+    artifact = artifact_root / "original.txt"
+    artifact.write_text("immutable history\n", encoding="utf-8")
+    image = {
+        "tag": "vision-active-learning-loop:wave0-fixture",
+        "image_id": f"sha256:{'1' * 64}",
+    }
+    baseline = {
+        "schema_version": 1,
+        "parent_baseline_sha256": "4" * 64,
+        "artifact_root": str(artifact_root),
+        "artifact_files": [
+            {
+                "path": "original.txt",
+                "size": artifact.stat().st_size,
+                "sha256": _sha256(artifact),
+            }
+        ],
+        "images": [image],
+        "protected_git": root_records,
+    }
+    baseline_path = tmp_path / "lineage-root-baseline.json"
+    baseline_path.write_text(
+        json.dumps(baseline, sort_keys=True, separators=(",", ":")),
+        encoding="utf-8",
+    )
+    current_records = [_protected_record(repository, path) for path in root_paths]
+    root_transition = next(
+        record for record in root_records if record["path"] == _TRANSITION_PATH
+    )
+    current_transition = next(
+        record for record in current_records if record["path"] == _TRANSITION_PATH
+    )
+    return {
+        "artifact_root": artifact_root,
+        "baseline": baseline,
+        "baseline_path": baseline_path,
+        "baseline_sha256": _sha256(baseline_path),
+        "current_images": [image],
+        "current_records": current_records,
+        "git": shutil.which("git") or "git",
+        "output": tmp_path / "lineage-augmented.json",
+        "plan_commit": plan_commit,
+        "repository": repository,
+        "root_records": root_records,
+        "source_commit": source_commit,
+        "spec_commit": spec_commit,
+        "spec_git_object": spec_git_object,
+        "transition": {
+            "path": _TRANSITION_PATH,
+            "root_size": root_transition["size"],
+            "root_sha256": root_transition["sha256"],
+            "current_size": current_transition["size"],
+            "current_sha256": current_transition["sha256"],
+            "spec_commit": spec_commit,
+            "spec_git_object": spec_git_object,
+            "plan_commit": plan_commit,
+            "reason": "owner-approved-design-amendment",
+        },
+        "transition_path": _TRANSITION_PATH,
+    }
+
+
+def _lineage_history_body(fixture: dict[str, object]) -> str:
+    return f"""
+$Result = New-A7AugmentedBaseline `
+    -OriginalBaselinePath {_powershell_literal(str(fixture['baseline_path']))} `
+    -ExpectedBaselineSha256 {_powershell_literal(str(fixture['baseline_sha256']))} `
+    -ArtifactRoot {_powershell_literal(str(fixture['artifact_root']))} `
+    -ProtectedGitRoot {_powershell_literal(str(fixture['repository']))} `
+    -ImageRecordsJson {_powershell_literal(json.dumps(fixture['current_images']))} `
+    -SourceCommit {_powershell_literal(str(fixture['source_commit']))} `
+    -GitExecutable {_powershell_literal(str(fixture['git']))} `
+    -ExpectedSpecCommit {_powershell_literal(str(fixture['spec_commit']))} `
+    -ExpectedPlanCommit {_powershell_literal(str(fixture['plan_commit']))} `
+    -OutputPath {_powershell_literal(str(fixture['output']))}
+$Result | ConvertTo-Json -Compress
+"""
+
+
+def _invoke_augmented_lineage(
+    fixture: dict[str, object],
+) -> subprocess.CompletedProcess[str]:
+    return _invoke_functions(
+        ("Write-A7NewText", "New-A7AugmentedBaseline"),
+        _lineage_history_body(fixture),
+    )
+
+
+def test_history_accepts_only_owner_approved_spec_transition(tmp_path: Path) -> None:
+    fixture = _protected_git_lineage_fixture(tmp_path)
+
+    completed = _invoke_augmented_lineage(fixture)
+
+    assert completed.returncode == 0, completed.stderr
+    document = json.loads(Path(fixture["output"]).read_text(encoding="utf-8"))
+    assert document["protected_git"] == fixture["root_records"]
+    assert document["current_protected_git"] == fixture["current_records"]
+    assert document["approved_protected_git_transitions"] == [fixture["transition"]]
+
+
+def test_history_records_all_67_unchanged_protected_git_paths(tmp_path: Path) -> None:
+    fixture = _protected_git_lineage_fixture(tmp_path)
+
+    completed = _invoke_augmented_lineage(fixture)
+
+    assert completed.returncode == 0, completed.stderr
+    document = json.loads(Path(fixture["output"]).read_text(encoding="utf-8"))
+    root = {record["path"]: record for record in document["protected_git"]}
+    current = {record["path"]: record for record in document["current_protected_git"]}
+    unchanged = [path for path in root if path != fixture["transition_path"]]
+    assert len(unchanged) == 67
+    assert all(root[path] == current[path] for path in unchanged)
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "missing_transition",
+        "duplicate_root_path",
+        "wrong_root_hash",
+        "missing_unchanged_path",
+        "changed_unchanged_path",
+        "dirty_spec",
+        "staged_spec",
+        "wrong_source_commit",
+        "wrong_spec_commit",
+        "non_parent_plan",
+        "existing_destination",
+    ],
+)
+def test_history_rejects_forbidden_protected_git_lineage_mutations(
+    tmp_path: Path, mutation: str
+) -> None:
+    fixture = _protected_git_lineage_fixture(tmp_path)
+    repository = Path(fixture["repository"])
+    baseline = fixture["baseline"]
+    if mutation == "missing_transition":
+        baseline["protected_git"] = [
+            record
+            for record in baseline["protected_git"]
+            if record["path"] != _TRANSITION_PATH
+        ]
+        _rewrite_lineage_baseline(fixture)
+    elif mutation == "duplicate_root_path":
+        baseline["protected_git"].append(dict(baseline["protected_git"][0]))
+        _rewrite_lineage_baseline(fixture)
+    elif mutation == "wrong_root_hash":
+        baseline["protected_git"][-1]["sha256"] = "f" * 64
+        _rewrite_lineage_baseline(fixture)
+    elif mutation == "missing_unchanged_path":
+        (repository / "protected/record-00.txt").unlink()
+    elif mutation == "changed_unchanged_path":
+        (repository / "protected/record-00.txt").write_text(
+            "changed\n", encoding="utf-8"
+        )
+    elif mutation == "dirty_spec":
+        (repository / _TRANSITION_PATH).write_text("dirty\n", encoding="utf-8")
+    elif mutation == "staged_spec":
+        (repository / _TRANSITION_PATH).write_text("staged\n", encoding="utf-8")
+        _git_stdout(repository, "add", "--", _TRANSITION_PATH)
+    elif mutation == "wrong_source_commit":
+        fixture["source_commit"] = "f" * 40
+    elif mutation == "wrong_spec_commit":
+        fixture["spec_commit"] = str(fixture["source_commit"])
+    elif mutation == "non_parent_plan":
+        fixture["plan_commit"] = str(fixture["source_commit"])
+    elif mutation == "existing_destination":
+        Path(fixture["output"]).write_text("occupied", encoding="utf-8")
+
+    completed = _invoke_augmented_lineage(fixture)
+
+    assert completed.returncode != 0
+
+
+def _prepare_task8_lineage_fixture(tmp_path: Path) -> dict[str, object]:
+    fixture = _protected_git_lineage_fixture(tmp_path)
+    completed = _invoke_augmented_lineage(fixture)
+    assert completed.returncode == 0, completed.stderr
+    fixture["augmented_sha256"] = _sha256(Path(fixture["output"]))
+    return fixture
+
+
+def _rewrite_augmented_lineage(fixture: dict[str, object]) -> None:
+    path = Path(fixture["output"])
+    path.write_text(
+        json.dumps(fixture["augmented"], sort_keys=True, separators=(",", ":")),
+        encoding="utf-8",
+    )
+    fixture["augmented_sha256"] = _sha256(path)
+
+
+def _task8_lineage_body(fixture: dict[str, object]) -> str:
+    return f"""
+$Result = Test-A7ProtectedGitLineage `
+    -RootBaselinePath {_powershell_literal(str(fixture['baseline_path']))} `
+    -RootBaselineSha256 {_powershell_literal(str(fixture['baseline_sha256']))} `
+    -AugmentedBaselinePath {_powershell_literal(str(fixture['output']))} `
+    -AugmentedBaselineSha256 {_powershell_literal(str(fixture['augmented_sha256']))} `
+    -ProjectRoot {_powershell_literal(str(fixture['repository']))} `
+    -SourceCommit {_powershell_literal(str(fixture['source_commit']))} `
+    -SpecCommit {_powershell_literal(str(fixture['spec_commit']))} `
+    -PlanCommit {_powershell_literal(str(fixture['plan_commit']))}
+$Result | ConvertTo-Json -Compress
+"""
+
+
+def _invoke_task8_lineage(
+    fixture: dict[str, object],
+) -> subprocess.CompletedProcess[str]:
+    return _invoke_runner_functions(
+        ("Test-A7ProtectedGitLineage",), _task8_lineage_body(fixture)
+    )
+
+
+def test_task8_accepts_the_exact_approved_protected_git_transition(
+    tmp_path: Path,
+) -> None:
+    fixture = _prepare_task8_lineage_fixture(tmp_path)
+
+    completed = _invoke_task8_lineage(fixture)
+
+    assert completed.returncode == 0, completed.stderr
+    result = json.loads(completed.stdout)
+    assert result == {
+        "root_protected_git_count": 68,
+        "current_protected_git_count": 68,
+        "approved_transition_count": 1,
+        "status": "PRESERVED",
+    }
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "missing_transition",
+        "second_transition",
+        "wrong_transition_path",
+        "wrong_reason",
+        "wrong_root_hash",
+        "wrong_current_hash",
+        "wrong_spec_commit",
+        "wrong_spec_object",
+        "wrong_plan_commit",
+        "missing_current_path",
+        "extra_current_path",
+        "changed_unchanged_current",
+        "dirty_checkout",
+        "non_parent_plan",
+    ],
+)
+def test_task8_rejects_forbidden_protected_git_lineage_mutations(
+    tmp_path: Path, mutation: str
+) -> None:
+    fixture = _prepare_task8_lineage_fixture(tmp_path)
+    augmented = json.loads(Path(fixture["output"]).read_text(encoding="utf-8"))
+    fixture["augmented"] = augmented
+    transition = augmented["approved_protected_git_transitions"][0]
+    if mutation == "missing_transition":
+        augmented["approved_protected_git_transitions"] = []
+    elif mutation == "second_transition":
+        duplicate = dict(transition)
+        duplicate["path"] = "protected/record-00.txt"
+        augmented["approved_protected_git_transitions"].append(duplicate)
+    elif mutation == "wrong_transition_path":
+        transition["path"] = "protected/record-00.txt"
+    elif mutation == "wrong_reason":
+        transition["reason"] = "wildcard-amendment"
+    elif mutation == "wrong_root_hash":
+        transition["root_sha256"] = "f" * 64
+    elif mutation == "wrong_current_hash":
+        transition["current_sha256"] = "f" * 64
+    elif mutation == "wrong_spec_commit":
+        transition["spec_commit"] = str(fixture["source_commit"])
+    elif mutation == "wrong_spec_object":
+        transition["spec_git_object"] = "f" * 40
+    elif mutation == "wrong_plan_commit":
+        transition["plan_commit"] = str(fixture["source_commit"])
+    elif mutation == "missing_current_path":
+        augmented["current_protected_git"].pop(0)
+    elif mutation == "extra_current_path":
+        augmented["current_protected_git"].append(
+            {"path": "extra.txt", "size": 0, "sha256": "0" * 64}
+        )
+    elif mutation == "changed_unchanged_current":
+        augmented["current_protected_git"][0]["sha256"] = "f" * 64
+    elif mutation == "dirty_checkout":
+        (Path(fixture["repository"]) / "protected/record-00.txt").write_text(
+            "dirty\n", encoding="utf-8"
+        )
+    elif mutation == "non_parent_plan":
+        fixture["plan_commit"] = str(fixture["source_commit"])
+    if mutation not in {"dirty_checkout", "non_parent_plan"}:
+        _rewrite_augmented_lineage(fixture)
+
+    completed = _invoke_task8_lineage(fixture)
+
+    assert completed.returncode != 0
+
+
+def test_task8_runner_orders_lineage_before_artifact_history() -> None:
+    runner = _powershell_literal(str(_RUNNER))
+    command = f"""
+$Tokens = $null
+$Errors = $null
+$Ast = [Management.Automation.Language.Parser]::ParseFile(
+    {runner}, [ref]$Tokens, [ref]$Errors
+)
+if ($Errors.Count -ne 0) {{ throw 'parse failure' }}
+$Calls = @($Ast.FindAll({{
+    param($Node)
+    if ($Node -isnot [Management.Automation.Language.CommandAst]) {{ return $false }}
+    if ($Node.GetCommandName() -notin @(
+        'Test-A7ProtectedGitLineage', 'Test-HistoricalBaseline'
+    )) {{ return $false }}
+    $Parent = $Node.Parent
+    while ($null -ne $Parent) {{
+        if ($Parent -is [Management.Automation.Language.FunctionDefinitionAst]) {{ return $false }}
+        $Parent = $Parent.Parent
+    }}
+    return $true
+}}, $true) | Sort-Object {{ $_.Extent.StartOffset }})
+$Calls | ForEach-Object {{ $_.GetCommandName() }}
+"""
+    completed = subprocess.run(
+        ["pwsh", "-NoProfile", "-NonInteractive", "-Command", command],
+        cwd=_ROOT,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=False,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert completed.stdout.splitlines() == [
+        "Test-A7ProtectedGitLineage",
+        "Test-HistoricalBaseline",
+    ]
 
 
 def _gpu_preflight_body(mutation: str | None = None) -> str:
