@@ -21,7 +21,7 @@
 - A fourth tracked implementation file is a hard stop. Do not modify the specification, this plan, any Python production module, schema, Dockerfile, configuration, dependency declaration, `uv.lock`, model pin, test fixture used by formal research, or historical evidence.
 - The old shared cache at `D:\vision-active-learning-loop-artifacts\wave0\model_cache` remains immutable and invalid under the exact lock-metadata contract. Do not backfill, copy from, mount, delete, rename, or reinterpret it.
 - The fresh preflight root is exactly `<campaign>\cache-preflight`; its model cache is `<campaign>\cache-preflight\wave0\model_cache`, and its receipt is `<campaign>\cache-preflight\wave0\receipts\model-assets.json`. Every destination must be absent before trusted Task 7 orchestration creates its parent.
-- The only post-build network-enabled container is the cache preflight. It uses `--network bridge`, no `--gpus`, no `VAL_DATA_ROOT`, and the exact command suffix `val assets verify --config /workspace/configs/model_assets.yaml --cache-root /artifacts/wave0/model_cache --output /artifacts/wave0/receipts/model-assets.json --run-id $RunId --download`.
+- The only post-build network-enabled container is the cache preflight. It uses `--network bridge`, no `--gpus`, no `VAL_DATA_ROOT`, and the exact command suffix `val assets verify --config /workspace/configs/models/pinned-models.yaml --cache-root /artifacts/wave0/model_cache --output /artifacts/wave0/receipts/model-assets.json --run-id $RunId --download`.
 - The preflight must return exit code 0, stdout exactly `PASS` plus the platform newline captured by `Invoke-A7Native`, empty stderr, and a schema-valid PASS receipt whose exact content is SHA-256-bound into its audit and the lease. No other pre-lease step initializes CUDA or claims model execution.
 - Task 8 uses `--network none`, `--gpus all`, `HF_HUB_OFFLINE=1`, `TRANSFORMERS_OFFLINE=1`, and mounts the exact run-scoped cache at `/artifacts/wave0/model_cache:ro`. Its ordinary model-assets stage reruns without `--download` and publishes the current campaign receipt.
 - Each snapshot remains pinned exactly: RT-DETR-R18 `PekingU/rtdetr_r18vd@cc5b50f32f0100caaa3bd275343e2fb17762c73d` and DINOv2-small `facebook/dinov2-small@ed25f3a31f01632728cabb09d1542f84ab7b0056`. Each has exactly four payloads and four matching zero-byte `.lock` files already enforced by the production verifier.
@@ -109,7 +109,7 @@ assert "VAL_DATA_ROOT" not in "\n".join(argv)
 assert "HF_HUB_OFFLINE" not in "\n".join(argv)
 assert "TRANSFORMERS_OFFLINE" not in "\n".join(argv)
 assert argv[-11:] == [
-    "assets", "verify", "--config", "/workspace/configs/model_assets.yaml",
+    "assets", "verify", "--config", "/workspace/configs/models/pinned-models.yaml",
     "--cache-root", "/artifacts/wave0/model_cache",
     "--output", "/artifacts/wave0/receipts/model-assets.json",
     "--run-id", _RUN_ID, "--download",

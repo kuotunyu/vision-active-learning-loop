@@ -615,7 +615,7 @@ After the fresh image and CPU micro-check pass but before GPU lease acquisition,
 The container command suffix is exact and may vary only in the already validated run identity:
 
 ```text
-val assets verify --config /workspace/configs/model_assets.yaml --cache-root /artifacts/wave0/model_cache --output /artifacts/wave0/receipts/model-assets.json --run-id <RUN_ID> --download
+val assets verify --config /workspace/configs/models/pinned-models.yaml --cache-root /artifacts/wave0/model_cache --output /artifacts/wave0/receipts/model-assets.json --run-id <RUN_ID> --download
 ```
 
 The cache-preflight command must finish with exit code zero and a schema-valid PASS receipt. The receipt and an adjacent closed Task 7 audit bind owner authorization, run/source/specification/plan commits, image tag and ID, base digest, exact Docker argv, network mode, no-GPU assertion, cache root, receipt path and SHA-256, stdout/stderr paths and hashes, exit code, timestamps, and the verifier's exact payload/metadata inventories. The cache root, its ancestors inside the campaign, audit paths, and receipt paths must be regular non-link paths within their approved roots. Missing, extra, nonzero, renamed, unpaired, linked, or junctioned lock metadata; wrong payload/tree/metadata identity; unexpected stdout; nonzero exit; wrong network/GPU argv; or any pre-existing destination closes the claimed campaign before a lease. Task 7 recomputes the cache-preflight audit and receipt hashes immediately before lease creation. The lease adds the exact cache root, cache-preflight audit hash, and cache-preflight receipt hash to its closed identity.
