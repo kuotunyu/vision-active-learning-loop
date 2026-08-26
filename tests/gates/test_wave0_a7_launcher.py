@@ -2175,6 +2175,20 @@ def test_audit_binding_gpu_lease_accepts_closed_task7_audits(tmp_path: Path) -> 
     assert Path(fixture["lease"]).is_file()
 
 
+def test_audit_binding_gpu_lease_accepts_regular_files_under_strict_mode(
+    tmp_path: Path,
+) -> None:
+    fixture = _closed_audit_fixture(tmp_path)
+
+    completed = _invoke_functions(
+        ("Write-A7NewText", "New-A7Lease"),
+        "Set-StrictMode -Version Latest\n" + _closed_audit_lease_body(fixture),
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert Path(fixture["lease"]).is_file()
+
+
 @pytest.mark.parametrize("kind", ["build", "microcheck"])
 @pytest.mark.parametrize(
     "mutation",
