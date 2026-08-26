@@ -1590,6 +1590,233 @@ function Close-A7Campaign {
     }
 }
 
+function Close-A7PostTask8ValidationFailure {
+    param(
+        [Parameter(Mandatory = $true)][string]$CampaignRoot,
+        [Parameter(Mandatory = $true)][string]$OwnerAuthorizationId,
+        [Parameter(Mandatory = $true)][string]$RunId,
+        [Parameter(Mandatory = $true)][string]$SourceCommit,
+        [Parameter(Mandatory = $true)][string]$SpecCommit,
+        [Parameter(Mandatory = $true)][string]$PlanCommit,
+        [Parameter(Mandatory = $true)][string]$ImageTag,
+        [Parameter(Mandatory = $true)][string]$ImageId,
+        [Parameter(Mandatory = $true)][int]$Task8ExitCode,
+        [Parameter(Mandatory = $true)][AllowNull()][AllowEmptyString()][string]$ObservedTerminal,
+        [Parameter(Mandatory = $true)][string]$ValidationError,
+        [Parameter(Mandatory = $true)][string]$LeasePath
+    )
+    foreach ($Commit in @($SourceCommit, $SpecCommit, $PlanCommit)) {
+        if ($Commit -cnotmatch '^[0-9a-f]{40}$') {
+            throw 'A7 post-Task-8 commit identity is invalid'
+        }
+    }
+    if ([string]::IsNullOrWhiteSpace($OwnerAuthorizationId) -or
+        [string]::IsNullOrWhiteSpace($RunId) -or
+        [string]::IsNullOrWhiteSpace($ImageTag) -or
+        $ImageId -cnotmatch '^sha256:[0-9a-f]{64}$' -or
+        [string]::IsNullOrWhiteSpace($ValidationError)) {
+        throw 'A7 post-Task-8 immutable identity or validation error is invalid'
+    }
+    $CampaignPath = [IO.Path]::GetFullPath($CampaignRoot).TrimEnd('\', '/')
+    $AuditRoot = [IO.Path]::Combine($CampaignPath, 'audit')
+    foreach ($Directory in @($CampaignPath, $AuditRoot)) {
+        if (-not [IO.Directory]::Exists($Directory)) {
+            throw 'A7 post-Task-8 campaign or audit root is missing'
+        }
+        $Current = [IO.DirectoryInfo]::new($Directory)
+        while ($null -ne $Current) {
+            if (($Current.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+                throw 'A7 post-Task-8 campaign or audit root is linked'
+            }
+            $Current = $Current.Parent
+        }
+    }
+    $FailurePath = [IO.Path]::Combine(
+        $AuditRoot,
+        '52-task7-post-task8-validation-failure.json'
+    )
+    $ClosurePath = [IO.Path]::Combine(
+        $AuditRoot,
+        '53-task7-post-task8-validation-closure.json'
+    )
+    foreach ($Destination in @($FailurePath, $ClosurePath)) {
+        if ([IO.File]::Exists($Destination) -or [IO.Directory]::Exists($Destination)) {
+            throw 'A7 post-Task-8 evidence destination already exists'
+        }
+    }
+    $GetSha256 = {
+        param([Parameter(Mandatory = $true)][string]$Path)
+        $Stream = [IO.File]::OpenRead($Path)
+        try {
+            $Hasher = [Security.Cryptography.SHA256]::Create()
+            try {
+                return [Convert]::ToHexString($Hasher.ComputeHash($Stream)).ToLowerInvariant()
+            }
+            finally { $Hasher.Dispose() }
+        }
+        finally { $Stream.Dispose() }
+    }
+    $GetSafeFileRecord = {
+        param(
+            [Parameter(Mandatory = $true)][string]$Root,
+            [Parameter(Mandatory = $true)][string]$Path
+        )
+        $RootPath = [IO.Path]::GetFullPath($Root).TrimEnd('\', '/')
+        $RootPrefix = $RootPath + [IO.Path]::DirectorySeparatorChar
+        $FullPath = [IO.Path]::GetFullPath($Path)
+        if (-not $FullPath.StartsWith($RootPrefix, [StringComparison]::OrdinalIgnoreCase) -or
+            -not [IO.File]::Exists($FullPath) -or [IO.Directory]::Exists($FullPath)) {
+            throw 'A7 post-Task-8 evidence file is unsafe or missing'
+        }
+        $File = [IO.FileInfo]::new($FullPath)
+        if (($File.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+            throw 'A7 post-Task-8 evidence file is linked'
+        }
+        $Current = $File.Directory
+        while ($null -ne $Current -and
+            $Current.FullName.StartsWith($RootPrefix, [StringComparison]::OrdinalIgnoreCase)) {
+            if (($Current.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+                throw 'A7 post-Task-8 evidence file is linked'
+            }
+            $Current = $Current.Parent
+        }
+        $RelativePath = $FullPath.Substring($RootPrefix.Length).Replace('\', '/')
+        return [pscustomobject][ordered]@{
+            path = $RelativePath
+            size = [long]$File.Length
+            sha256 = & $GetSha256 $FullPath
+        }
+    }
+    $PrePublicationFiles = @(
+        [IO.Directory]::EnumerateFiles($CampaignPath, '*', [IO.SearchOption]::AllDirectories) |
+            ForEach-Object { & $GetSafeFileRecord $CampaignPath $_ } |
+            Sort-Object -CaseSensitive path
+    )
+    $RequiredFiles = [System.Collections.Generic.List[object]]::new()
+    foreach ($Name in @(
+            '30-historical-preservation.json',
+            '40-campaign-result.json',
+            '41-campaign-file-manifest.json',
+            '51-campaign-closure-manifest.json'
+        )) {
+        $Path = [IO.Path]::Combine($AuditRoot, $Name)
+        if ([IO.File]::Exists($Path)) {
+            $Record = & $GetSafeFileRecord $CampaignPath $Path
+            [void]$RequiredFiles.Add([pscustomobject][ordered]@{
+                    path = [string]$Record.path
+                    exists = $true
+                    size = [long]$Record.size
+                    sha256 = [string]$Record.sha256
+                })
+        }
+        else {
+            if ([IO.Directory]::Exists($Path)) {
+                throw 'A7 post-Task-8 required evidence path is not a file'
+            }
+            [void]$RequiredFiles.Add([pscustomobject][ordered]@{
+                    path = "audit/$Name"
+                    exists = $false
+                })
+        }
+    }
+    $GetLeaseFileState = {
+        param([Parameter(Mandatory = $true)][string]$Path)
+        $FullPath = [IO.Path]::GetFullPath($Path)
+        if ([IO.File]::Exists($FullPath)) {
+            $File = [IO.FileInfo]::new($FullPath)
+            if (($File.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+                throw 'A7 post-Task-8 lease-state file is linked'
+            }
+            return [pscustomobject][ordered]@{
+                path = $FullPath
+                exists = $true
+                size = [long]$File.Length
+                sha256 = & $GetSha256 $FullPath
+            }
+        }
+        if ([IO.Directory]::Exists($FullPath)) {
+            throw 'A7 post-Task-8 lease-state path is not a file'
+        }
+        return [pscustomobject][ordered]@{
+            path = $FullPath
+            exists = $false
+        }
+    }
+    $LeaseFullPath = [IO.Path]::GetFullPath($LeasePath)
+    $LeaseState = [pscustomobject][ordered]@{
+        active = & $GetLeaseFileState $LeaseFullPath
+        released = & $GetLeaseFileState "$LeaseFullPath.released"
+        release_record = & $GetLeaseFileState "$LeaseFullPath.release.json"
+    }
+    $RecordedAt = [DateTimeOffset]::UtcNow.ToString('o')
+    $FailureRecord = [ordered]@{
+        schema_version = 1
+        owner_authorization_id = $OwnerAuthorizationId
+        run_id = $RunId
+        source_commit = $SourceCommit
+        spec_commit = $SpecCommit
+        plan_commit = $PlanCommit
+        image_tag = $ImageTag
+        image_id = $ImageId
+        campaign_root = $CampaignPath
+        task8_exit_code = $Task8ExitCode
+        observed_terminal = if ([string]::IsNullOrWhiteSpace($ObservedTerminal)) { $null } else { $ObservedTerminal }
+        validation_error = $ValidationError
+        required_files = @($RequiredFiles)
+        lease_state = $LeaseState
+        pre_publication_files = @($PrePublicationFiles)
+        recorded_at = $RecordedAt
+    }
+    Write-A7NewText -Path $FailurePath -Text ($FailureRecord | ConvertTo-Json -Depth 10 -Compress)
+    $FailureFile = [IO.FileInfo]::new($FailurePath)
+    $FailureSha256 = & $GetSha256 $FailurePath
+    $ClosureRecord = [ordered]@{
+        schema_version = 1
+        owner_authorization_id = $OwnerAuthorizationId
+        run_id = $RunId
+        source_commit = $SourceCommit
+        spec_commit = $SpecCommit
+        plan_commit = $PlanCommit
+        image_tag = $ImageTag
+        image_id = $ImageId
+        campaign_root = $CampaignPath
+        task8_exit_code = $Task8ExitCode
+        observed_terminal = if ([string]::IsNullOrWhiteSpace($ObservedTerminal)) { $null } else { $ObservedTerminal }
+        validation_error = $ValidationError
+        required_files = @($RequiredFiles)
+        lease_state = $LeaseState
+        pre_publication_files = @($PrePublicationFiles)
+        status = 'POST_TASK8_VALIDATION_FAILED'
+        failure_record = [ordered]@{
+            path = 'audit/52-task7-post-task8-validation-failure.json'
+            size = [long]$FailureFile.Length
+            sha256 = $FailureSha256
+        }
+        recorded_at = $RecordedAt
+    }
+    Write-A7NewText -Path $ClosurePath -Text ($ClosureRecord | ConvertTo-Json -Depth 10 -Compress)
+    $ClosureSha256 = & $GetSha256 $ClosurePath
+    try {
+        $PublishedFailure = [IO.File]::ReadAllText($FailurePath, [Text.Encoding]::UTF8) | ConvertFrom-Json
+        $PublishedClosure = [IO.File]::ReadAllText($ClosurePath, [Text.Encoding]::UTF8) | ConvertFrom-Json
+    }
+    catch { throw 'A7 post-Task-8 evidence failed parse-back' }
+    if ([string]$PublishedFailure.run_id -cne $RunId -or
+        [string]$PublishedClosure.status -cne 'POST_TASK8_VALIDATION_FAILED' -or
+        [string]$PublishedClosure.failure_record.sha256 -cne $FailureSha256 -or
+        (& $GetSha256 $FailurePath) -cne $FailureSha256 -or
+        (& $GetSha256 $ClosurePath) -cne $ClosureSha256) {
+        throw 'A7 post-Task-8 evidence failed identity revalidation'
+    }
+    return [pscustomobject][ordered]@{
+        failure_path = $FailurePath
+        failure_sha256 = $FailureSha256
+        closure_path = $ClosurePath
+        closure_sha256 = $ClosureSha256
+        validation_status = 'FAILED'
+    }
+}
+
 function Invoke-A7Launch {
     param(
         [Parameter(Mandatory = $true)][string]$RegisteredWorktree,
@@ -1738,6 +1965,8 @@ function Invoke-A7Launch {
 
     $Stage = 'campaign_claim'
     $ImageId = $null
+    $Task8Invoked = $false
+    $Task8Result = $null
     $CurrentImages = [System.Collections.Generic.List[object]]::new()
     foreach ($HistoricalImage in $HistoricalImages) { [void]$CurrentImages.Add($HistoricalImage) }
     try {
@@ -2003,6 +2232,7 @@ function Invoke-A7Launch {
             '-HostCampaignRoot', $CampaignRoot,
             '-LeasePath', $LeasePath
         )
+        $Task8Invoked = $true
         $Task8Result = Invoke-A7Native `
             -Executable $Task8Executable `
             -Arguments $Task8Arguments `
@@ -2010,60 +2240,137 @@ function Invoke-A7Launch {
             -StderrPath ([IO.Path]::Combine($AuditRoot, '24-task8.stderr.log')) `
             -WorkingDirectory $WorktreePath
 
-        $ResultPath = [IO.Path]::Combine($AuditRoot, '40-campaign-result.json')
-        $ClosurePath = [IO.Path]::Combine($AuditRoot, '51-campaign-closure-manifest.json')
-        $ReleasedLeasePath = "$LeasePath.released"
-        $ReleaseRecordPath = "$LeasePath.release.json"
-        foreach ($RequiredPath in @($ResultPath, $ClosurePath, $ReleasedLeasePath, $ReleaseRecordPath)) {
-            if (-not [IO.File]::Exists($RequiredPath)) {
-                throw 'A7 Task 8 did not publish required closure or lease-release evidence'
-            }
-        }
-        if ([IO.File]::Exists($LeasePath)) {
-            throw 'A7 Task 8 left the active lease in place'
-        }
         try {
-            $CampaignResult = [IO.File]::ReadAllText($ResultPath, [Text.Encoding]::UTF8) | ConvertFrom-Json
-            $Closure = [IO.File]::ReadAllText($ClosurePath, [Text.Encoding]::UTF8) | ConvertFrom-Json
-        }
-        catch { throw 'A7 Task 8 closure evidence is malformed' }
-        $Terminal = [string]$Closure.terminal
-        if (
-            [string]$Closure.run_id -cne $RunId -or
-            [string]$CampaignResult.run_id -cne $RunId -or
-            [string]$CampaignResult.terminal -cne $Terminal -or
-            @($AllowedTerminals | Where-Object { $_ -ceq $Terminal }).Count -ne 1
-        ) {
-            throw 'A7 Task 8 terminal binding mismatch'
-        }
-        foreach ($Record in @($Closure.files)) {
-            $RelativePath = [string]$Record.path
-            if ([IO.Path]::IsPathRooted($RelativePath) -or $RelativePath.Contains('..')) {
-                throw 'A7 Task 8 closure path is unsafe'
+            $ObservedTerminal = $null
+            foreach ($Name in @(
+                    '52-task7-post-task8-validation-failure.json',
+                    '53-task7-post-task8-validation-closure.json'
+                )) {
+                $Destination = [IO.Path]::Combine($AuditRoot, $Name)
+                if ([IO.File]::Exists($Destination) -or [IO.Directory]::Exists($Destination)) {
+                    throw "A7 post-Task-8 evidence destination already exists: $Name"
+                }
             }
-            $Path = [IO.Path]::GetFullPath([IO.Path]::Combine($CampaignRoot, $RelativePath.Replace('/', '\')))
-            $File = [IO.FileInfo]::new($Path)
-            if (
-                -not $File.Exists -or
-                [long]$File.Length -ne [long]$Record.size -or
-                (& $GetSha256 $Path) -cne [string]$Record.sha256
-            ) {
-                throw 'A7 Task 8 closure file hash mismatch'
+            $RequiredNames = @(
+                '30-historical-preservation.json',
+                '40-campaign-result.json',
+                '41-campaign-file-manifest.json',
+                '51-campaign-closure-manifest.json'
+            )
+            foreach ($Name in $RequiredNames) {
+                $RequiredPath = [IO.Path]::Combine($AuditRoot, $Name)
+                if (-not [IO.File]::Exists($RequiredPath) -or [IO.Directory]::Exists($RequiredPath)) {
+                    throw "A7 Task 8 required evidence is missing: $Name"
+                }
+                $RequiredItem = [IO.FileInfo]::new($RequiredPath)
+                if (($RequiredItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+                    throw "A7 Task 8 required evidence is linked: $Name"
+                }
+            }
+            $ResultPath = [IO.Path]::Combine($AuditRoot, '40-campaign-result.json')
+            $ClosurePath = [IO.Path]::Combine($AuditRoot, '51-campaign-closure-manifest.json')
+            $ReleasedLeasePath = "$LeasePath.released"
+            $ReleaseRecordPath = "$LeasePath.release.json"
+            foreach ($RequiredPath in @($ReleasedLeasePath, $ReleaseRecordPath)) {
+                if (-not [IO.File]::Exists($RequiredPath) -or [IO.Directory]::Exists($RequiredPath)) {
+                    throw 'A7 Task 8 did not publish required lease-release evidence'
+                }
+            }
+            if ([IO.File]::Exists($LeasePath)) {
+                throw 'A7 Task 8 left the active lease in place'
+            }
+            try {
+                $Closure = [IO.File]::ReadAllText($ClosurePath, [Text.Encoding]::UTF8) |
+                    ConvertFrom-Json
+                $ObservedTerminal = [string]$Closure.terminal
+            }
+            catch { throw 'A7 Task 8 closure evidence is malformed' }
+            try {
+                $CampaignResult = [IO.File]::ReadAllText($ResultPath, [Text.Encoding]::UTF8) |
+                    ConvertFrom-Json
+            }
+            catch { throw 'A7 Task 8 campaign result is malformed' }
+            $Terminal = $ObservedTerminal
+            if ([string]$Closure.run_id -cne $RunId -or
+                [string]$CampaignResult.run_id -cne $RunId -or
+                [string]$CampaignResult.terminal -cne $Terminal -or
+                @($AllowedTerminals | Where-Object { $_ -ceq $Terminal }).Count -ne 1) {
+                throw 'A7 Task 8 terminal binding mismatch'
+            }
+            $ExpectedClosurePaths = @(
+                'audit/30-historical-preservation.json',
+                'audit/40-campaign-result.json',
+                'audit/41-campaign-file-manifest.json'
+            )
+            $ClosureRecords = @($Closure.files)
+            if ($ClosureRecords.Count -ne $ExpectedClosurePaths.Count) {
+                throw 'A7 Task 8 closure file inventory mismatch'
+            }
+            $ObservedClosurePaths = @($ClosureRecords | ForEach-Object { [string]$_.path })
+            if ((@($ObservedClosurePaths | Sort-Object -CaseSensitive) -join "`n") -cne
+                (($ExpectedClosurePaths | Sort-Object -CaseSensitive) -join "`n")) {
+                throw 'A7 Task 8 closure path inventory mismatch'
+            }
+            foreach ($Record in $ClosureRecords) {
+                $RelativePath = [string]$Record.path
+                $Path = [IO.Path]::GetFullPath(
+                    [IO.Path]::Combine($CampaignRoot, $RelativePath.Replace('/', '\'))
+                )
+                $CampaignPrefix = $CampaignRoot.TrimEnd('\') + '\'
+                $File = [IO.FileInfo]::new($Path)
+                if (-not $Path.StartsWith($CampaignPrefix, [StringComparison]::OrdinalIgnoreCase) -or
+                    -not $File.Exists -or
+                    ($File.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or
+                    [long]$File.Length -ne [long]$Record.size -or
+                    (& $GetSha256 $Path) -cne [string]$Record.sha256) {
+                    throw 'A7 Task 8 closure file hash mismatch'
+                }
+            }
+            return [pscustomobject]@{
+                state = 'CLOSED'
+                terminal = $Terminal
+                run_id = $RunId
+                image_tag = $ImageTag
+                image_id = $ImageId
+                campaign_root = $CampaignRoot
+                lease_path = $LeasePath
+                validation_status = 'PASSED'
+                task8_invocation_count = 1
+                task8_exit_code = [int]$Task8Result.exit_code
             }
         }
-        return [pscustomobject]@{
-            state = 'CLOSED'
-            terminal = $Terminal
-            run_id = $RunId
-            image_tag = $ImageTag
-            image_id = $ImageId
-            campaign_root = $CampaignRoot
-            lease_path = $LeasePath
-            task8_invocation_count = 1
-            task8_exit_code = [int]$Task8Result.exit_code
+        catch {
+            $ValidationError = $_.Exception.Message
+            $PostTask8 = Close-A7PostTask8ValidationFailure `
+                -CampaignRoot $CampaignRoot `
+                -OwnerAuthorizationId $OwnerAuthorizationId `
+                -RunId $RunId `
+                -SourceCommit $ExpectedSourceCommit `
+                -SpecCommit $ExpectedSpecCommit `
+                -PlanCommit $ExpectedPlanCommit `
+                -ImageTag $ImageTag `
+                -ImageId $ImageId `
+                -Task8ExitCode ([int]$Task8Result.exit_code) `
+                -ObservedTerminal $ObservedTerminal `
+                -ValidationError $ValidationError `
+                -LeasePath $LeasePath
+            return [pscustomobject]@{
+                state = 'CLOSED'
+                terminal = $null
+                run_id = $RunId
+                image_tag = $ImageTag
+                image_id = $ImageId
+                campaign_root = $CampaignRoot
+                lease_path = $LeasePath
+                error = $ValidationError
+                validation_status = [string]$PostTask8.validation_status
+                task8_invocation_count = 1
+                task8_exit_code = [int]$Task8Result.exit_code
+            }
         }
     }
     catch {
+        if ($Task8Invoked) { throw }
         $FailureMessage = $_.Exception.Message
         $Closed = Close-A7Campaign `
             -CampaignRoot $CampaignRoot `

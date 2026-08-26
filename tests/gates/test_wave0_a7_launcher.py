@@ -1523,7 +1523,9 @@ raise SystemExit(91)
     )
 
 
-def _write_task8_adapter(path: Path, state_path: Path, *, exit_code: int = 0) -> None:
+def _write_task8_adapter(
+    path: Path, state_path: Path, *, mode: str = "ok", exit_code: int = 0
+) -> None:
     path.write_text(
         f"""import hashlib
 import json
@@ -1533,6 +1535,7 @@ from pathlib import Path
 
 args = sys.argv[1:]
 state_path = Path({str(state_path)!r})
+mode = {mode!r}
 state = json.loads(state_path.read_text(encoding="utf-8")) if state_path.exists() else {{}}
 state["task8_count"] = state.get("task8_count", 0) + 1
 state["task8_argv"] = args
@@ -1542,17 +1545,61 @@ campaign = Path(values["-HostCampaignRoot"])
 audit = campaign / "audit"
 lease = Path(values["-LeasePath"])
 released = Path(str(lease) + ".released")
-os.replace(lease, released)
-Path(str(lease) + ".release.json").write_text(json.dumps({{"released": True}}), encoding="utf-8")
+release_record = Path(str(lease) + ".release.json")
+if mode == "task8_active_lease":
+    pass
+elif mode == "task8_missing_release":
+    lease.unlink()
+    release_record.write_text(json.dumps({{"released": True}}), encoding="utf-8")
+elif mode == "task8_missing_release_record":
+    os.replace(lease, released)
+else:
+    os.replace(lease, released)
+    release_record.write_text(json.dumps({{"released": True}}), encoding="utf-8")
 terminal = "WAVE0_A7_DIAGNOSTIC_INCONCLUSIVE / WAVE0_NOT_PASSED / WAVE1_FORBIDDEN"
-(audit / "30-historical-preservation.json").write_text(json.dumps({{"preserved": True}}), encoding="utf-8")
-(audit / "40-campaign-result.json").write_text(json.dumps({{"run_id": values["-RunId"], "terminal": terminal}}), encoding="utf-8")
-(audit / "41-campaign-file-manifest.json").write_text(json.dumps({{"files": []}}), encoding="utf-8")
+if mode != "task8_missing_30":
+    (audit / "30-historical-preservation.json").write_text(json.dumps({{"preserved": True}}), encoding="utf-8")
+if mode != "task8_missing_40":
+    result_text = "not-json" if mode == "task8_malformed_result" else json.dumps({{
+        "run_id": values["-RunId"],
+        "terminal": (
+            "WAVE0_A7_DIAGNOSTIC_ATTRIBUTED / WAVE0_NOT_PASSED / WAVE1_FORBIDDEN"
+            if mode == "task8_terminal_mismatch" else terminal
+        ),
+    }})
+    (audit / "40-campaign-result.json").write_text(result_text, encoding="utf-8")
+if mode != "task8_missing_41":
+    (audit / "41-campaign-file-manifest.json").write_text(json.dumps({{"files": []}}), encoding="utf-8")
 records = []
 for name in ("30-historical-preservation.json", "40-campaign-result.json", "41-campaign-file-manifest.json"):
     target = audit / name
-    records.append({{"path": "audit/" + name, "size": target.stat().st_size, "sha256": hashlib.sha256(target.read_bytes()).hexdigest()}})
-(audit / "51-campaign-closure-manifest.json").write_text(json.dumps({{"run_id": values["-RunId"], "terminal": terminal, "files": records}}), encoding="utf-8")
+    if target.is_file():
+        records.append({{"path": "audit/" + name, "size": target.stat().st_size, "sha256": hashlib.sha256(target.read_bytes()).hexdigest()}})
+if mode != "task8_missing_51":
+    closure_text = "not-json" if mode == "task8_malformed_closure" else json.dumps({{
+        "run_id": values["-RunId"], "terminal": terminal, "files": records
+    }})
+    (audit / "51-campaign-closure-manifest.json").write_text(closure_text, encoding="utf-8")
+if mode == "task8_hash_drift":
+    (audit / "30-historical-preservation.json").write_text("drifted", encoding="utf-8")
+if mode == "task8_preexisting_52":
+    (audit / "52-task7-post-task8-validation-failure.json").write_text("occupied-52", encoding="utf-8")
+if mode == "task8_preexisting_53":
+    (audit / "53-task7-post-task8-validation-closure.json").write_text("occupied-53", encoding="utf-8")
+owned = []
+for name in (
+    "30-historical-preservation.json", "40-campaign-result.json",
+    "41-campaign-file-manifest.json", "51-campaign-closure-manifest.json",
+):
+    target = audit / name
+    if target.is_file():
+        owned.append({{
+            "path": name,
+            "size": target.stat().st_size,
+            "sha256": hashlib.sha256(target.read_bytes()).hexdigest(),
+        }})
+state["task8_owned_before_validation"] = owned
+state_path.write_text(json.dumps(state), encoding="utf-8")
 raise SystemExit({exit_code})
 """,
         encoding="utf-8",
@@ -1609,7 +1656,10 @@ def _launch_fixture(
     task8_state = tmp_path / "task8-state.json"
     task8_adapter = tmp_path / "task8_adapter.py"
     _write_docker_adapter(docker_adapter)
-    _write_task8_adapter(task8_adapter, task8_state, exit_code=task8_exit)
+    effective_task8_exit = 9 if mode == "task8_valid_nonzero" else task8_exit
+    _write_task8_adapter(
+        task8_adapter, task8_state, mode=mode, exit_code=effective_task8_exit
+    )
     preflight = {
         "gpu_uuid": "GPU-12345678",
         "gpu_name": "NVIDIA GeForce RTX 4090",
@@ -1655,6 +1705,7 @@ _LAUNCH_FUNCTIONS = (
     "Assert-A7ImageInspect",
     "New-A7Lease",
     "Close-A7Campaign",
+    "Close-A7PostTask8ValidationFailure",
     "Invoke-A7Launch",
 )
 
@@ -2184,8 +2235,10 @@ def test_transition_failure_closes_without_gpu_or_task8_retry(
     ).is_file()
 
 
-def test_task8_nonzero_exit_is_not_retried(tmp_path: Path) -> None:
-    fixture = _launch_fixture(tmp_path, task8_exit=9)
+def test_task8_nonzero_with_complete_evidence_remains_a_valid_closed_result(
+    tmp_path: Path,
+) -> None:
+    fixture = _launch_fixture(tmp_path, mode="task8_valid_nonzero")
 
     completed = _invoke_functions(_LAUNCH_FUNCTIONS, _launch_body(fixture))
 
@@ -2195,6 +2248,120 @@ def test_task8_nonzero_exit_is_not_retried(tmp_path: Path) -> None:
     assert task8_state["task8_count"] == 1
     assert result["task8_exit_code"] == 9
     assert result["terminal"].endswith("WAVE1_FORBIDDEN")
+    audit = Path(fixture["campaign"]) / "audit"
+    assert not (audit / "52-task7-post-task8-validation-failure.json").exists()
+    assert not (audit / "53-task7-post-task8-validation-closure.json").exists()
+
+
+@pytest.mark.parametrize(
+    "mode",
+    [
+        "task8_missing_30",
+        "task8_missing_40",
+        "task8_missing_41",
+        "task8_missing_51",
+        "task8_malformed_result",
+        "task8_malformed_closure",
+        "task8_terminal_mismatch",
+        "task8_hash_drift",
+        "task8_active_lease",
+        "task8_missing_release",
+        "task8_missing_release_record",
+    ],
+)
+def test_post_task8_validation_failure_uses_only_52_53_evidence(
+    tmp_path: Path, mode: str
+) -> None:
+    fixture = _launch_fixture(tmp_path, mode=mode)
+
+    completed = _invoke_functions(_LAUNCH_FUNCTIONS, _launch_body(fixture))
+
+    assert completed.returncode == 0, completed.stderr
+    result = json.loads(completed.stdout)
+    state = json.loads(Path(fixture["task8_state"]).read_text(encoding="utf-8"))
+    assert state["task8_count"] == 1
+    audit = Path(fixture["campaign"]) / "audit"
+    failure_path = audit / "52-task7-post-task8-validation-failure.json"
+    closure_path = audit / "53-task7-post-task8-validation-closure.json"
+    assert failure_path.is_file()
+    assert closure_path.is_file()
+    failure = json.loads(failure_path.read_text(encoding="utf-8"))
+    closure = json.loads(closure_path.read_text(encoding="utf-8"))
+    assert set(failure) == {
+        "schema_version",
+        "owner_authorization_id",
+        "run_id",
+        "source_commit",
+        "spec_commit",
+        "plan_commit",
+        "image_tag",
+        "image_id",
+        "campaign_root",
+        "task8_exit_code",
+        "observed_terminal",
+        "validation_error",
+        "required_files",
+        "lease_state",
+        "pre_publication_files",
+        "recorded_at",
+    }
+    assert set(closure) == {
+        *set(failure),
+        "status",
+        "failure_record",
+    }
+    assert set(failure["lease_state"]) == {"active", "released", "release_record"}
+    assert all(
+        set(record) in ({"path", "exists"}, {"path", "exists", "size", "sha256"})
+        for record in failure["required_files"]
+    )
+    assert result["task8_invocation_count"] == 1
+    assert result["validation_status"] == "FAILED"
+    assert closure["status"] == "POST_TASK8_VALIDATION_FAILED"
+    assert closure["failure_record"] == {
+        "path": "audit/52-task7-post-task8-validation-failure.json",
+        "size": failure_path.stat().st_size,
+        "sha256": _sha256(failure_path),
+    }
+    before = {
+        record["path"]: record for record in state["task8_owned_before_validation"]
+    }
+    for relative_path, record in before.items():
+        path = audit / relative_path
+        assert path.stat().st_size == record["size"]
+        assert _sha256(path) == record["sha256"]
+    if mode == "task8_active_lease":
+        assert Path(fixture["lease"]).is_file()
+        assert failure["lease_state"]["active"]["exists"] is True
+
+
+@pytest.mark.parametrize(
+    ("mode", "name", "content"),
+    [
+        (
+            "task8_preexisting_52",
+            "52-task7-post-task8-validation-failure.json",
+            "occupied-52",
+        ),
+        (
+            "task8_preexisting_53",
+            "53-task7-post-task8-validation-closure.json",
+            "occupied-53",
+        ),
+    ],
+)
+def test_post_task8_existing_52_53_fails_without_clobber_or_retry(
+    tmp_path: Path, mode: str, name: str, content: str
+) -> None:
+    fixture = _launch_fixture(tmp_path, mode=mode)
+
+    completed = _invoke_functions(_LAUNCH_FUNCTIONS, _launch_body(fixture))
+
+    assert completed.returncode != 0
+    state = json.loads(Path(fixture["task8_state"]).read_text(encoding="utf-8"))
+    assert state["task8_count"] == 1
+    destination = Path(fixture["campaign"]) / "audit" / name
+    assert destination.read_text(encoding="utf-8") == content
 
 
 def test_transition_preclaim_existing_campaign_leaves_image_and_lease_unclaimed(
