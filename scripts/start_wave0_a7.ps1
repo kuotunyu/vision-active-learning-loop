@@ -2651,6 +2651,21 @@ function Invoke-A7Production {
         -Task8RunnerPath ([IO.Path]::Combine($ScriptWorktree, 'scripts', 'run_wave0_a7.ps1'))
 }
 
+function Get-A7ProductionExitCode {
+    param([Parameter(Mandatory = $true)][object]$Result)
+
+    $ValidationProperty = $Result.PSObject.Properties['validation_status']
+    $Task8ExitProperty = $Result.PSObject.Properties['task8_exit_code']
+    if (
+        ($null -ne $ValidationProperty -and [string]$ValidationProperty.Value -ceq 'FAILED') -or
+        $null -eq $Task8ExitProperty -or
+        $null -eq $Task8ExitProperty.Value
+    ) {
+        return 2
+    }
+    return [int]$Task8ExitProperty.Value
+}
+
 $A7ProductionResult = Invoke-A7Production `
     -ExpectedSourceCommit $ExpectedSourceCommit `
     -ExpectedSpecCommit $ExpectedSpecCommit `
@@ -2658,10 +2673,5 @@ $A7ProductionResult = Invoke-A7Production `
     -ExpectedBranch $ExpectedBranch `
     -OwnerAuthorizationId $OwnerAuthorizationId
 $A7ProductionResult | ConvertTo-Json -Depth 8 -Compress
-$A7ProductionExitCode = if ($null -eq $A7ProductionResult.task8_exit_code) {
-    2
-}
-else {
-    [int]$A7ProductionResult.task8_exit_code
-}
+$A7ProductionExitCode = Get-A7ProductionExitCode -Result $A7ProductionResult
 exit $A7ProductionExitCode

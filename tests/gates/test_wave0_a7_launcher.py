@@ -2364,6 +2364,30 @@ def test_post_task8_existing_52_53_fails_without_clobber_or_retry(
     assert destination.read_text(encoding="utf-8") == content
 
 
+def test_launcher_exit_code_fails_closed_on_post_task8_validation_failure() -> None:
+    body = """
+$Results = @(
+    Get-A7ProductionExitCode -Result ([pscustomobject]@{
+        validation_status = 'FAILED'
+        task8_exit_code = 0
+    })
+    Get-A7ProductionExitCode -Result ([pscustomobject]@{
+        validation_status = 'PASSED'
+        task8_exit_code = 7
+    })
+    Get-A7ProductionExitCode -Result ([pscustomobject]@{
+        task8_exit_code = $null
+    })
+)
+$Results | ConvertTo-Json -Compress
+"""
+
+    completed = _invoke_functions(("Get-A7ProductionExitCode",), body)
+
+    assert completed.returncode == 0, completed.stderr
+    assert json.loads(completed.stdout) == [2, 7, 2]
+
+
 def test_transition_preclaim_existing_campaign_leaves_image_and_lease_unclaimed(
     tmp_path: Path,
 ) -> None:
