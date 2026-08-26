@@ -46,6 +46,25 @@ function New-A7BuildArguments {
     return $BuildArguments.ToArray()
 }
 
+function Get-A7LeaseReleasePaths {
+    param(
+        [Parameter(Mandatory = $true)][string]$ActivePath,
+        [Parameter(Mandatory = $true)][string]$RunId
+    )
+    if ($RunId -cnotmatch '^wave0-a7-[0-9]{8}T[0-9]{9}Z$') {
+        throw 'A7 lease release run identity is invalid'
+    }
+    $ActiveFullPath = [IO.Path]::GetFullPath($ActivePath)
+    $LeaseRoot = [IO.Path]::GetDirectoryName($ActiveFullPath)
+    if ([string]::IsNullOrWhiteSpace($LeaseRoot)) {
+        throw 'A7 lease release root is invalid'
+    }
+    return [pscustomobject][ordered]@{
+        released = [IO.Path]::Combine($LeaseRoot, "$RunId.released")
+        release_record = [IO.Path]::Combine($LeaseRoot, "$RunId.release.json")
+    }
+}
+
 function Assert-A7BuildArguments {
     param(
         [Parameter(Mandatory = $true)][string[]]$Arguments,
@@ -1560,8 +1579,9 @@ function Close-A7Campaign {
 
     $LeaseFullPath = [IO.Path]::GetFullPath($LeasePath)
     $LeaseAcquired = [IO.File]::Exists($LeaseFullPath)
-    $ReleasedPath = "$LeaseFullPath.released"
-    $ReleaseRecordPath = "$LeaseFullPath.release.json"
+    $ReleasePaths = Get-A7LeaseReleasePaths -ActivePath $LeaseFullPath -RunId $RunId
+    $ReleasedPath = [string]$ReleasePaths.released
+    $ReleaseRecordPath = [string]$ReleasePaths.release_record
     $LeaseReleased = [IO.File]::Exists($ReleasedPath) -and [IO.File]::Exists($ReleaseRecordPath)
     $CampaignResult = [ordered]@{
         schema_version = 1
@@ -1777,10 +1797,11 @@ function Close-A7PostTask8ValidationFailure {
         }
     }
     $LeaseFullPath = [IO.Path]::GetFullPath($LeasePath)
+    $ReleasePaths = Get-A7LeaseReleasePaths -ActivePath $LeaseFullPath -RunId $RunId
     $LeaseState = [pscustomobject][ordered]@{
         active = & $GetLeaseFileState $LeaseFullPath
-        released = & $GetLeaseFileState "$LeaseFullPath.released"
-        release_record = & $GetLeaseFileState "$LeaseFullPath.release.json"
+        released = & $GetLeaseFileState ([string]$ReleasePaths.released)
+        release_record = & $GetLeaseFileState ([string]$ReleasePaths.release_record)
     }
     $RecordedAt = [DateTimeOffset]::UtcNow.ToString('o')
     $FailureRecord = [ordered]@{
@@ -1961,11 +1982,12 @@ function Invoke-A7Launch {
     }
     $CampaignRoot = [IO.Path]::Combine($CampaignParent, $RunId)
     $LeasePath = [IO.Path]::Combine($LeaseRootPath, "$($Preflight.gpu_uuid).json")
+    $ReleasePaths = Get-A7LeaseReleasePaths -ActivePath $LeasePath -RunId $RunId
     foreach ($Destination in @(
             $CampaignRoot,
             $LeasePath,
-            "$LeasePath.released",
-            "$LeasePath.release.json"
+            [string]$ReleasePaths.released,
+            [string]$ReleasePaths.release_record
         )) {
         if ([IO.File]::Exists($Destination) -or [IO.Directory]::Exists($Destination)) {
             throw 'A7 launcher destination must not already exist'
@@ -2304,8 +2326,9 @@ function Invoke-A7Launch {
             }
             $ResultPath = [IO.Path]::Combine($AuditRoot, '40-campaign-result.json')
             $ClosurePath = [IO.Path]::Combine($AuditRoot, '51-campaign-closure-manifest.json')
-            $ReleasedLeasePath = "$LeasePath.released"
-            $ReleaseRecordPath = "$LeasePath.release.json"
+            $ReleasePaths = Get-A7LeaseReleasePaths -ActivePath $LeasePath -RunId $RunId
+            $ReleasedLeasePath = [string]$ReleasePaths.released
+            $ReleaseRecordPath = [string]$ReleasePaths.release_record
             foreach ($RequiredPath in @($ReleasedLeasePath, $ReleaseRecordPath)) {
                 if (-not [IO.File]::Exists($RequiredPath) -or [IO.Directory]::Exists($RequiredPath)) {
                     throw 'A7 Task 8 did not publish required lease-release evidence'

@@ -75,6 +75,25 @@ function Get-RelativeFileRecord {
     }
 }
 
+function Get-A7LeaseReleasePaths {
+    param(
+        [Parameter(Mandatory = $true)][string]$ActivePath,
+        [Parameter(Mandatory = $true)][string]$RunId
+    )
+    if ($RunId -cnotmatch '^wave0-a7-[0-9]{8}T[0-9]{9}Z$') {
+        throw 'A7 lease release run identity is invalid'
+    }
+    $ActiveFullPath = [IO.Path]::GetFullPath($ActivePath)
+    $LeaseRoot = [IO.Path]::GetDirectoryName($ActiveFullPath)
+    if ([string]::IsNullOrWhiteSpace($LeaseRoot)) {
+        throw 'A7 lease release root is invalid'
+    }
+    return [pscustomobject][ordered]@{
+        released = [IO.Path]::Combine($LeaseRoot, "$RunId.released")
+        release_record = [IO.Path]::Combine($LeaseRoot, "$RunId.release.json")
+    }
+}
+
 function Release-A7Lease {
     param(
         [Parameter(Mandatory = $true)][string]$ActivePath,
@@ -786,8 +805,9 @@ if ($LASTEXITCODE -ne 0 -or $SourceCommit.Length -ne 40) { throw 'source identit
 if (-not (Test-Path -LiteralPath $LeasePath -PathType Leaf)) { throw 'claimed GPU lease is required' }
 $Lease = Get-Content -LiteralPath $LeasePath -Raw -Encoding UTF8 | ConvertFrom-Json
 if ($Lease.run_id -ne $RunId) { throw 'GPU lease run identity mismatch' }
-$ReleasedLeasePath = "$LeasePath.released"
-$ReleaseRecordPath = "$LeasePath.release.json"
+$ReleasePaths = Get-A7LeaseReleasePaths -ActivePath $LeasePath -RunId $RunId
+$ReleasedLeasePath = [string]$ReleasePaths.released
+$ReleaseRecordPath = [string]$ReleasePaths.release_record
 if ((Test-Path -LiteralPath $ReleasedLeasePath) -or (Test-Path -LiteralPath $ReleaseRecordPath)) {
     throw 'fresh lease release destinations are required'
 }

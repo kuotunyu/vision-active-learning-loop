@@ -1431,7 +1431,8 @@ def test_transition_post_claim_failure_writes_complete_closure(tmp_path: Path) -
     fixture = _closure_fixture(tmp_path)
 
     completed = _invoke_functions(
-        ("Write-A7NewText", "Close-A7Campaign"), _closure_body(fixture)
+        ("Write-A7NewText", "Get-A7LeaseReleasePaths", "Close-A7Campaign"),
+        _closure_body(fixture),
     )
 
     assert completed.returncode == 0, completed.stderr
@@ -1481,7 +1482,8 @@ def test_closure_preserves_owner_approved_protected_git_transition(
     fixture["baseline_hash"] = _sha256(baseline_path)
 
     completed = _invoke_functions(
-        ("Write-A7NewText", "Close-A7Campaign"), _closure_body(fixture)
+        ("Write-A7NewText", "Get-A7LeaseReleasePaths", "Close-A7Campaign"),
+        _closure_body(fixture),
     )
 
     assert completed.returncode == 0, completed.stderr
@@ -1500,7 +1502,8 @@ def test_closure_no_clobber_rejects_existing_destination(tmp_path: Path) -> None
     diagnostic.write_text("occupied", encoding="utf-8")
 
     completed = _invoke_functions(
-        ("Write-A7NewText", "Close-A7Campaign"), _closure_body(fixture)
+        ("Write-A7NewText", "Get-A7LeaseReleasePaths", "Close-A7Campaign"),
+        _closure_body(fixture),
     )
 
     assert completed.returncode != 0
@@ -1612,8 +1615,8 @@ values = dict(zip(args[0::2], args[1::2]))
 campaign = Path(values["-HostCampaignRoot"])
 audit = campaign / "audit"
 lease = Path(values["-LeasePath"])
-released = Path(str(lease) + ".released")
-release_record = Path(str(lease) + ".release.json")
+released = lease.parent / f"{{values['-RunId']}}.released"
+release_record = lease.parent / f"{{values['-RunId']}}.release.json"
 if mode == "task8_active_lease":
     pass
 elif mode == "task8_missing_release":
@@ -1787,6 +1790,7 @@ def _launch_fixture(
 
 _LAUNCH_FUNCTIONS = (
     "New-A7BuildArguments",
+    "Get-A7LeaseReleasePaths",
     "Assert-A7BuildArguments",
     "Write-A7NewText",
     "Invoke-A7Native",
@@ -2243,6 +2247,29 @@ def test_task8_accepts_regular_audit_files_under_strict_mode(tmp_path: Path) -> 
     assert completed.stdout.strip() == "PASS"
 
 
+def test_task8_derives_run_scoped_release_evidence_paths(tmp_path: Path) -> None:
+    lease = tmp_path / "leases" / "GPU-12345678.json"
+    expected_released = lease.parent / f"{_RUN_ID}.released"
+    expected_record = lease.parent / f"{_RUN_ID}.release.json"
+
+    completed = _invoke_runner_functions(
+        ("Get-A7LeaseReleasePaths",),
+        f"""
+$Paths = Get-A7LeaseReleasePaths `
+    -ActivePath {_powershell_literal(str(lease))} `
+    -RunId {_powershell_literal(_RUN_ID)}
+$Paths | ConvertTo-Json -Compress
+""",
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    paths = json.loads(completed.stdout)
+    assert paths == {
+        "released": str(expected_released),
+        "release_record": str(expected_record),
+    }
+
+
 @pytest.mark.parametrize("kind", ["build", "microcheck"])
 @pytest.mark.parametrize(
     "mutation",
@@ -2324,7 +2351,44 @@ def test_microcheck_invocation_is_cpu_networkless_and_before_gpu_lease(
         str(fixture["lease"]),
     ]
     assert not Path(fixture["lease"]).exists()
-    assert Path(str(fixture["lease"]) + ".released").is_file()
+    assert (Path(fixture["lease"]).parent / f"{_RUN_ID}.released").is_file()
+
+
+def test_previous_fixed_gpu_release_evidence_does_not_block_fresh_run(
+    tmp_path: Path,
+) -> None:
+    fixture = _launch_fixture(tmp_path)
+    lease = Path(fixture["lease"])
+    previous_released = Path(str(lease) + ".released")
+    previous_record = Path(str(lease) + ".release.json")
+    previous_released.write_text("preserved released lease", encoding="utf-8")
+    previous_record.write_text("preserved release record", encoding="utf-8")
+
+    completed = _invoke_functions(_LAUNCH_FUNCTIONS, _launch_body(fixture))
+
+    assert completed.returncode == 0, completed.stderr
+    assert previous_released.read_text(encoding="utf-8") == "preserved released lease"
+    assert previous_record.read_text(encoding="utf-8") == "preserved release record"
+    assert (lease.parent / f"{_RUN_ID}.released").is_file()
+    assert (lease.parent / f"{_RUN_ID}.release.json").is_file()
+
+
+@pytest.mark.parametrize("suffix", [".released", ".release.json"])
+def test_existing_run_scoped_release_destination_fails_before_claim(
+    tmp_path: Path,
+    suffix: str,
+) -> None:
+    fixture = _launch_fixture(tmp_path)
+    destination = Path(fixture["lease"]).parent / f"{_RUN_ID}{suffix}"
+    destination.write_text("occupied", encoding="utf-8")
+
+    completed = _invoke_functions(_LAUNCH_FUNCTIONS, _launch_body(fixture))
+
+    assert completed.returncode != 0
+    assert destination.read_text(encoding="utf-8") == "occupied"
+    assert not Path(fixture["campaign"]).exists()
+    assert not Path(fixture["docker_state"]).exists()
+    assert not Path(fixture["task8_state"]).exists()
 
 
 @pytest.mark.parametrize(
