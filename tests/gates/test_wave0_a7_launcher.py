@@ -2231,6 +2231,18 @@ def test_task8_accepts_closed_task7_binding_audits(tmp_path: Path) -> None:
     assert completed.stdout.strip() == "PASS"
 
 
+def test_task8_accepts_regular_audit_files_under_strict_mode(tmp_path: Path) -> None:
+    fixture = _closed_audit_fixture(tmp_path)
+
+    completed = _invoke_runner_functions(
+        ("Test-Task7AuditBinding",),
+        "Set-StrictMode -Version Latest\n" + _task7_audit_binding_body(fixture),
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert completed.stdout.strip() == "PASS"
+
+
 @pytest.mark.parametrize("kind", ["build", "microcheck"])
 @pytest.mark.parametrize(
     "mutation",

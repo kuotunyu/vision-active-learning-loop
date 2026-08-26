@@ -106,7 +106,11 @@ function Test-Task7AuditBinding {
         if (-not [IO.File]::Exists($FullPath) -or [IO.Directory]::Exists($FullPath)) {
             throw 'Task 7 audit-bound file is missing'
         }
-        $Current = [IO.FileInfo]::new($FullPath)
+        $File = [IO.FileInfo]::new($FullPath)
+        if (($File.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+            throw 'Task 7 audit-bound link or junction is forbidden'
+        }
+        $Current = $File.Directory
         while ($null -ne $Current) {
             if (($Current.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
                 throw 'Task 7 audit-bound link or junction is forbidden'
