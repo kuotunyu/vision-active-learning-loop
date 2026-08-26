@@ -1369,6 +1369,26 @@ def _closure_fixture(tmp_path: Path) -> dict[str, object]:
                         "sha256": _sha256(protected),
                     }
                 ],
+                "current_protected_git": [
+                    {
+                        "path": "contract.txt",
+                        "size": protected.stat().st_size,
+                        "sha256": _sha256(protected),
+                    }
+                ],
+                "approved_protected_git_transitions": [
+                    {
+                        "path": "contract.txt",
+                        "root_size": protected.stat().st_size,
+                        "root_sha256": _sha256(protected),
+                        "current_size": protected.stat().st_size,
+                        "current_sha256": _sha256(protected),
+                        "spec_commit": "a" * 40,
+                        "spec_git_object": "b" * 40,
+                        "plan_commit": "c" * 40,
+                        "reason": "owner-approved-design-amendment",
+                    }
+                ],
             },
             separators=(",", ":"),
         ),
@@ -1436,6 +1456,42 @@ def test_transition_post_claim_failure_writes_complete_closure(tmp_path: Path) -
         path = Path(fixture["campaign"]) / record["path"]
         assert path.stat().st_size == record["size"]
         assert _sha256(path) == record["sha256"]
+
+
+def test_closure_preserves_owner_approved_protected_git_transition(
+    tmp_path: Path,
+) -> None:
+    fixture = _closure_fixture(tmp_path)
+    baseline_path = Path(fixture["baseline"])
+    baseline = json.loads(baseline_path.read_text(encoding="utf-8"))
+    root_payload = b"owner-approved-root-version\n"
+    root_sha256 = hashlib.sha256(root_payload).hexdigest()
+    root_record = baseline["protected_git"][0]
+    current_record = baseline["current_protected_git"][0]
+    root_record["size"] = len(root_payload)
+    root_record["sha256"] = root_sha256
+    transition = baseline["approved_protected_git_transitions"][0]
+    transition["root_size"] = len(root_payload)
+    transition["root_sha256"] = root_sha256
+    transition["current_size"] = current_record["size"]
+    transition["current_sha256"] = current_record["sha256"]
+    baseline_path.write_text(
+        json.dumps(baseline, separators=(",", ":")), encoding="utf-8"
+    )
+    fixture["baseline_hash"] = _sha256(baseline_path)
+
+    completed = _invoke_functions(
+        ("Write-A7NewText", "Close-A7Campaign"), _closure_body(fixture)
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    preservation = json.loads(
+        (Path(fixture["audit"]) / "30-historical-preservation.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert preservation["preserved"] is True
+    assert preservation["error"] is None
 
 
 def test_closure_no_clobber_rejects_existing_destination(tmp_path: Path) -> None:
@@ -1658,6 +1714,26 @@ def _launch_fixture(
                         "sha256": _sha256(protected),
                     }
                 ],
+                "current_protected_git": [
+                    {
+                        "path": "contract.txt",
+                        "size": protected.stat().st_size,
+                        "sha256": _sha256(protected),
+                    }
+                ],
+                "approved_protected_git_transitions": [
+                    {
+                        "path": "contract.txt",
+                        "root_size": protected.stat().st_size,
+                        "root_sha256": _sha256(protected),
+                        "current_size": protected.stat().st_size,
+                        "current_sha256": _sha256(protected),
+                        "spec_commit": "a" * 40,
+                        "spec_git_object": "b" * 40,
+                        "plan_commit": "c" * 40,
+                        "reason": "owner-approved-design-amendment",
+                    }
+                ],
             },
             separators=(",", ":"),
         ),
@@ -1849,6 +1925,11 @@ def _closed_audit_fixture(tmp_path: Path) -> dict[str, object]:
         "python",
         "-v",
         f"{tmp_path / 'worktree'}:/workspace:ro",
+        "-v",
+        (
+            f"{tmp_path / 'worktree' / 'schemas' / 'grid-sample-attribution-receipt.schema.json'}"
+            ":/opt/val/schemas/grid-sample-attribution-receipt.schema.json:ro"
+        ),
         "-v",
         f"{audit}:/audit:ro",
         image_id,
@@ -2198,6 +2279,11 @@ def test_microcheck_invocation_is_cpu_networkless_and_before_gpu_lease(
     assert "VAL_DATA_ROOT" not in " ".join(run_argv)
     assert "pytest" not in run_argv
     assert not any(value.startswith("/workspace/tests") for value in run_argv)
+    expected_schema_mount = (
+        f"{_ROOT / 'schemas' / 'grid-sample-attribution-receipt.schema.json'}"
+        ":/opt/val/schemas/grid-sample-attribution-receipt.schema.json:ro"
+    )
+    assert run_argv.count(expected_schema_mount) == 1
     assert task8_state["task8_count"] == 1
     assert task8_state["task8_argv"] == [
         "-RunId",

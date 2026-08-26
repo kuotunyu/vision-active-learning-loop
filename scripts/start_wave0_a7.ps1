@@ -1225,7 +1225,8 @@ function New-A7Lease {
         throw 'A7 lease-bound build argv mismatch'
     }
     $MicrocheckArgv = @($MicrocheckAudit.docker_argv)
-    if ($MicrocheckArgv.Count -ne 19 -or
+    $WorkspaceMountSuffix = ':/workspace:ro'
+    if ($MicrocheckArgv.Count -ne 21 -or
         [string]$MicrocheckArgv[0] -cne 'docker' -or
         [string]$MicrocheckArgv[1] -cne 'run' -or
         [string]$MicrocheckArgv[2] -cne '--rm' -or
@@ -1236,16 +1237,31 @@ function New-A7Lease {
         [string]$MicrocheckArgv[7] -cne '--entrypoint' -or
         [string]$MicrocheckArgv[8] -cne 'python' -or
         [string]$MicrocheckArgv[9] -cne '-v' -or
-        -not ([string]$MicrocheckArgv[10]).EndsWith(':/workspace:ro', [StringComparison]::Ordinal) -or
+        -not ([string]$MicrocheckArgv[10]).EndsWith($WorkspaceMountSuffix, [StringComparison]::Ordinal) -or
         [string]$MicrocheckArgv[11] -cne '-v' -or
-        [string]$MicrocheckArgv[12] -cne "${AuditRoot}:/audit:ro" -or
-        [string]$MicrocheckArgv[13] -cne $ImageId -or
-        [string]$MicrocheckArgv[14] -cne '/workspace/scripts/run_wave0_a7_cpu_microcheck.py' -or
-        [string]$MicrocheckArgv[15] -cne '--workspace-root' -or
-        [string]$MicrocheckArgv[16] -cne '/workspace' -or
-        [string]$MicrocheckArgv[17] -cne '--source-inventory' -or
-        [string]$MicrocheckArgv[18] -cne '/audit/21-a7-source-inventory.json') {
+        [string]$MicrocheckArgv[13] -cne '-v' -or
+        [string]$MicrocheckArgv[14] -cne "${AuditRoot}:/audit:ro" -or
+        [string]$MicrocheckArgv[15] -cne $ImageId -or
+        [string]$MicrocheckArgv[16] -cne '/workspace/scripts/run_wave0_a7_cpu_microcheck.py' -or
+        [string]$MicrocheckArgv[17] -cne '--workspace-root' -or
+        [string]$MicrocheckArgv[18] -cne '/workspace' -or
+        [string]$MicrocheckArgv[19] -cne '--source-inventory' -or
+        [string]$MicrocheckArgv[20] -cne '/audit/21-a7-source-inventory.json') {
         throw 'A7 lease-bound micro-check Docker argv mismatch'
+    }
+    $WorkspaceHostPath = ([string]$MicrocheckArgv[10]).Substring(
+        0,
+        ([string]$MicrocheckArgv[10]).Length - $WorkspaceMountSuffix.Length
+    )
+    $ExpectedSchemaMount = "{0}:/opt/val/schemas/grid-sample-attribution-receipt.schema.json:ro" -f (
+        [IO.Path]::Combine(
+            $WorkspaceHostPath,
+            'schemas',
+            'grid-sample-attribution-receipt.schema.json'
+        )
+    )
+    if ([string]$MicrocheckArgv[12] -cne $ExpectedSchemaMount) {
+        throw 'A7 lease-bound micro-check schema mount mismatch'
     }
     $StdoutLines = @([IO.File]::ReadAllText(
             $ExpectedPaths.microcheck_stdout,
@@ -1497,8 +1513,18 @@ function Close-A7Campaign {
             }
         }
 
+        $RootProtectedRecords = @($Baseline.protected_git)
+        $CurrentProtectedRecords = @($Baseline.current_protected_git)
+        $ApprovedTransitions = @($Baseline.approved_protected_git_transitions)
+        if (
+            $RootProtectedRecords.Count -eq 0 -or
+            $CurrentProtectedRecords.Count -ne $RootProtectedRecords.Count -or
+            $ApprovedTransitions.Count -ne 1
+        ) {
+            throw 'augmented protected Git lineage inventory mismatch'
+        }
         $ProtectedRootPath = [IO.Path]::GetFullPath($ProtectedGitRoot)
-        foreach ($Record in @($Baseline.protected_git)) {
+        foreach ($Record in $CurrentProtectedRecords) {
             $Path = [IO.Path]::GetFullPath(
                 [IO.Path]::Combine($ProtectedRootPath, ([string]$Record.path).Replace('/', '\'))
             )
@@ -2108,6 +2134,7 @@ function Invoke-A7Launch {
         $MicrocheckArguments = @(
             'run', '--rm', '--network', 'none', '--workdir', '/workspace', '--entrypoint', 'python',
             '-v', "${WorktreePath}:/workspace:ro",
+            '-v', "$([IO.Path]::Combine($WorktreePath, 'schemas', 'grid-sample-attribution-receipt.schema.json')):/opt/val/schemas/grid-sample-attribution-receipt.schema.json:ro",
             '-v', "${AuditRoot}:/audit:ro",
             $ImageId,
             '/workspace/scripts/run_wave0_a7_cpu_microcheck.py',

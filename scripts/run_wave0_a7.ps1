@@ -270,7 +270,8 @@ function Test-Task7AuditBinding {
         throw 'Task 7 micro-check payload binding mismatch'
     }
     $MicrocheckArgv = @($MicrocheckAudit.docker_argv)
-    if ($MicrocheckArgv.Count -ne 19 -or
+    $WorkspaceMountSuffix = ':/workspace:ro'
+    if ($MicrocheckArgv.Count -ne 21 -or
         [string]$MicrocheckArgv[0] -cne 'docker' -or
         [string]$MicrocheckArgv[1] -cne 'run' -or
         [string]$MicrocheckArgv[2] -cne '--rm' -or
@@ -281,16 +282,31 @@ function Test-Task7AuditBinding {
         [string]$MicrocheckArgv[7] -cne '--entrypoint' -or
         [string]$MicrocheckArgv[8] -cne 'python' -or
         [string]$MicrocheckArgv[9] -cne '-v' -or
-        -not ([string]$MicrocheckArgv[10]).EndsWith(':/workspace:ro', [StringComparison]::Ordinal) -or
+        -not ([string]$MicrocheckArgv[10]).EndsWith($WorkspaceMountSuffix, [StringComparison]::Ordinal) -or
         [string]$MicrocheckArgv[11] -cne '-v' -or
-        [string]$MicrocheckArgv[12] -cne "${AuditRoot}:/audit:ro" -or
-        [string]$MicrocheckArgv[13] -cne [string]$Lease.image_id -or
-        [string]$MicrocheckArgv[14] -cne '/workspace/scripts/run_wave0_a7_cpu_microcheck.py' -or
-        [string]$MicrocheckArgv[15] -cne '--workspace-root' -or
-        [string]$MicrocheckArgv[16] -cne '/workspace' -or
-        [string]$MicrocheckArgv[17] -cne '--source-inventory' -or
-        [string]$MicrocheckArgv[18] -cne '/audit/21-a7-source-inventory.json') {
+        [string]$MicrocheckArgv[13] -cne '-v' -or
+        [string]$MicrocheckArgv[14] -cne "${AuditRoot}:/audit:ro" -or
+        [string]$MicrocheckArgv[15] -cne [string]$Lease.image_id -or
+        [string]$MicrocheckArgv[16] -cne '/workspace/scripts/run_wave0_a7_cpu_microcheck.py' -or
+        [string]$MicrocheckArgv[17] -cne '--workspace-root' -or
+        [string]$MicrocheckArgv[18] -cne '/workspace' -or
+        [string]$MicrocheckArgv[19] -cne '--source-inventory' -or
+        [string]$MicrocheckArgv[20] -cne '/audit/21-a7-source-inventory.json') {
         throw 'Task 7 micro-check Docker argv binding mismatch'
+    }
+    $WorkspaceHostPath = ([string]$MicrocheckArgv[10]).Substring(
+        0,
+        ([string]$MicrocheckArgv[10]).Length - $WorkspaceMountSuffix.Length
+    )
+    $ExpectedSchemaMount = "{0}:/opt/val/schemas/grid-sample-attribution-receipt.schema.json:ro" -f (
+        [IO.Path]::Combine(
+            $WorkspaceHostPath,
+            'schemas',
+            'grid-sample-attribution-receipt.schema.json'
+        )
+    )
+    if ([string]$MicrocheckArgv[12] -cne $ExpectedSchemaMount) {
+        throw 'Task 7 micro-check schema mount binding mismatch'
     }
     $StdoutLines = @(Get-Content -LiteralPath $Paths.microcheck_stdout -Encoding UTF8 |
         Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
