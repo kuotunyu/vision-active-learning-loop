@@ -1,0 +1,1303 @@
+"""Real PowerShell behavior tests for the Wave 0 A7 launcher boundary."""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import subprocess
+import sys
+from pathlib import Path
+
+import pytest
+
+_ROOT = Path(__file__).resolve().parents[2]
+_LAUNCHER = _ROOT / "scripts" / "start_wave0_a7.ps1"
+_SOURCE = "a" * 40
+_SPEC = "b" * 40
+_PLAN = "c" * 40
+_RUN_ID = "wave0-a7-20260826T120000000Z"
+_TAG = f"vision-active-learning-loop:wave0-a7-{_SOURCE[:12]}-{_RUN_ID}"
+_BASE = "sha256:8aef630a54bc5c5146ae5ce68e6af5caa3df0fb690bb91544175c91f307e4356"
+
+
+def _powershell_literal(value: str) -> str:
+    return "'" + value.replace("'", "''") + "'"
+
+
+def _invoke_functions(
+    names: tuple[str, ...], body: str
+) -> subprocess.CompletedProcess[str]:
+    if not _LAUNCHER.is_file():
+        raise AssertionError("production A7 launcher script is missing")
+    launcher = _powershell_literal(str(_LAUNCHER))
+    requested = ",".join(_powershell_literal(name) for name in names)
+    script = f"""
+$Tokens = $null
+$Errors = $null
+$Ast = [Management.Automation.Language.Parser]::ParseFile(
+    {launcher}, [ref]$Tokens, [ref]$Errors
+)
+if ($Errors.Count -ne 0) {{ throw ($Errors | ForEach-Object Message) -join '; ' }}
+foreach ($FunctionName in @({requested})) {{
+    $Matches = @($Ast.FindAll({{
+        param($Node)
+        $Node -is [Management.Automation.Language.FunctionDefinitionAst] -and
+            $Node.Name -eq $FunctionName
+    }}, $true))
+    if ($Matches.Count -ne 1) {{ throw "function AST mismatch: $FunctionName" }}
+    Invoke-Expression $Matches[0].Extent.Text
+}}
+{body}
+"""
+    return subprocess.run(
+        ["pwsh", "-NoProfile", "-NonInteractive", "-Command", script],
+        cwd=_ROOT,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=False,
+    )
+
+
+def _new_arguments_body(*, mutation: str | None = None) -> str:
+    source = "z" * 40 if mutation == "malformed_source" else _SOURCE
+    base = f"sha256:{'f' * 64}" if mutation == "wrong_base" else _BASE
+    mutation_body = {
+        None: "",
+        "joined": (
+            "$BuildArguments[7] = $BuildArguments[7] + "
+            "' org.opencontainers.image.val.run_id=shadow'"
+        ),
+        "duplicate": (
+            "$BuildArguments[9] = 'org.opencontainers.image.revision=' + "
+            f"{_powershell_literal(_RUN_ID)}"
+        ),
+        "blank": "$BuildArguments[13] = 'org.opencontainers.image.val.plan_commit='",
+        "malformed_source": "",
+        "wrong_base": "",
+        "sixth": (
+            "$Prefix = @($BuildArguments[0..15]); "
+            "$Suffix = @($BuildArguments[16..18]); "
+            "$BuildArguments = @($Prefix + '--label' + "
+            "'org.opencontainers.image.extra=forbidden' + $Suffix)"
+        ),
+        "whitespace_key": (
+            "$BuildArguments[11] = $BuildArguments[11] + "
+            "' org.opencontainers.image.val.plan_commit=shadow'"
+        ),
+    }[mutation]
+    return f"""
+$BuildArguments = @(New-A7BuildArguments `
+    -SourceCommit {_powershell_literal(source)} `
+    -RunId {_powershell_literal(_RUN_ID)} `
+    -SpecCommit {_powershell_literal(_SPEC)} `
+    -PlanCommit {_powershell_literal(_PLAN)} `
+    -BaseDigest {_powershell_literal(base)} `
+    -ImageTag {_powershell_literal(_TAG)})
+{mutation_body}
+Assert-A7BuildArguments `
+    -Arguments $BuildArguments `
+    -SourceCommit {_powershell_literal(source)} `
+    -RunId {_powershell_literal(_RUN_ID)} `
+    -SpecCommit {_powershell_literal(_SPEC)} `
+    -PlanCommit {_powershell_literal(_PLAN)} `
+    -BaseDigest {_powershell_literal(base)} `
+    -ImageTag {_powershell_literal(_TAG)}
+$BuildArguments | ConvertTo-Json -Compress
+"""
+
+
+def test_launcher_builds_five_independent_label_pairs() -> None:
+    completed = _invoke_functions(
+        ("New-A7BuildArguments", "Assert-A7BuildArguments"),
+        _new_arguments_body(),
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    observed = json.loads(completed.stdout)
+    assert observed[:7] == [
+        "build",
+        "--no-cache",
+        "--progress",
+        "plain",
+        "--file",
+        "docker/wave0.Dockerfile",
+        "--label",
+    ]
+    assert observed[6:16] == [
+        "--label",
+        f"org.opencontainers.image.revision={_SOURCE}",
+        "--label",
+        f"org.opencontainers.image.val.run_id={_RUN_ID}",
+        "--label",
+        f"org.opencontainers.image.val.spec_commit={_SPEC}",
+        "--label",
+        f"org.opencontainers.image.val.plan_commit={_PLAN}",
+        "--label",
+        f"org.opencontainers.image.base.digest={_BASE}",
+    ]
+    assert observed[16:] == ["--tag", _TAG, "."]
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "joined",
+        "duplicate",
+        "blank",
+        "malformed_source",
+        "wrong_base",
+        "sixth",
+        "whitespace_key",
+    ],
+)
+def test_launcher_rejects_invalid_label_vectors(mutation: str) -> None:
+    completed = _invoke_functions(
+        ("New-A7BuildArguments", "Assert-A7BuildArguments"),
+        _new_arguments_body(mutation=mutation),
+    )
+
+    assert completed.returncode != 0
+
+
+def test_launcher_preserves_zero_byte_stdout_and_exit_code(tmp_path: Path) -> None:
+    stdout_path = tmp_path / "logs" / "stdout.log"
+    stderr_path = tmp_path / "logs" / "stderr.log"
+    stdout_path.parent.mkdir()
+    body = f"""
+$NativeArguments = @('-c', 'import sys; sys.exit(3)')
+$Result = Invoke-A7Native `
+    -Executable {_powershell_literal(sys.executable)} `
+    -Arguments $NativeArguments `
+    -StdoutPath {_powershell_literal(str(stdout_path))} `
+    -StderrPath {_powershell_literal(str(stderr_path))}
+$Result | ConvertTo-Json -Compress
+"""
+
+    completed = _invoke_functions(("Write-A7NewText", "Invoke-A7Native"), body)
+
+    assert completed.returncode == 0, completed.stderr
+    result = json.loads(completed.stdout)
+    assert result["exit_code"] == 3
+    assert result["stdout"] == ""
+    assert result["stderr"] == ""
+    assert stdout_path.is_file() and stdout_path.stat().st_size == 0
+    assert stderr_path.is_file() and stderr_path.stat().st_size == 0
+
+
+def test_launcher_passes_native_argv_without_shell_reparsing(tmp_path: Path) -> None:
+    stdout_path = tmp_path / "stdout.log"
+    stderr_path = tmp_path / "stderr.log"
+    expected = ["two words", "semi;Write-Output injected", "$HOME", 'quote"value']
+    native_arguments = [
+        "-c",
+        "import json,sys; print(json.dumps(sys.argv[1:]))",
+        *expected,
+    ]
+    encoded_arguments = ",".join(
+        _powershell_literal(value) for value in native_arguments
+    )
+    body = f"""
+$NativeArguments = @({encoded_arguments})
+$Result = Invoke-A7Native `
+    -Executable {_powershell_literal(sys.executable)} `
+    -Arguments $NativeArguments `
+    -StdoutPath {_powershell_literal(str(stdout_path))} `
+    -StderrPath {_powershell_literal(str(stderr_path))}
+$Result | ConvertTo-Json -Compress
+"""
+
+    completed = _invoke_functions(("Write-A7NewText", "Invoke-A7Native"), body)
+
+    assert completed.returncode == 0, completed.stderr
+    result = json.loads(completed.stdout)
+    assert result["exit_code"] == 0
+    assert json.loads(result["stdout"]) == expected
+    assert result["stderr"] == ""
+    assert json.loads(stdout_path.read_text(encoding="utf-8")) == expected
+
+
+def _inspect_document(*, mutation: str | None = None) -> str:
+    labels = {
+        "org.opencontainers.image.revision": _SOURCE,
+        "org.opencontainers.image.val.run_id": _RUN_ID,
+        "org.opencontainers.image.val.spec_commit": _SPEC,
+        "org.opencontainers.image.val.plan_commit": _PLAN,
+        "org.opencontainers.image.base.digest": _BASE,
+        "org.opencontainers.image.vendor": "fixture-vendor",
+    }
+    image_id = f"sha256:{'d' * 64}"
+    repo_tags = [_TAG]
+    if mutation == "missing":
+        labels.pop("org.opencontainers.image.val.run_id")
+    elif mutation == "concatenated":
+        labels[
+            "org.opencontainers.image.revision"
+        ] += f" org.opencontainers.image.val.run_id={_RUN_ID}"
+        labels.pop("org.opencontainers.image.val.run_id")
+    elif mutation == "wrong_label":
+        labels["org.opencontainers.image.val.plan_commit"] = "e" * 40
+    elif mutation == "wrong_tag":
+        repo_tags = ["vision-active-learning-loop:wrong"]
+    elif mutation == "wrong_id":
+        image_id = f"sha256:{'e' * 64}"
+    document = [
+        {
+            "Id": image_id,
+            "RepoTags": repo_tags,
+            "Config": {"Labels": labels},
+        }
+    ]
+    if mutation == "multiple":
+        document.append(json.loads(json.dumps(document[0])))
+    return json.dumps(document, sort_keys=True, separators=(",", ":"))
+
+
+def _inspect_body(document: str) -> str:
+    image_id = f"sha256:{'d' * 64}"
+    return f"""
+Assert-A7ImageInspect `
+    -InspectJson {_powershell_literal(document)} `
+    -ImageId {_powershell_literal(image_id)} `
+    -ImageTag {_powershell_literal(_TAG)} `
+    -SourceCommit {_powershell_literal(_SOURCE)} `
+    -RunId {_powershell_literal(_RUN_ID)} `
+    -SpecCommit {_powershell_literal(_SPEC)} `
+    -PlanCommit {_powershell_literal(_PLAN)} `
+    -BaseDigest {_powershell_literal(_BASE)}
+'VERIFIED'
+"""
+
+
+def test_launcher_accepts_exact_single_image_inspect() -> None:
+    completed = _invoke_functions(
+        ("Assert-A7ImageInspect",), _inspect_body(_inspect_document())
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert completed.stdout.strip() == "VERIFIED"
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    ["missing", "concatenated", "wrong_label", "wrong_tag", "wrong_id", "multiple"],
+)
+def test_launcher_rejects_missing_concatenated_or_wrong_image_inspect_labels(
+    mutation: str,
+) -> None:
+    completed = _invoke_functions(
+        ("Assert-A7ImageInspect",), _inspect_body(_inspect_document(mutation=mutation))
+    )
+
+    assert completed.returncode != 0
+
+
+def _git(repository: Path, *arguments: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        ["git", "-C", str(repository), *arguments],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=False,
+    )
+
+
+def _new_git_fixture(tmp_path: Path) -> tuple[Path, Path, str]:
+    repository = tmp_path / "repository"
+    linked = tmp_path / "linked"
+    repository.mkdir()
+    initialized = _git(repository, "init", "-b", "main")
+    assert initialized.returncode == 0, initialized.stderr
+    assert _git(repository, "config", "user.name", "Fixture").returncode == 0
+    assert (
+        _git(repository, "config", "user.email", "fixture@example.invalid").returncode
+        == 0
+    )
+    (repository / "tracked.txt").write_text("baseline\n", encoding="utf-8")
+    assert _git(repository, "add", "tracked.txt").returncode == 0
+    committed = _git(repository, "commit", "-m", "baseline")
+    assert committed.returncode == 0, committed.stderr
+    head = _git(repository, "rev-parse", "HEAD").stdout.strip()
+    assert _git(repository, "branch", "codex/fixture").returncode == 0
+    added = _git(
+        repository,
+        "worktree",
+        "add",
+        str(linked),
+        "codex/fixture",
+    )
+    assert added.returncode == 0, added.stderr
+    return repository, linked, head
+
+
+def _resolve_worktree_body(repository: Path, branch: str, head: str) -> str:
+    return f"""
+$Resolved = Resolve-A7Worktree `
+    -RepositoryRoot {_powershell_literal(str(repository))} `
+    -ExpectedBranch {_powershell_literal(branch)} `
+    -ExpectedHead {_powershell_literal(head)}
+$Resolved | ConvertTo-Json -Compress
+"""
+
+
+def test_launcher_resolves_exact_clean_registered_worktree(tmp_path: Path) -> None:
+    repository, linked, head = _new_git_fixture(tmp_path)
+
+    completed = _invoke_functions(
+        ("Resolve-A7Worktree",),
+        _resolve_worktree_body(repository, "codex/fixture", head),
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    result = json.loads(completed.stdout)
+    assert Path(result["worktree"]).resolve() == linked.resolve()
+    assert Path(result["canonical_root"]).resolve() == repository.resolve()
+    assert Path(result["common_dir"]).resolve() == (repository / ".git").resolve()
+    assert result["branch"] == "codex/fixture"
+    assert result["head"] == head
+
+
+@pytest.mark.parametrize("mutation", ["branch", "head"])
+def test_launcher_rejects_wrong_git_identity(tmp_path: Path, mutation: str) -> None:
+    repository, _, head = _new_git_fixture(tmp_path)
+    branch = "codex/wrong" if mutation == "branch" else "codex/fixture"
+    expected_head = "f" * 40 if mutation == "head" else head
+
+    completed = _invoke_functions(
+        ("Resolve-A7Worktree",),
+        _resolve_worktree_body(repository, branch, expected_head),
+    )
+
+    assert completed.returncode != 0
+
+
+@pytest.mark.parametrize("mutation", ["linked", "canonical", "staged"])
+def test_launcher_rejects_dirty_git_identity(tmp_path: Path, mutation: str) -> None:
+    repository, linked, head = _new_git_fixture(tmp_path)
+    if mutation == "linked":
+        (linked / "untracked.txt").write_text("dirty\n", encoding="utf-8")
+    elif mutation == "canonical":
+        (repository / "untracked.txt").write_text("dirty\n", encoding="utf-8")
+    else:
+        (linked / "tracked.txt").write_text("staged\n", encoding="utf-8")
+        assert _git(linked, "add", "tracked.txt").returncode == 0
+
+    completed = _invoke_functions(
+        ("Resolve-A7Worktree",),
+        _resolve_worktree_body(repository, "codex/fixture", head),
+    )
+
+    assert completed.returncode != 0
+
+
+def _sha256(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _history_fixture(tmp_path: Path) -> dict[str, object]:
+    artifact_root = tmp_path / "artifacts"
+    protected_root = tmp_path / "protected"
+    artifact_root.mkdir()
+    protected_root.mkdir()
+    original_artifact = artifact_root / "original.txt"
+    original_artifact.write_text("original\n", encoding="utf-8")
+    for name in ("failed-b/evidence.txt", "failed-a/evidence.txt"):
+        path = artifact_root / name
+        path.parent.mkdir()
+        path.write_text(name + "\n", encoding="utf-8")
+    protected = protected_root / "contract.txt"
+    protected.write_text("protected\n", encoding="utf-8")
+    original_image = {
+        "tag": "vision-active-learning-loop:wave0-original",
+        "image_id": f"sha256:{'1' * 64}",
+    }
+    current_images = [
+        {
+            "tag": "vision-active-learning-loop:wave0-failed-b",
+            "image_id": f"sha256:{'3' * 64}",
+        },
+        original_image,
+        {
+            "tag": "vision-active-learning-loop:wave0-failed-a",
+            "image_id": f"sha256:{'2' * 64}",
+        },
+    ]
+    baseline = {
+        "schema_version": 1,
+        "plan_commit": _PLAN,
+        "parent_baseline_sha256": "4" * 64,
+        "artifact_root": str(artifact_root),
+        "artifact_files": [
+            {
+                "path": "original.txt",
+                "size": original_artifact.stat().st_size,
+                "sha256": _sha256(original_artifact),
+            }
+        ],
+        "images": [original_image],
+        "protected_git": [
+            {
+                "path": "contract.txt",
+                "size": protected.stat().st_size,
+                "sha256": _sha256(protected),
+            }
+        ],
+    }
+    baseline_path = tmp_path / "baseline.json"
+    baseline_path.write_text(
+        json.dumps(baseline, sort_keys=True, separators=(",", ":")),
+        encoding="utf-8",
+    )
+    return {
+        "artifact_root": artifact_root,
+        "protected_root": protected_root,
+        "baseline": baseline,
+        "baseline_path": baseline_path,
+        "baseline_sha256": _sha256(baseline_path),
+        "current_images": current_images,
+        "output": tmp_path / "augmented.json",
+    }
+
+
+def _history_body(fixture: dict[str, object]) -> str:
+    return f"""
+$Result = New-A7AugmentedBaseline `
+    -OriginalBaselinePath {_powershell_literal(str(fixture['baseline_path']))} `
+    -ExpectedBaselineSha256 {_powershell_literal(str(fixture['baseline_sha256']))} `
+    -ArtifactRoot {_powershell_literal(str(fixture['artifact_root']))} `
+    -ProtectedGitRoot {_powershell_literal(str(fixture['protected_root']))} `
+    -ImageRecordsJson {_powershell_literal(json.dumps(fixture['current_images']))} `
+    -SourceCommit {_powershell_literal(_SOURCE)} `
+    -OutputPath {_powershell_literal(str(fixture['output']))}
+$Result | ConvertTo-Json -Compress
+"""
+
+
+def test_history_augments_exact_original_subset_with_preserved_failures(
+    tmp_path: Path,
+) -> None:
+    fixture = _history_fixture(tmp_path)
+
+    completed = _invoke_functions(
+        ("Write-A7NewText", "New-A7AugmentedBaseline"), _history_body(fixture)
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    result = json.loads(completed.stdout)
+    output = Path(fixture["output"])
+    document = json.loads(output.read_text(encoding="utf-8"))
+    assert result["sha256"] == _sha256(output)
+    assert result["artifact_count"] == 3
+    assert result["image_count"] == 3
+    assert result["protected_git_count"] == 1
+    assert document["source_commit"] == _SOURCE
+    assert document["parent_baseline_sha256"] == "4" * 64
+    assert [entry["path"] for entry in document["artifact_files"]] == [
+        "failed-a/evidence.txt",
+        "failed-b/evidence.txt",
+        "original.txt",
+    ]
+    assert [entry["tag"] for entry in document["images"]] == sorted(
+        entry["tag"] for entry in fixture["current_images"]
+    )
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "missing_artifact",
+        "changed_artifact",
+        "duplicate_artifact",
+        "phantom_artifact",
+        "changed_protected_git",
+        "changed_image_id",
+        "duplicate_image",
+        "wrong_baseline_hash",
+        "existing_destination",
+    ],
+)
+def test_history_rejects_drift_duplicates_and_existing_destination(
+    tmp_path: Path, mutation: str
+) -> None:
+    fixture = _history_fixture(tmp_path)
+    baseline = fixture["baseline"]
+    if mutation == "missing_artifact":
+        (Path(fixture["artifact_root"]) / "original.txt").unlink()
+    elif mutation == "changed_artifact":
+        (Path(fixture["artifact_root"]) / "original.txt").write_text(
+            "changed\n", encoding="utf-8"
+        )
+    elif mutation == "duplicate_artifact":
+        baseline["artifact_files"].append(dict(baseline["artifact_files"][0]))
+    elif mutation == "phantom_artifact":
+        baseline["artifact_files"].append(
+            {"path": "phantom.txt", "size": 0, "sha256": "0" * 64}
+        )
+    elif mutation == "changed_protected_git":
+        (Path(fixture["protected_root"]) / "contract.txt").write_text(
+            "changed\n", encoding="utf-8"
+        )
+    elif mutation == "changed_image_id":
+        fixture["current_images"][1]["image_id"] = f"sha256:{'9' * 64}"
+    elif mutation == "duplicate_image":
+        fixture["current_images"].append(dict(fixture["current_images"][0]))
+    elif mutation == "wrong_baseline_hash":
+        fixture["baseline_sha256"] = "f" * 64
+    elif mutation == "existing_destination":
+        Path(fixture["output"]).write_text("occupied", encoding="utf-8")
+    if mutation in {"duplicate_artifact", "phantom_artifact"}:
+        Path(fixture["baseline_path"]).write_text(
+            json.dumps(baseline, sort_keys=True, separators=(",", ":")),
+            encoding="utf-8",
+        )
+        fixture["baseline_sha256"] = _sha256(Path(fixture["baseline_path"]))
+
+    completed = _invoke_functions(
+        ("Write-A7NewText", "New-A7AugmentedBaseline"), _history_body(fixture)
+    )
+
+    assert completed.returncode != 0
+
+
+def test_history_rejects_symlinked_baseline_path(tmp_path: Path) -> None:
+    fixture = _history_fixture(tmp_path)
+    target = Path(fixture["baseline_path"])
+    link = tmp_path / "baseline-link.json"
+    try:
+        link.symlink_to(target)
+    except OSError as exc:
+        pytest.skip(f"symlink creation unavailable: {exc}")
+    fixture["baseline_path"] = link
+    fixture["baseline_sha256"] = _sha256(target)
+
+    completed = _invoke_functions(
+        ("Write-A7NewText", "New-A7AugmentedBaseline"), _history_body(fixture)
+    )
+
+    assert completed.returncode != 0
+
+
+def _gpu_preflight_body(mutation: str | None = None) -> str:
+    gpu_row = "GPU-12345678,NVIDIA GeForce RTX 4090,24564,100,24464"
+    context = "desktop-linux"
+    version = {"Client": {"Version": "fixture"}, "Server": {"Os": "linux"}}
+    info = {"OSType": "linux"}
+    wsl = "Running"
+    compute = "GPU-12345678,4321,C:/Windows/dwm.exe,[N/A]"
+    containers: list[dict[str, str]] = []
+    leases: list[str] = []
+    val_data_root = ""
+    if mutation == "wrong_context":
+        context = "default"
+    elif mutation == "missing_server":
+        version.pop("Server")
+    elif mutation == "wrong_server":
+        version["Server"] = {"Os": "windows"}
+    elif mutation == "wrong_info":
+        info["OSType"] = "windows"
+    elif mutation == "wsl_stopped":
+        wsl = "Stopped"
+    elif mutation == "zero_gpu":
+        gpu_row = ""
+    elif mutation == "two_gpu":
+        gpu_row += "\nGPU-87654321,NVIDIA GeForce RTX 4090,24564,0,24564"
+    elif mutation == "wrong_gpu_name":
+        gpu_row = "GPU-12345678,NVIDIA RTX 6000 Ada,24564,100,24464"
+    elif mutation == "wrong_gpu_uuid":
+        gpu_row = "12345678,NVIDIA GeForce RTX 4090,24564,100,24464"
+    elif mutation == "numeric_compute":
+        compute = "GPU-12345678,9876,C:/compute.exe,512"
+    elif mutation == "active_container":
+        containers = [{"id": "abc", "name": "val-wave0"}]
+    elif mutation == "active_lease":
+        leases = ["D:/leases/active.json"]
+    elif mutation == "val_data_root":
+        val_data_root = "D:/RDD"
+    return f"""
+$Result = Test-A7DockerGpuPreflight `
+    -DockerContext {_powershell_literal(context)} `
+    -DockerVersionJson {_powershell_literal(json.dumps(version))} `
+    -DockerInfoJson {_powershell_literal(json.dumps(info))} `
+    -DockerDesktopWslState {_powershell_literal(wsl)} `
+    -DockerGpuCsv {_powershell_literal(gpu_row)} `
+    -HostComputeCsv {_powershell_literal(compute)} `
+    -ProjectContainersJson {_powershell_literal(json.dumps(containers))} `
+    -ActiveLeasePathsJson {_powershell_literal(json.dumps(leases))} `
+    -ValDataRoot {_powershell_literal(val_data_root)}
+$Result | ConvertTo-Json -Depth 8 -Compress
+"""
+
+
+def test_docker_gpu_preflight_accepts_single_idle_rtx4090_with_wddm_rows() -> None:
+    completed = _invoke_functions(("Test-A7DockerGpuPreflight",), _gpu_preflight_body())
+
+    assert completed.returncode == 0, completed.stderr
+    result = json.loads(completed.stdout)
+    assert result["gpu_uuid"] == "GPU-12345678"
+    assert result["gpu_name"] == "NVIDIA GeForce RTX 4090"
+    assert result["memory_total_mib"] == 24564
+    assert result["host_processes"][0]["used_gpu_memory_mib"] is None
+    assert result["containers"] == []
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "wrong_context",
+        "missing_server",
+        "wrong_server",
+        "wrong_info",
+        "wsl_stopped",
+        "zero_gpu",
+        "two_gpu",
+        "wrong_gpu_name",
+        "wrong_gpu_uuid",
+        "numeric_compute",
+        "active_container",
+        "active_lease",
+        "val_data_root",
+    ],
+)
+def test_docker_gpu_preflight_rejects_unapproved_or_contended_state(
+    mutation: str,
+) -> None:
+    completed = _invoke_functions(
+        ("Test-A7DockerGpuPreflight",), _gpu_preflight_body(mutation)
+    )
+
+    assert completed.returncode != 0
+
+
+def _lease_fixture(tmp_path: Path) -> dict[str, object]:
+    campaign = tmp_path / "campaign"
+    audit = campaign / "audit"
+    lease_root = tmp_path / "leases"
+    campaign.mkdir()
+    audit.mkdir()
+    lease_root.mkdir()
+    baseline = tmp_path / "augmented-baseline.json"
+    build = audit / "20-image-build.json"
+    microcheck = audit / "22-a7-cpu-micro-check.json"
+    baseline.write_text('{"baseline":true}', encoding="utf-8")
+    build.write_text('{"build":"verified"}', encoding="utf-8")
+    microcheck.write_text('{"microcheck":"verified"}', encoding="utf-8")
+    return {
+        "campaign": campaign,
+        "lease": lease_root / "gpu-0.json",
+        "baseline": baseline,
+        "baseline_hash": _sha256(baseline),
+        "build": build,
+        "build_hash": _sha256(build),
+        "microcheck": microcheck,
+        "microcheck_hash": _sha256(microcheck),
+    }
+
+
+def _lease_body(fixture: dict[str, object]) -> str:
+    return f"""
+$Result = New-A7Lease `
+    -LeasePath {_powershell_literal(str(fixture['lease']))} `
+    -OwnerAuthorizationId 'owner-a7-fixture' `
+    -RunId {_powershell_literal(_RUN_ID)} `
+    -SourceCommit {_powershell_literal(_SOURCE)} `
+    -SpecCommit {_powershell_literal(_SPEC)} `
+    -PlanCommit {_powershell_literal(_PLAN)} `
+    -ImageTag {_powershell_literal(_TAG)} `
+    -ImageId 'sha256:{'d' * 64}' `
+    -BaseImageDigest {_powershell_literal(_BASE)} `
+    -GpuUuid 'GPU-12345678' `
+    -CampaignRoot {_powershell_literal(str(fixture['campaign']))} `
+    -HistoricalBaselinePath {_powershell_literal(str(fixture['baseline']))} `
+    -HistoricalBaselineSha256 {_powershell_literal(str(fixture['baseline_hash']))} `
+    -BuildAuditPath {_powershell_literal(str(fixture['build']))} `
+    -BuildAuditSha256 {_powershell_literal(str(fixture['build_hash']))} `
+    -MicrocheckAuditPath {_powershell_literal(str(fixture['microcheck']))} `
+    -MicrocheckAuditSha256 {_powershell_literal(str(fixture['microcheck_hash']))} `
+    -HostProcessesJson '[{{"gpu_uuid":"GPU-12345678","pid":4321,"process_name":"dwm.exe","used_gpu_memory_mib":null}}]' `
+    -ContainersJson '[]' `
+    -ClaimedAt '2026-08-26T12:00:00.0000000Z'
+$Result | ConvertTo-Json -Depth 8 -Compress
+"""
+
+
+def test_gpu_lease_is_atomic_hash_bound_and_parseable(tmp_path: Path) -> None:
+    fixture = _lease_fixture(tmp_path)
+
+    completed = _invoke_functions(
+        ("Write-A7NewText", "New-A7Lease"), _lease_body(fixture)
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    result = json.loads(completed.stdout)
+    lease = Path(fixture["lease"])
+    document = json.loads(lease.read_text(encoding="utf-8"))
+    assert result["sha256"] == _sha256(lease)
+    assert document["run_id"] == _RUN_ID
+    assert document["build_audit_sha256"] == fixture["build_hash"]
+    assert document["microcheck_audit_sha256"] == fixture["microcheck_hash"]
+    assert document["host_processes"][0]["used_gpu_memory_mib"] is None
+    assert document["containers"] == []
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "missing_build",
+        "missing_microcheck",
+        "changed_build_hash",
+        "changed_microcheck_hash",
+        "existing_lease",
+        "missing_baseline",
+    ],
+)
+def test_gpu_lease_rejects_missing_changed_or_contended_inputs(
+    tmp_path: Path, mutation: str
+) -> None:
+    fixture = _lease_fixture(tmp_path)
+    if mutation == "missing_build":
+        Path(fixture["build"]).unlink()
+    elif mutation == "missing_microcheck":
+        Path(fixture["microcheck"]).unlink()
+    elif mutation == "changed_build_hash":
+        fixture["build_hash"] = "e" * 64
+    elif mutation == "changed_microcheck_hash":
+        fixture["microcheck_hash"] = "e" * 64
+    elif mutation == "existing_lease":
+        Path(fixture["lease"]).write_text("occupied", encoding="utf-8")
+    elif mutation == "missing_baseline":
+        Path(fixture["baseline"]).unlink()
+
+    completed = _invoke_functions(
+        ("Write-A7NewText", "New-A7Lease"), _lease_body(fixture)
+    )
+
+    assert completed.returncode != 0
+    if mutation != "existing_lease":
+        assert not Path(fixture["lease"]).exists()
+
+
+def test_gpu_lease_rejects_symlinked_lease_root(tmp_path: Path) -> None:
+    fixture = _lease_fixture(tmp_path)
+    target = tmp_path / "real-leases"
+    target.mkdir()
+    link = tmp_path / "linked-leases"
+    try:
+        link.symlink_to(target, target_is_directory=True)
+    except OSError as exc:
+        pytest.skip(f"symlink creation unavailable: {exc}")
+    fixture["lease"] = link / "gpu-0.json"
+
+    completed = _invoke_functions(
+        ("Write-A7NewText", "New-A7Lease"), _lease_body(fixture)
+    )
+
+    assert completed.returncode != 0
+
+
+def _closure_fixture(tmp_path: Path) -> dict[str, object]:
+    artifact_root = tmp_path / "artifacts"
+    campaign = artifact_root / "a7-runs" / _RUN_ID
+    audit = campaign / "audit"
+    protected_root = tmp_path / "protected"
+    artifact_root.mkdir()
+    protected_root.mkdir()
+    historical = artifact_root / "historical.txt"
+    historical.write_text("immutable\n", encoding="utf-8")
+    protected = protected_root / "contract.txt"
+    protected.write_text("protected\n", encoding="utf-8")
+    baseline = tmp_path / "augmented.json"
+    image = {
+        "tag": "vision-active-learning-loop:wave0-historical",
+        "image_id": f"sha256:{'1' * 64}",
+    }
+    baseline.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "source_commit": _SOURCE,
+                "parent_baseline_sha256": "4" * 64,
+                "artifact_root": str(artifact_root),
+                "artifact_files": [
+                    {
+                        "path": "historical.txt",
+                        "size": historical.stat().st_size,
+                        "sha256": _sha256(historical),
+                    }
+                ],
+                "images": [image],
+                "protected_git": [
+                    {
+                        "path": "contract.txt",
+                        "size": protected.stat().st_size,
+                        "sha256": _sha256(protected),
+                    }
+                ],
+            },
+            separators=(",", ":"),
+        ),
+        encoding="utf-8",
+    )
+    audit.mkdir(parents=True)
+    (audit / "00-task7-identity.json").write_text("{}", encoding="utf-8")
+    return {
+        "artifact_root": artifact_root,
+        "campaign": campaign,
+        "audit": audit,
+        "protected_root": protected_root,
+        "baseline": baseline,
+        "baseline_hash": _sha256(baseline),
+        "images": [image],
+        "lease": tmp_path / "leases" / "gpu.json",
+    }
+
+
+def _closure_body(fixture: dict[str, object]) -> str:
+    return f"""
+$Result = Close-A7Campaign `
+    -CampaignRoot {_powershell_literal(str(fixture['campaign']))} `
+    -ProtectedGitRoot {_powershell_literal(str(fixture['protected_root']))} `
+    -HistoricalBaselinePath {_powershell_literal(str(fixture['baseline']))} `
+    -HistoricalBaselineSha256 {_powershell_literal(str(fixture['baseline_hash']))} `
+    -CurrentImagesJson {_powershell_literal(json.dumps(fixture['images']))} `
+    -CurrentImageTag {_powershell_literal(_TAG)} `
+    -RunId {_powershell_literal(_RUN_ID)} `
+    -SourceCommit {_powershell_literal(_SOURCE)} `
+    -Stage 'image_build' `
+    -FailureMessage 'fixture build failed' `
+    -LeasePath {_powershell_literal(str(fixture['lease']))} `
+    -Terminal 'WAVE0_A7_DIAGNOSTIC_INCONCLUSIVE / WAVE0_NOT_PASSED / WAVE1_FORBIDDEN'
+$Result | ConvertTo-Json -Depth 8 -Compress
+"""
+
+
+def test_transition_post_claim_failure_writes_complete_closure(tmp_path: Path) -> None:
+    fixture = _closure_fixture(tmp_path)
+
+    completed = _invoke_functions(
+        ("Write-A7NewText", "Close-A7Campaign"), _closure_body(fixture)
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    result = json.loads(completed.stdout)
+    audit = Path(fixture["audit"])
+    expected = {
+        "23-image-build-failure-diagnostic.json",
+        "30-historical-preservation.json",
+        "40-campaign-result.json",
+        "41-campaign-file-manifest.json",
+        "51-campaign-closure-manifest.json",
+    }
+    assert expected.issubset({path.name for path in audit.iterdir()})
+    assert result["state"] == "CLOSED"
+    assert result["lease_acquired"] is False
+    closure = json.loads(
+        (audit / "51-campaign-closure-manifest.json").read_text(encoding="utf-8")
+    )
+    assert closure["terminal"].endswith("WAVE1_FORBIDDEN")
+    assert len(closure["files"]) == 4
+    for record in closure["files"]:
+        path = Path(fixture["campaign"]) / record["path"]
+        assert path.stat().st_size == record["size"]
+        assert _sha256(path) == record["sha256"]
+
+
+def test_closure_no_clobber_rejects_existing_destination(tmp_path: Path) -> None:
+    fixture = _closure_fixture(tmp_path)
+    diagnostic = Path(fixture["audit"]) / "23-image-build-failure-diagnostic.json"
+    diagnostic.write_text("occupied", encoding="utf-8")
+
+    completed = _invoke_functions(
+        ("Write-A7NewText", "Close-A7Campaign"), _closure_body(fixture)
+    )
+
+    assert completed.returncode != 0
+    assert diagnostic.read_text(encoding="utf-8") == "occupied"
+
+
+def _write_docker_adapter(path: Path) -> None:
+    path.write_text(
+        """import json
+import sys
+from pathlib import Path
+
+args = list(sys.argv[1:])
+if args[:1] != ["--state"] or len(args) < 5 or args[2:3] != ["--mode"]:
+    raise SystemExit(90)
+state_path = Path(args[1])
+mode = args[3]
+command = args[4:]
+state = json.loads(state_path.read_text(encoding="utf-8")) if state_path.exists() else {
+    "build_count": 0,
+    "microcheck_count": 0,
+    "commands": [],
+}
+state["commands"].append(command)
+if command[:1] == ["build"]:
+    state["build_count"] += 1
+    labels = {}
+    for index, value in enumerate(command):
+        if value == "--label":
+            key, label_value = command[index + 1].split("=", 1)
+            labels[key] = label_value
+    tag = command[command.index("--tag") + 1]
+    state.update({"labels": labels, "tag": tag, "built": mode != "build_fail"})
+    state_path.write_text(json.dumps(state), encoding="utf-8")
+    raise SystemExit(7 if mode == "build_fail" else 0)
+if command[:2] == ["image", "inspect"]:
+    if not state.get("built"):
+        state_path.write_text(json.dumps(state), encoding="utf-8")
+        raise SystemExit(1)
+    labels = dict(state["labels"])
+    if mode == "inspect_wrong":
+        labels["org.opencontainers.image.val.plan_commit"] = "f" * 40
+    document = [{
+        "Id": "sha256:" + "d" * 64,
+        "RepoTags": [state["tag"]],
+        "Config": {"Labels": labels},
+    }]
+    print(json.dumps(document, separators=(",", ":")))
+    state_path.write_text(json.dumps(state), encoding="utf-8")
+    raise SystemExit(0)
+if command[:1] == ["run"]:
+    state["microcheck_count"] += 1
+    state_path.write_text(json.dumps(state), encoding="utf-8")
+    if mode == "micro_blank":
+        raise SystemExit(0)
+    if mode == "micro_malformed":
+        print("not-json")
+        raise SystemExit(0)
+    mount = next(value for value in command if value.endswith(":/audit:ro"))
+    audit_root = Path(mount[: -len(":/audit:ro")])
+    inventory_path = audit_root / "21-a7-source-inventory.json"
+    inventory = json.loads(inventory_path.read_text(encoding="utf-8"))
+    result = {
+        "schema_version": 1,
+        "status": "RECORDED",
+        "source_commit": inventory["source_commit"],
+        "source_inventory_sha256": __import__("hashlib").sha256(inventory_path.read_bytes()).hexdigest(),
+        "source_files": inventory["files"],
+        "manifest_target": "vision_active_learning_loop.diagnostics.grid_sample_attribution:main",
+        "canonical_dtypes": ["bfloat16", "float16", "float32", "float64"],
+        "snapshot_tensor_count": 27,
+        "snapshot_names": [f"tensor-{index:02d}" for index in range(27)],
+        "snapshot_corruption_rejected": True,
+        "receipt_kinds": ["control", "instrumented", "isolated-vjp", "aggregate"],
+        "classifier_statuses": ["ATTRIBUTED", "INCONCLUSIVE", "NOT_ATTRIBUTED"],
+        "cuda_initialized": mode == "micro_cuda",
+    }
+    if mode == "micro_wrong_source":
+        result["source_commit"] = "f" * 40
+    payload = json.dumps(result, separators=(",", ":"))
+    print(payload)
+    if mode == "micro_multiple":
+        print(payload)
+    raise SystemExit(0)
+raise SystemExit(91)
+""",
+        encoding="utf-8",
+    )
+
+
+def _write_task8_adapter(path: Path, state_path: Path, *, exit_code: int = 0) -> None:
+    path.write_text(
+        f"""import hashlib
+import json
+import os
+import sys
+from pathlib import Path
+
+args = sys.argv[1:]
+state_path = Path({str(state_path)!r})
+state = json.loads(state_path.read_text(encoding="utf-8")) if state_path.exists() else {{}}
+state["task8_count"] = state.get("task8_count", 0) + 1
+state["task8_argv"] = args
+state_path.write_text(json.dumps(state), encoding="utf-8")
+values = dict(zip(args[0::2], args[1::2]))
+campaign = Path(values["-HostCampaignRoot"])
+audit = campaign / "audit"
+lease = Path(values["-LeasePath"])
+released = Path(str(lease) + ".released")
+os.replace(lease, released)
+Path(str(lease) + ".release.json").write_text(json.dumps({{"released": True}}), encoding="utf-8")
+terminal = "WAVE0_A7_DIAGNOSTIC_INCONCLUSIVE / WAVE0_NOT_PASSED / WAVE1_FORBIDDEN"
+(audit / "30-historical-preservation.json").write_text(json.dumps({{"preserved": True}}), encoding="utf-8")
+(audit / "40-campaign-result.json").write_text(json.dumps({{"run_id": values["-RunId"], "terminal": terminal}}), encoding="utf-8")
+(audit / "41-campaign-file-manifest.json").write_text(json.dumps({{"files": []}}), encoding="utf-8")
+records = []
+for name in ("30-historical-preservation.json", "40-campaign-result.json", "41-campaign-file-manifest.json"):
+    target = audit / name
+    records.append({{"path": "audit/" + name, "size": target.stat().st_size, "sha256": hashlib.sha256(target.read_bytes()).hexdigest()}})
+(audit / "51-campaign-closure-manifest.json").write_text(json.dumps({{"run_id": values["-RunId"], "terminal": terminal, "files": records}}), encoding="utf-8")
+raise SystemExit({exit_code})
+""",
+        encoding="utf-8",
+    )
+
+
+def _launch_fixture(
+    tmp_path: Path, *, mode: str = "ok", task8_exit: int = 0
+) -> dict[str, object]:
+    artifact_root = tmp_path / "artifacts"
+    (artifact_root / "a7-runs").mkdir(parents=True)
+    lease_root = artifact_root / "leases"
+    lease_root.mkdir()
+    historical = artifact_root / "historical.txt"
+    historical.write_text("immutable\n", encoding="utf-8")
+    protected_root = tmp_path / "protected"
+    protected_root.mkdir()
+    protected = protected_root / "contract.txt"
+    protected.write_text("protected\n", encoding="utf-8")
+    image = {
+        "tag": "vision-active-learning-loop:wave0-historical",
+        "image_id": f"sha256:{'1' * 64}",
+    }
+    baseline = tmp_path / "augmented.json"
+    baseline.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "source_commit": _SOURCE,
+                "parent_baseline_sha256": "4" * 64,
+                "artifact_root": str(artifact_root),
+                "artifact_files": [
+                    {
+                        "path": "historical.txt",
+                        "size": historical.stat().st_size,
+                        "sha256": _sha256(historical),
+                    }
+                ],
+                "images": [image],
+                "protected_git": [
+                    {
+                        "path": "contract.txt",
+                        "size": protected.stat().st_size,
+                        "sha256": _sha256(protected),
+                    }
+                ],
+            },
+            separators=(",", ":"),
+        ),
+        encoding="utf-8",
+    )
+    docker_state = tmp_path / "docker-state.json"
+    docker_adapter = tmp_path / "docker_adapter.py"
+    task8_state = tmp_path / "task8-state.json"
+    task8_adapter = tmp_path / "task8_adapter.py"
+    _write_docker_adapter(docker_adapter)
+    _write_task8_adapter(task8_adapter, task8_state, exit_code=task8_exit)
+    preflight = {
+        "gpu_uuid": "GPU-12345678",
+        "gpu_name": "NVIDIA GeForce RTX 4090",
+        "host_processes": [
+            {
+                "gpu_uuid": "GPU-12345678",
+                "pid": 4321,
+                "process_name": "dwm.exe",
+                "used_gpu_memory_mib": None,
+            }
+        ],
+        "containers": [],
+    }
+    return {
+        "artifact_root": artifact_root,
+        "lease_root": lease_root,
+        "protected_root": protected_root,
+        "baseline": baseline,
+        "baseline_hash": _sha256(baseline),
+        "images": [image],
+        "docker_state": docker_state,
+        "docker_adapter": docker_adapter,
+        "docker_prefix": [
+            str(docker_adapter),
+            "--state",
+            str(docker_state),
+            "--mode",
+            mode,
+        ],
+        "task8_state": task8_state,
+        "task8_adapter": task8_adapter,
+        "preflight": preflight,
+        "campaign": artifact_root / "a7-runs" / _RUN_ID,
+        "lease": lease_root / "GPU-12345678.json",
+    }
+
+
+_LAUNCH_FUNCTIONS = (
+    "New-A7BuildArguments",
+    "Assert-A7BuildArguments",
+    "Write-A7NewText",
+    "Invoke-A7Native",
+    "Assert-A7ImageInspect",
+    "New-A7Lease",
+    "Close-A7Campaign",
+    "Invoke-A7Launch",
+)
+
+
+def _launch_body(fixture: dict[str, object]) -> str:
+    docker_prefix = ",".join(
+        _powershell_literal(value) for value in fixture["docker_prefix"]
+    )
+    return f"""
+$Result = Invoke-A7Launch `
+    -RegisteredWorktree {_powershell_literal(str(_ROOT))} `
+    -ProtectedGitRoot {_powershell_literal(str(fixture['protected_root']))} `
+    -ArtifactRoot {_powershell_literal(str(fixture['artifact_root']))} `
+    -LeaseRoot {_powershell_literal(str(fixture['lease_root']))} `
+    -HistoricalBaselinePath {_powershell_literal(str(fixture['baseline']))} `
+    -HistoricalBaselineSha256 {_powershell_literal(str(fixture['baseline_hash']))} `
+    -HistoricalImagesJson {_powershell_literal(json.dumps(fixture['images']))} `
+    -PreflightJson {_powershell_literal(json.dumps(fixture['preflight']))} `
+    -RunId {_powershell_literal(_RUN_ID)} `
+    -ExpectedSourceCommit {_powershell_literal(_SOURCE)} `
+    -ExpectedSpecCommit {_powershell_literal(_SPEC)} `
+    -ExpectedPlanCommit {_powershell_literal(_PLAN)} `
+    -ExpectedBranch 'codex/fixture' `
+    -OwnerAuthorizationId 'owner-a7-fixture' `
+    -DockerExecutable {_powershell_literal(sys.executable)} `
+    -DockerPrefixArguments @({docker_prefix}) `
+    -Task8Executable {_powershell_literal(sys.executable)} `
+    -Task8PrefixArguments @() `
+    -Task8RunnerPath {_powershell_literal(str(fixture['task8_adapter']))}
+$Result | ConvertTo-Json -Depth 8 -Compress
+"""
+
+
+def test_microcheck_invocation_is_cpu_networkless_and_before_gpu_lease(
+    tmp_path: Path,
+) -> None:
+    fixture = _launch_fixture(tmp_path)
+
+    completed = _invoke_functions(_LAUNCH_FUNCTIONS, _launch_body(fixture))
+
+    assert completed.returncode == 0, completed.stderr
+    result = json.loads(completed.stdout)
+    docker_state = json.loads(Path(fixture["docker_state"]).read_text(encoding="utf-8"))
+    task8_state = json.loads(Path(fixture["task8_state"]).read_text(encoding="utf-8"))
+    assert result["state"] == "CLOSED"
+    assert docker_state["build_count"] == 1
+    assert docker_state["microcheck_count"] == 1
+    run_argv = next(
+        command for command in docker_state["commands"] if command[0] == "run"
+    )
+    assert run_argv[:7] == [
+        "run",
+        "--rm",
+        "--network",
+        "none",
+        "--workdir",
+        "/workspace",
+        "--entrypoint",
+    ]
+    assert "python" in run_argv
+    assert "--gpus" not in run_argv
+    assert "VAL_DATA_ROOT" not in " ".join(run_argv)
+    assert "pytest" not in run_argv
+    assert not any(value.startswith("/workspace/tests") for value in run_argv)
+    assert task8_state["task8_count"] == 1
+    assert task8_state["task8_argv"] == [
+        "-RunId",
+        _RUN_ID,
+        "-ImageTag",
+        _TAG,
+        "-ImageDigest",
+        f"sha256:{'d' * 64}",
+        "-HostCampaignRoot",
+        str(fixture["campaign"]),
+        "-LeasePath",
+        str(fixture["lease"]),
+    ]
+    assert not Path(fixture["lease"]).exists()
+    assert Path(str(fixture["lease"]) + ".released").is_file()
+
+
+@pytest.mark.parametrize(
+    "mode",
+    [
+        "build_fail",
+        "inspect_wrong",
+        "micro_blank",
+        "micro_multiple",
+        "micro_malformed",
+        "micro_cuda",
+        "micro_wrong_source",
+    ],
+)
+def test_transition_failure_closes_without_gpu_or_task8_retry(
+    tmp_path: Path, mode: str
+) -> None:
+    fixture = _launch_fixture(tmp_path, mode=mode)
+
+    completed = _invoke_functions(_LAUNCH_FUNCTIONS, _launch_body(fixture))
+
+    assert completed.returncode == 0, completed.stderr
+    result = json.loads(completed.stdout)
+    state = json.loads(Path(fixture["docker_state"]).read_text(encoding="utf-8"))
+    assert result["state"] == "CLOSED"
+    assert not Path(fixture["lease"]).exists()
+    assert not Path(fixture["task8_state"]).exists()
+    assert state["build_count"] == 1
+    assert state["microcheck_count"] <= 1
+    assert (
+        Path(fixture["campaign"]) / "audit" / "51-campaign-closure-manifest.json"
+    ).is_file()
+
+
+def test_task8_nonzero_exit_is_not_retried(tmp_path: Path) -> None:
+    fixture = _launch_fixture(tmp_path, task8_exit=9)
+
+    completed = _invoke_functions(_LAUNCH_FUNCTIONS, _launch_body(fixture))
+
+    assert completed.returncode == 0, completed.stderr
+    result = json.loads(completed.stdout)
+    task8_state = json.loads(Path(fixture["task8_state"]).read_text(encoding="utf-8"))
+    assert task8_state["task8_count"] == 1
+    assert result["task8_exit_code"] == 9
+    assert result["terminal"].endswith("WAVE1_FORBIDDEN")
+
+
+def test_transition_preclaim_existing_campaign_leaves_image_and_lease_unclaimed(
+    tmp_path: Path,
+) -> None:
+    fixture = _launch_fixture(tmp_path)
+    Path(fixture["campaign"]).mkdir(parents=True)
+
+    completed = _invoke_functions(_LAUNCH_FUNCTIONS, _launch_body(fixture))
+
+    assert completed.returncode != 0
+    assert not Path(fixture["docker_state"]).exists()
+    assert not Path(fixture["lease"]).exists()
+
+
+def test_launcher_top_level_invokes_production_once() -> None:
+    body = f"""
+$Tokens = $null
+$Errors = $null
+$Ast = [Management.Automation.Language.Parser]::ParseFile(
+    {_powershell_literal(str(_LAUNCHER))}, [ref]$Tokens, [ref]$Errors
+)
+if ($Errors.Count -ne 0) {{ throw 'parse failure' }}
+$Calls = @($Ast.FindAll({{
+    param($Node)
+    if ($Node -isnot [Management.Automation.Language.CommandAst]) {{ return $false }}
+    if ($Node.GetCommandName() -cne 'Invoke-A7Production') {{ return $false }}
+    $Parent = $Node.Parent
+    while ($null -ne $Parent) {{
+        if ($Parent -is [Management.Automation.Language.FunctionDefinitionAst]) {{ return $false }}
+        $Parent = $Parent.Parent
+    }}
+    return $true
+}}, $true))
+$Calls.Count
+"""
+    completed = subprocess.run(
+        ["pwsh", "-NoProfile", "-NonInteractive", "-Command", body],
+        cwd=_ROOT,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=False,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert completed.stdout.strip() == "1"
