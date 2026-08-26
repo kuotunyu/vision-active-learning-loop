@@ -1693,6 +1693,161 @@ def test_a7_powershell_runner_parses(tmp_path: Path) -> None:
     assert completed.returncode == 0, completed.stderr
 
 
+def _history_file_record(root: Path, path: Path) -> dict[str, object]:
+    return {
+        "path": path.relative_to(root).as_posix(),
+        "size": path.stat().st_size,
+        "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+    }
+
+
+def _write_history_baseline(path: Path, document: dict[str, object]) -> str:
+    encoded = (
+        json.dumps(document, sort_keys=True, separators=(",", ":")) + "\n"
+    ).encode()
+    path.write_bytes(encoded)
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _run_a7_history_baseline_probe(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    omit_root_artifact: bool,
+) -> subprocess.CompletedProcess[str]:
+    powershell = shutil.which("powershell")
+    if powershell is None:
+        pytest.skip("Windows PowerShell is unavailable")
+    script = Path(__file__).resolve().parents[2] / "scripts" / "run_wave0_a7.ps1"
+    artifact_root = tmp_path / "artifacts"
+    root_artifact = artifact_root / "stable" / "receipt.json"
+    prior_attempt = artifact_root / "a7-runs" / "failed" / "audit" / "result.json"
+    current_campaign = artifact_root / "a7-runs" / "current"
+    root_artifact.parent.mkdir(parents=True)
+    prior_attempt.parent.mkdir(parents=True)
+    current_campaign.mkdir(parents=True)
+    root_artifact.write_text("stable", encoding="utf-8")
+    prior_attempt.write_text("preserved failure", encoding="utf-8")
+
+    project_root = tmp_path / "project"
+    protected = project_root / "protected.txt"
+    project_root.mkdir()
+    protected.write_text("protected", encoding="utf-8")
+    protected_record = _history_file_record(project_root, protected)
+    root_record = _history_file_record(artifact_root, root_artifact)
+    prior_record = _history_file_record(artifact_root, prior_attempt)
+    root_baseline = {
+        "schema_version": 1,
+        "plan_head": "1" * 40,
+        "artifact_root": str(artifact_root),
+        "artifact_files": [root_record],
+        "images": [],
+        "protected_git": [protected_record],
+    }
+    root_baseline_path = tmp_path / "root-baseline.json"
+    root_baseline_sha256 = _write_history_baseline(root_baseline_path, root_baseline)
+    augmented_baseline = {
+        **root_baseline,
+        "parent_baseline_sha256": root_baseline_sha256,
+        "artifact_files": (
+            [prior_record] if omit_root_artifact else [root_record, prior_record]
+        ),
+    }
+    augmented_baseline_path = tmp_path / "augmented-baseline.json"
+    augmented_baseline_sha256 = _write_history_baseline(
+        augmented_baseline_path, augmented_baseline
+    )
+
+    monkeypatch.setenv("VAL_TEST_A7_SCRIPT", str(script))
+    monkeypatch.setenv("VAL_TEST_A7_CAMPAIGN_ROOT", str(current_campaign))
+    monkeypatch.setenv("VAL_TEST_A7_PROJECT_ROOT", str(project_root))
+    monkeypatch.setenv("VAL_TEST_A7_ROOT_BASELINE", str(root_baseline_path))
+    monkeypatch.setenv("VAL_TEST_A7_ROOT_BASELINE_SHA256", root_baseline_sha256)
+    monkeypatch.setenv("VAL_TEST_A7_AUGMENTED_BASELINE", str(augmented_baseline_path))
+    monkeypatch.setenv(
+        "VAL_TEST_A7_AUGMENTED_BASELINE_SHA256", augmented_baseline_sha256
+    )
+    command = r"""
+$ErrorActionPreference = 'Stop'
+$Tokens = $null
+$ParseErrors = $null
+$Ast = [System.Management.Automation.Language.Parser]::ParseFile(
+    $env:VAL_TEST_A7_SCRIPT,
+    [ref]$Tokens,
+    [ref]$ParseErrors
+)
+if ($ParseErrors.Count -ne 0) { throw 'A7 script did not parse' }
+$Function = $Ast.Find({
+    param($Node)
+    $Node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
+        $Node.Name -eq 'Test-HistoricalBaseline'
+}, $true)
+if ($null -eq $Function) { throw 'missing history verifier' }
+Invoke-Expression $Function.Extent.Text
+function Get-FileHash {
+    param(
+        [Parameter(Mandatory = $true)][string]$LiteralPath,
+        [Parameter(Mandatory = $true)][string]$Algorithm
+    )
+    if ($Algorithm -ne 'SHA256') { throw 'test hash adapter requires SHA256' }
+    $Sha256 = [System.Security.Cryptography.SHA256]::Create()
+    try {
+        $Bytes = [System.IO.File]::ReadAllBytes($LiteralPath)
+        $Digest = $Sha256.ComputeHash($Bytes)
+    } finally {
+        $Sha256.Dispose()
+    }
+    return [pscustomobject]@{
+        Hash = ([System.BitConverter]::ToString($Digest)).Replace('-', '')
+    }
+}
+function docker {
+    $global:LASTEXITCODE = 0
+    return @()
+}
+$CampaignRoot = $env:VAL_TEST_A7_CAMPAIGN_ROOT
+$ProjectRoot = $env:VAL_TEST_A7_PROJECT_ROOT
+$ImageTag = 'vision-active-learning-loop:wave0-a7-current'
+$Result = Test-HistoricalBaseline `
+    -RootBaselinePath $env:VAL_TEST_A7_ROOT_BASELINE `
+    -RootBaselineSha256 $env:VAL_TEST_A7_ROOT_BASELINE_SHA256 `
+    -AugmentedBaselinePath $env:VAL_TEST_A7_AUGMENTED_BASELINE `
+    -AugmentedBaselineSha256 $env:VAL_TEST_A7_AUGMENTED_BASELINE_SHA256
+$Result | ConvertTo-Json -Compress
+"""
+    return subprocess.run(
+        [powershell, "-NoProfile", "-NonInteractive", "-Command", command],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+
+def test_a7_runner_accepts_hash_bound_augmented_history_baseline(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    completed = _run_a7_history_baseline_probe(
+        tmp_path, monkeypatch, omit_root_artifact=False
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    result = json.loads(completed.stdout)
+    assert result["status"] == "PRESERVED"
+    assert result["artifact_count"] == 2
+    assert result["root_artifact_count"] == 1
+
+
+def test_a7_runner_rejects_augmented_baseline_that_omits_root_history(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    completed = _run_a7_history_baseline_probe(
+        tmp_path, monkeypatch, omit_root_artifact=True
+    )
+
+    assert completed.returncode != 0
+    assert "augmented baseline omits root artifact" in completed.stderr
+
+
 def test_a7_powershell_runner_helpers_preserve_empty_output_and_exit_code(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

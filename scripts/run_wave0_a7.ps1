@@ -119,15 +119,91 @@ function Test-Task7AuditBinding {
 }
 
 function Test-HistoricalBaseline {
-    $BaselinePath = Join-Path $env:TEMP 'val-a7-baseline-11a6b1929b0b4d44acc0a090887b50dd670357ea.json'
-    if (-not (Test-Path -LiteralPath $BaselinePath -PathType Leaf)) {
-        throw 'Task 1 historical baseline is unavailable'
+    param(
+        [Parameter(Mandatory = $true)][string]$RootBaselinePath,
+        [Parameter(Mandatory = $true)][string]$RootBaselineSha256,
+        [Parameter(Mandatory = $true)][string]$AugmentedBaselinePath,
+        [Parameter(Mandatory = $true)][string]$AugmentedBaselineSha256
+    )
+    foreach ($Path in @($RootBaselinePath, $AugmentedBaselinePath)) {
+        if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+            throw 'historical baseline is unavailable'
+        }
+        $Item = Get-Item -LiteralPath $Path -Force
+        if (($Item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
+            throw 'historical baseline must not be linked'
+        }
     }
-    $BaselineSha256 = (Get-FileHash -LiteralPath $BaselinePath -Algorithm SHA256).Hash.ToLowerInvariant()
-    if ($BaselineSha256 -ne '4715e35d4ed693d74577cc40781f51a65bf7f34089b97d6610fb43f4d675cadd') {
-        throw 'Task 1 historical baseline identity mismatch'
+    $ObservedRootSha256 = (Get-FileHash -LiteralPath $RootBaselinePath -Algorithm SHA256).Hash.ToLowerInvariant()
+    if ($RootBaselineSha256 -notmatch '^[0-9a-f]{64}$' -or
+        $ObservedRootSha256 -ne $RootBaselineSha256) {
+        throw 'root historical baseline identity mismatch'
     }
-    $Baseline = Get-Content -LiteralPath $BaselinePath -Raw -Encoding UTF8 | ConvertFrom-Json
+    $ObservedAugmentedSha256 = (Get-FileHash -LiteralPath $AugmentedBaselinePath -Algorithm SHA256).Hash.ToLowerInvariant()
+    if ($AugmentedBaselineSha256 -notmatch '^[0-9a-f]{64}$' -or
+        $ObservedAugmentedSha256 -ne $AugmentedBaselineSha256) {
+        throw 'augmented historical baseline identity mismatch'
+    }
+    $RootBaseline = Get-Content -LiteralPath $RootBaselinePath -Raw -Encoding UTF8 | ConvertFrom-Json
+    $Baseline = Get-Content -LiteralPath $AugmentedBaselinePath -Raw -Encoding UTF8 | ConvertFrom-Json
+    if ([string]$Baseline.parent_baseline_sha256 -ne $RootBaselineSha256 -or
+        [string]$Baseline.artifact_root -ne [string]$RootBaseline.artifact_root) {
+        throw 'augmented baseline root binding mismatch'
+    }
+    $AugmentedArtifacts = [System.Collections.Generic.Dictionary[string, object]]::new(
+        [System.StringComparer]::Ordinal
+    )
+    foreach ($Record in $Baseline.artifact_files) {
+        $AugmentedArtifacts.Add([string]$Record.path, $Record)
+    }
+    foreach ($RootRecord in $RootBaseline.artifact_files) {
+        $Path = [string]$RootRecord.path
+        if (-not $AugmentedArtifacts.ContainsKey($Path)) {
+            throw "augmented baseline omits root artifact: $Path"
+        }
+        $Record = $AugmentedArtifacts[$Path]
+        if ([long]$Record.size -ne [long]$RootRecord.size -or
+            [string]$Record.sha256 -ne [string]$RootRecord.sha256) {
+            throw "augmented baseline changes root artifact identity: $Path"
+        }
+    }
+    $RootProtected = [System.Collections.Generic.Dictionary[string, object]]::new(
+        [System.StringComparer]::Ordinal
+    )
+    foreach ($Record in $RootBaseline.protected_git) {
+        $RootProtected.Add([string]$Record.path, $Record)
+    }
+    $AugmentedProtected = [System.Collections.Generic.Dictionary[string, object]]::new(
+        [System.StringComparer]::Ordinal
+    )
+    foreach ($Record in $Baseline.protected_git) {
+        $AugmentedProtected.Add([string]$Record.path, $Record)
+    }
+    if ($RootProtected.Count -ne $AugmentedProtected.Count) {
+        throw 'augmented baseline changes protected Git inventory'
+    }
+    foreach ($Path in $RootProtected.Keys) {
+        $RootRecord = $RootProtected[$Path]
+        if (-not $AugmentedProtected.ContainsKey($Path)) {
+            throw "augmented baseline omits protected Git file: $Path"
+        }
+        $Record = $AugmentedProtected[$Path]
+        if ([long]$Record.size -ne [long]$RootRecord.size -or
+            [string]$Record.sha256 -ne [string]$RootRecord.sha256) {
+            throw "augmented baseline changes protected Git identity: $Path"
+        }
+    }
+    $AugmentedImages = @{}
+    foreach ($Record in $Baseline.images) {
+        $AugmentedImages.Add([string]$Record.tag, [string]$Record.image_id)
+    }
+    foreach ($RootImage in $RootBaseline.images) {
+        $Tag = [string]$RootImage.tag
+        if (-not $AugmentedImages.ContainsKey($Tag) -or
+            $AugmentedImages[$Tag] -ne [string]$RootImage.image_id) {
+            throw "augmented baseline changes root image identity: $Tag"
+        }
+    }
     $ArtifactRoot = [string]$Baseline.artifact_root
     $ExpectedArtifactPaths = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::Ordinal)
     foreach ($Record in $Baseline.artifact_files) {
@@ -172,8 +248,11 @@ function Test-HistoricalBaseline {
     }
     return [ordered]@{
         schema_version = 1
-        baseline_path = $BaselinePath
-        baseline_sha256 = $BaselineSha256
+        baseline_path = $AugmentedBaselinePath
+        baseline_sha256 = $ObservedAugmentedSha256
+        root_baseline_path = $RootBaselinePath
+        root_baseline_sha256 = $ObservedRootSha256
+        root_artifact_count = @($RootBaseline.artifact_files).Count
         artifact_count = $ExpectedArtifactPaths.Count
         image_count = $ExpectedImages.Count
         protected_git_count = @($Baseline.protected_git).Count
@@ -282,7 +361,9 @@ if ($Lease.source_commit -ne $SourceCommit -or
     $Lease.base_image_digest -ne $BaseDigest -or
     [string]::IsNullOrWhiteSpace([string]$Lease.gpu_uuid) -or
     [string]$Lease.build_audit_sha256 -notmatch '^[0-9a-f]{64}$' -or
-    [string]$Lease.microcheck_audit_sha256 -notmatch '^[0-9a-f]{64}$') {
+    [string]$Lease.microcheck_audit_sha256 -notmatch '^[0-9a-f]{64}$' -or
+    [string]::IsNullOrWhiteSpace([string]$Lease.historical_baseline_path) -or
+    [string]$Lease.historical_baseline_sha256 -notmatch '^[0-9a-f]{64}$') {
     throw 'GPU lease source/image/GPU binding mismatch'
 }
 $LeaseCampaignRoot = [System.IO.Path]::GetFullPath([string]$Lease.campaign_root).TrimEnd('\')
@@ -424,7 +505,11 @@ try {
 } finally {
     try {
         try {
-            $Historical = Test-HistoricalBaseline
+            $Historical = Test-HistoricalBaseline `
+                -RootBaselinePath (Join-Path $env:TEMP 'val-a7-baseline-11a6b1929b0b4d44acc0a090887b50dd670357ea.json') `
+                -RootBaselineSha256 '4715e35d4ed693d74577cc40781f51a65bf7f34089b97d6610fb43f4d675cadd' `
+                -AugmentedBaselinePath ([string]$Lease.historical_baseline_path) `
+                -AugmentedBaselineSha256 ([string]$Lease.historical_baseline_sha256)
         } catch {
             $Historical = [ordered]@{
                 schema_version = 1
