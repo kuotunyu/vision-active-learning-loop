@@ -2912,7 +2912,7 @@ function Invoke-A7Production {
     if ([string]$Resolved.worktree -cne $ScriptWorktree) {
         throw 'A7 launcher script is not running from the reviewed registered worktree'
     }
-    $PlanRelativePath = 'docs/superpowers/plans/2026-08-26-val-wave0-a7-history-compatibility.md'
+    $PlanRelativePath = 'docs/superpowers/plans/2026-08-27-val-wave0-a8-cache-and-lease-lifecycle.md'
     $SpecRelativePath = 'docs/superpowers/specs/2026-08-23-vision-active-learning-loop-design.md'
     $PlanLog = & $InvokeReadOnly $GitExecutable @(
         '-C', $ScriptWorktree, 'log', '-1', '--format=%H', '--', $PlanRelativePath

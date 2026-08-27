@@ -1020,6 +1020,16 @@ def test_task8_runner_mounts_only_the_verified_run_scoped_cache() -> None:
     assert "'TRANSFORMERS_OFFLINE=1'" in source
 
 
+def test_production_launcher_binds_the_a8_plan_identity() -> None:
+    source = _LAUNCHER.read_text(encoding="utf-8")
+
+    assert (
+        "$PlanRelativePath = "
+        "'docs/superpowers/plans/2026-08-27-val-wave0-a8-cache-and-lease-lifecycle.md'"
+    ) in source
+    assert "2026-08-26-val-wave0-a7-history-compatibility.md" not in source
+
+
 def _historical_lease_fixture(tmp_path: Path) -> dict[str, Path]:
     artifact_root = tmp_path / "artifacts"
     leases = artifact_root / "leases"
