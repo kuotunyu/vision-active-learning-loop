@@ -65,6 +65,94 @@ function Get-A7LeaseReleasePaths {
     }
 }
 
+function Assert-A7LeaseReleaseEvidence {
+    param(
+        [Parameter(Mandatory = $true)][string]$ActivePath,
+        [Parameter(Mandatory = $true)][string]$ReleasedPath,
+        [Parameter(Mandatory = $true)][string]$RecordPath,
+        [Parameter(Mandatory = $true)][string]$RunId,
+        [Parameter(Mandatory = $true)][string]$SourceCommit,
+        [Parameter(Mandatory = $true)][string]$ImageDigest
+    )
+    $Expected = Get-A7LeaseReleasePaths -ActivePath $ActivePath -RunId $RunId
+    $ActiveFullPath = [IO.Path]::GetFullPath($ActivePath)
+    $ReleasedFullPath = [IO.Path]::GetFullPath($ReleasedPath)
+    $RecordFullPath = [IO.Path]::GetFullPath($RecordPath)
+    if ($ReleasedFullPath -ine [string]$Expected.released -or
+        $RecordFullPath -ine [string]$Expected.release_record) {
+        throw 'A7 lease-release path identity mismatch'
+    }
+    if ([IO.File]::Exists($ActiveFullPath) -or [IO.Directory]::Exists($ActiveFullPath)) {
+        throw 'A7 Task 8 left the active lease in place'
+    }
+    $LeaseRoot = [IO.Path]::GetDirectoryName($ActiveFullPath)
+    foreach ($Path in @($ReleasedFullPath, $RecordFullPath)) {
+        if (-not [IO.File]::Exists($Path) -or [IO.Directory]::Exists($Path)) {
+            throw 'A7 Task 8 did not publish required lease-release evidence'
+        }
+        $Current = [IO.FileInfo]::new($Path)
+        while ($null -ne $Current -and $Current.FullName -ine $LeaseRoot) {
+            if (($Current.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+                throw 'A7 Task 8 lease-release evidence must not be linked'
+            }
+            $Current = $Current.Directory
+        }
+        if ($null -eq $Current -or $Current.FullName -ine $LeaseRoot -or
+            ($Current.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+            throw 'A7 Task 8 lease-release evidence root is invalid'
+        }
+    }
+    try {
+        $ReleasedLease = [IO.File]::ReadAllText($ReleasedFullPath, [Text.Encoding]::UTF8) |
+            ConvertFrom-Json
+        $ReleaseRecord = [IO.File]::ReadAllText($RecordFullPath, [Text.Encoding]::UTF8) |
+            ConvertFrom-Json
+    }
+    catch { throw 'A7 Task 8 lease-release evidence is malformed' }
+    $ExpectedRecordProperties = @(
+        'schema_version', 'run_id', 'source_commit', 'image_digest', 'released_at',
+        'original_lease_sha256'
+    ) | Sort-Object -CaseSensitive
+    $ObservedRecordProperties = @($ReleaseRecord.PSObject.Properties.Name) |
+        Sort-Object -CaseSensitive
+    if (($ExpectedRecordProperties -join "`n") -cne ($ObservedRecordProperties -join "`n")) {
+        throw 'A7 Task 8 release-record property inventory mismatch'
+    }
+    $ReleasedAt = [DateTimeOffset]::MinValue
+    if ([int]$ReleaseRecord.schema_version -ne 1 -or
+        [string]$ReleaseRecord.run_id -cne $RunId -or
+        [string]$ReleaseRecord.source_commit -cne $SourceCommit -or
+        [string]$ReleaseRecord.image_digest -cne $ImageDigest -or
+        [string]$ReleaseRecord.original_lease_sha256 -cnotmatch '^[0-9a-f]{64}$' -or
+        -not [DateTimeOffset]::TryParse(
+            [string]$ReleaseRecord.released_at,
+            [Globalization.CultureInfo]::InvariantCulture,
+            [Globalization.DateTimeStyles]::RoundtripKind,
+            [ref]$ReleasedAt
+        )) {
+        throw 'A7 Task 8 release-record identity mismatch'
+    }
+    $ReleasedSha256 = (Get-FileHash -LiteralPath $ReleasedFullPath -Algorithm SHA256).Hash.ToLowerInvariant()
+    if ($ReleasedSha256 -cne [string]$ReleaseRecord.original_lease_sha256) {
+        throw 'A7 Task 8 released lease hash mismatch'
+    }
+    if ([string]$ReleasedLease.run_id -cne $RunId -or
+        [string]$ReleasedLease.source_commit -cne $SourceCommit -or
+        [string]$ReleasedLease.image_id -cne $ImageDigest) {
+        throw 'A7 Task 8 released lease identity mismatch'
+    }
+    return [pscustomobject][ordered]@{
+        released_path = $ReleasedFullPath
+        released_sha256 = $ReleasedSha256
+        release_record_path = $RecordFullPath
+        release_record_sha256 = (
+            Get-FileHash -LiteralPath $RecordFullPath -Algorithm SHA256
+        ).Hash.ToLowerInvariant()
+        released_at = [string]$ReleaseRecord.released_at
+        status = 'VERIFIED'
+    }
+}
+
 function Assert-A7BuildArguments {
     param(
         [Parameter(Mandatory = $true)][string[]]$Arguments,
@@ -203,6 +291,208 @@ function Invoke-A7Native {
         exit_code = $ExitCode
         stdout = $Stdout
         stderr = $Stderr
+    }
+}
+
+function Invoke-A7ModelCachePreflight {
+    param(
+        [Parameter(Mandatory = $true)][string]$CampaignRoot,
+        [Parameter(Mandatory = $true)][string]$AuditRoot,
+        [Parameter(Mandatory = $true)][string]$WorktreePath,
+        [Parameter(Mandatory = $true)][string]$DockerExecutable,
+        [Parameter(Mandatory = $true)][AllowEmptyCollection()][string[]]$DockerPrefixArguments,
+        [Parameter(Mandatory = $true)][string]$OwnerAuthorizationId,
+        [Parameter(Mandatory = $true)][string]$RunId,
+        [Parameter(Mandatory = $true)][string]$SourceCommit,
+        [Parameter(Mandatory = $true)][string]$SpecCommit,
+        [Parameter(Mandatory = $true)][string]$PlanCommit,
+        [Parameter(Mandatory = $true)][string]$Branch,
+        [Parameter(Mandatory = $true)][string]$ImageTag,
+        [Parameter(Mandatory = $true)][string]$ImageId,
+        [Parameter(Mandatory = $true)][string]$BaseImageDigest,
+        [Parameter(Mandatory = $true)][string]$HistoricalBaselinePath,
+        [Parameter(Mandatory = $true)][string]$HistoricalBaselineSha256
+    )
+
+    $CampaignPath = [IO.Path]::GetFullPath($CampaignRoot).TrimEnd([IO.Path]::DirectorySeparatorChar)
+    $AuditPathRoot = [IO.Path]::GetFullPath($AuditRoot).TrimEnd([IO.Path]::DirectorySeparatorChar)
+    $Worktree = [IO.Path]::GetFullPath($WorktreePath).TrimEnd([IO.Path]::DirectorySeparatorChar)
+    if (-not [IO.Directory]::Exists($CampaignPath) -or
+        -not [IO.Directory]::Exists($AuditPathRoot) -or
+        [IO.Path]::GetDirectoryName($AuditPathRoot) -cne $CampaignPath -or
+        -not [IO.Directory]::Exists($Worktree)) {
+        throw 'A7 model-cache preflight root identity mismatch'
+    }
+    foreach ($Root in @($CampaignPath, $AuditPathRoot, $Worktree)) {
+        $Current = [IO.DirectoryInfo]::new($Root)
+        while ($null -ne $Current) {
+            if (($Current.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+                throw 'A7 model-cache preflight link or junction is forbidden'
+            }
+            $Current = $Current.Parent
+        }
+    }
+    if ($RunId -cnotmatch '^wave0-a7-[0-9]{8}T[0-9]{9}Z$' -or
+        $SourceCommit -cnotmatch '^[0-9a-f]{40}$' -or
+        $SpecCommit -cnotmatch '^[0-9a-f]{40}$' -or
+        $PlanCommit -cnotmatch '^[0-9a-f]{40}$' -or
+        $ImageId -cnotmatch '^sha256:[0-9a-f]{64}$' -or
+        $BaseImageDigest -cnotmatch '^sha256:[0-9a-f]{64}$' -or
+        [string]::IsNullOrWhiteSpace($OwnerAuthorizationId) -or
+        [string]::IsNullOrWhiteSpace($Branch)) {
+        throw 'A7 model-cache preflight identity is invalid'
+    }
+    $BaselinePath = [IO.Path]::GetFullPath($HistoricalBaselinePath)
+    if (-not [IO.File]::Exists($BaselinePath) -or
+        $HistoricalBaselineSha256 -cnotmatch '^[0-9a-f]{64}$' -or
+        (Get-FileHash -LiteralPath $BaselinePath -Algorithm SHA256).Hash.ToLowerInvariant() -cne $HistoricalBaselineSha256) {
+        throw 'A7 model-cache preflight baseline identity mismatch'
+    }
+
+    $PreflightRoot = [IO.Path]::Combine($CampaignPath, 'cache-preflight')
+    if ([IO.File]::Exists($PreflightRoot) -or [IO.Directory]::Exists($PreflightRoot)) {
+        throw 'A7 model-cache preflight destination already exists'
+    }
+    [void](New-Item -ItemType Directory -Path $PreflightRoot -ErrorAction Stop)
+    $WaveRoot = [IO.Path]::Combine($PreflightRoot, 'wave0')
+    $CacheRoot = [IO.Path]::Combine($WaveRoot, 'model_cache')
+    $ReceiptsRoot = [IO.Path]::Combine($WaveRoot, 'receipts')
+    [void](New-Item -ItemType Directory -Path $WaveRoot -ErrorAction Stop)
+    [void](New-Item -ItemType Directory -Path $CacheRoot -ErrorAction Stop)
+    [void](New-Item -ItemType Directory -Path $ReceiptsRoot -ErrorAction Stop)
+
+    $ReceiptPath = [IO.Path]::Combine($ReceiptsRoot, 'model-assets.json')
+    $StdoutPath = [IO.Path]::Combine($AuditPathRoot, '23-a7-model-cache-preflight.stdout.log')
+    $StderrPath = [IO.Path]::Combine($AuditPathRoot, '23-a7-model-cache-preflight.stderr.log')
+    $AuditPath = [IO.Path]::Combine($AuditPathRoot, '23-a7-model-cache-preflight.json')
+    foreach ($Destination in @($ReceiptPath, $StdoutPath, $StderrPath, $AuditPath)) {
+        if ([IO.File]::Exists($Destination) -or [IO.Directory]::Exists($Destination)) {
+            throw 'A7 model-cache preflight file destination already exists'
+        }
+    }
+    $DockerArguments = @(
+        'run', '--rm', '--network', 'bridge',
+        '--workdir', '/workspace', '--entrypoint', 'val',
+        '-e', 'VAL_ARTIFACT_ROOT=/artifacts',
+        '-e', 'PYTHONPATH=/workspace/src',
+        '-v', "${Worktree}:/workspace:ro",
+        '-v', "${PreflightRoot}:/artifacts:rw",
+        $ImageId,
+        'assets', 'verify',
+        '--config', '/workspace/configs/models/pinned-models.yaml',
+        '--cache-root', '/artifacts/wave0/model_cache',
+        '--output', '/artifacts/wave0/receipts/model-assets.json',
+        '--run-id', $RunId,
+        '--download'
+    )
+    $StartedAt = [DateTimeOffset]::UtcNow.ToString('o')
+    $Result = Invoke-A7Native `
+        -Executable $DockerExecutable `
+        -Arguments (@($DockerPrefixArguments) + $DockerArguments) `
+        -StdoutPath $StdoutPath `
+        -StderrPath $StderrPath `
+        -WorkingDirectory $Worktree
+    $CompletedAt = [DateTimeOffset]::UtcNow.ToString('o')
+    if ([int]$Result.exit_code -ne 0 -or
+        [string]$Result.stdout -cne "PASS$([Environment]::NewLine)" -or
+        [string]$Result.stderr -cne '') {
+        throw 'A7 model-cache preflight process contract failed'
+    }
+    if (-not [IO.File]::Exists($ReceiptPath) -or [IO.Directory]::Exists($ReceiptPath)) {
+        throw 'A7 model-cache preflight receipt is missing'
+    }
+    $ReceiptItem = [IO.FileInfo]::new($ReceiptPath)
+    if (($ReceiptItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+        throw 'A7 model-cache preflight receipt link is forbidden'
+    }
+    try {
+        $Receipt = [IO.File]::ReadAllText($ReceiptPath, [Text.Encoding]::UTF8) | ConvertFrom-Json
+    }
+    catch {
+        throw 'A7 model-cache preflight receipt JSON is invalid'
+    }
+    if ([int]$Receipt.schema_version -ne 1 -or
+        [string]$Receipt.receipt_type -cne 'model-assets' -or
+        [string]$Receipt.metadata.run_id -cne $RunId -or
+        [string]$Receipt.normative.status -cne 'PASS' -or
+        @($Receipt.normative.errors).Count -ne 0) {
+        throw 'A7 model-cache preflight receipt status mismatch'
+    }
+    $ExpectedModels = [ordered]@{
+        rtdetr = [ordered]@{
+            repo_id = 'PekingU/rtdetr_r18vd'
+            revision = 'cc5b50f32f0100caaa3bd275343e2fb17762c73d'
+        }
+        dinov2 = [ordered]@{
+            repo_id = 'facebook/dinov2-small'
+            revision = 'ed25f3a31f01632728cabb09d1542f84ab7b0056'
+        }
+    }
+    $ModelNames = @($Receipt.normative.models.PSObject.Properties.Name | Sort-Object -CaseSensitive)
+    if (($ModelNames -join '|') -cne 'dinov2|rtdetr') {
+        throw 'A7 model-cache preflight model inventory mismatch'
+    }
+    $EmptySha256 = 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855'
+    $ExpectedLocks = @(
+        '.cache/huggingface/download/README.md.lock',
+        '.cache/huggingface/download/config.json.lock',
+        '.cache/huggingface/download/model.safetensors.lock',
+        '.cache/huggingface/download/preprocessor_config.json.lock'
+    )
+    foreach ($Name in $ExpectedModels.Keys) {
+        $Model = $Receipt.normative.models.$Name
+        if ([string]$Model.repo_id -cne [string]$ExpectedModels[$Name].repo_id -or
+            [string]$Model.revision -cne [string]$ExpectedModels[$Name].revision -or
+            [string]$Model.huggingface_metadata.commit_hash -cne [string]$ExpectedModels[$Name].revision) {
+            throw 'A7 model-cache preflight pinned model identity mismatch'
+        }
+        $Inventory = $Model.huggingface_metadata.inventory
+        $Locks = @($Inventory.PSObject.Properties.Name | Where-Object { $_.EndsWith('.lock', [StringComparison]::Ordinal) } | Sort-Object -CaseSensitive)
+        if (($Locks -join '|') -cne (($ExpectedLocks | Sort-Object -CaseSensitive) -join '|')) {
+            throw 'A7 model-cache preflight lock inventory mismatch'
+        }
+        foreach ($Lock in $ExpectedLocks) {
+            if ([long]$Inventory.$Lock.size -ne 0 -or [string]$Inventory.$Lock.sha256 -cne $EmptySha256) {
+                throw 'A7 model-cache preflight lock identity mismatch'
+            }
+        }
+    }
+    $ReceiptSha256 = (Get-FileHash -LiteralPath $ReceiptPath -Algorithm SHA256).Hash.ToLowerInvariant()
+    $Audit = [ordered]@{
+        schema_version = 1
+        owner_authorization_id = $OwnerAuthorizationId
+        run_id = $RunId
+        source_commit = $SourceCommit
+        spec_commit = $SpecCommit
+        plan_commit = $PlanCommit
+        branch = $Branch
+        image_tag = $ImageTag
+        image_id = $ImageId
+        base_image_digest = $BaseImageDigest
+        augmented_baseline_path = $BaselinePath
+        augmented_baseline_sha256 = $HistoricalBaselineSha256
+        docker_argv = @('docker') + $DockerArguments
+        network = 'bridge'
+        gpu_enabled = $false
+        cache_root = $CacheRoot
+        receipt_path = $ReceiptPath
+        receipt_sha256 = $ReceiptSha256
+        receipt_models = $Receipt.normative.models
+        stdout_path = $StdoutPath
+        stdout_sha256 = (Get-FileHash -LiteralPath $StdoutPath -Algorithm SHA256).Hash.ToLowerInvariant()
+        stderr_path = $StderrPath
+        stderr_sha256 = (Get-FileHash -LiteralPath $StderrPath -Algorithm SHA256).Hash.ToLowerInvariant()
+        exit_code = [int]$Result.exit_code
+        started_at = $StartedAt
+        completed_at = $CompletedAt
+    }
+    Write-A7NewText -Path $AuditPath -Text ($Audit | ConvertTo-Json -Depth 20 -Compress)
+    return [pscustomobject][ordered]@{
+        cache_root = $CacheRoot
+        audit_path = $AuditPath
+        audit_sha256 = (Get-FileHash -LiteralPath $AuditPath -Algorithm SHA256).Hash.ToLowerInvariant()
+        receipt_path = $ReceiptPath
+        receipt_sha256 = $ReceiptSha256
     }
 }
 
@@ -629,7 +919,7 @@ function New-A7AugmentedBaseline {
     $CurrentImageRecords = @($CurrentImageRecords | Sort-Object -CaseSensitive tag)
 
     $TransitionPath = 'docs/superpowers/specs/2026-08-23-vision-active-learning-loop-design.md'
-    $PlanPath = 'docs/superpowers/plans/2026-08-26-val-wave0-a7-history-compatibility.md'
+    $PlanPath = 'docs/superpowers/plans/2026-08-27-val-wave0-a8-cache-and-lease-lifecycle.md'
     $TransitionReason = 'owner-approved-design-amendment'
     if ((& $InvokeGit @('-C', $ProtectedRootPath, 'rev-parse', 'HEAD')) -cne $SourceCommit) {
         throw 'A7 protected Git HEAD does not equal the reviewed source commit'
@@ -987,6 +1277,11 @@ function New-A7Lease {
         [Parameter(Mandatory = $true)][string]$BuildAuditSha256,
         [Parameter(Mandatory = $true)][string]$MicrocheckAuditPath,
         [Parameter(Mandatory = $true)][string]$MicrocheckAuditSha256,
+        [Parameter(Mandatory = $true)][string]$ModelCacheRoot,
+        [Parameter(Mandatory = $true)][string]$ModelCachePreflightAuditPath,
+        [Parameter(Mandatory = $true)][string]$ModelCachePreflightAuditSha256,
+        [Parameter(Mandatory = $true)][string]$ModelCacheReceiptPath,
+        [Parameter(Mandatory = $true)][string]$ModelCacheReceiptSha256,
         [Parameter(Mandatory = $true)][string]$HostProcessesJson,
         [Parameter(Mandatory = $true)][string]$ContainersJson,
         [Parameter(Mandatory = $true)][string]$ClaimedAt
@@ -1019,7 +1314,13 @@ function New-A7Lease {
     if ($GpuUuid -cnotmatch '^GPU-[A-Za-z0-9-]+$') {
         throw 'A7 lease GPU UUID is invalid'
     }
-    foreach ($Digest in @($HistoricalBaselineSha256, $BuildAuditSha256, $MicrocheckAuditSha256)) {
+    foreach ($Digest in @(
+            $HistoricalBaselineSha256,
+            $BuildAuditSha256,
+            $MicrocheckAuditSha256,
+            $ModelCachePreflightAuditSha256,
+            $ModelCacheReceiptSha256
+        )) {
         if ($Digest -cnotmatch '^[0-9a-f]{64}$') {
             throw 'A7 lease audit SHA-256 identity is invalid'
         }
@@ -1078,23 +1379,42 @@ function New-A7Lease {
     $HistoricalPath = & $AssertRegularPath $HistoricalBaselinePath $true
     $BuildPath = & $AssertRegularPath $BuildAuditPath $true
     $MicrocheckPath = & $AssertRegularPath $MicrocheckAuditPath $true
+    $CacheRootPath = & $AssertRegularPath $ModelCacheRoot $false
+    $CacheAuditPath = & $AssertRegularPath $ModelCachePreflightAuditPath $true
+    $CacheReceiptPath = & $AssertRegularPath $ModelCacheReceiptPath $true
     $CampaignPrefix = $CampaignRootPath.TrimEnd([IO.Path]::DirectorySeparatorChar) + [IO.Path]::DirectorySeparatorChar
+    $ExpectedCacheRoot = [IO.Path]::Combine($CampaignRootPath, 'cache-preflight', 'wave0', 'model_cache')
+    $ExpectedCacheAudit = [IO.Path]::Combine($CampaignRootPath, 'audit', '23-a7-model-cache-preflight.json')
+    $ExpectedCacheReceipt = [IO.Path]::Combine(
+        $CampaignRootPath,
+        'cache-preflight',
+        'wave0',
+        'receipts',
+        'model-assets.json'
+    )
     if (
         -not $BuildPath.StartsWith($CampaignPrefix, [StringComparison]::OrdinalIgnoreCase) -or
-        -not $MicrocheckPath.StartsWith($CampaignPrefix, [StringComparison]::OrdinalIgnoreCase)
+        -not $MicrocheckPath.StartsWith($CampaignPrefix, [StringComparison]::OrdinalIgnoreCase) -or
+        $CacheRootPath -cne $ExpectedCacheRoot -or
+        $CacheAuditPath -cne $ExpectedCacheAudit -or
+        $CacheReceiptPath -cne $ExpectedCacheReceipt
     ) {
-        throw 'A7 build and micro-check audits must be inside the campaign root'
+        throw 'A7 lease-bound audit or cache path mismatch'
     }
     if (
         (& $GetSha256 $HistoricalPath) -cne $HistoricalBaselineSha256 -or
         (& $GetSha256 $BuildPath) -cne $BuildAuditSha256 -or
-        (& $GetSha256 $MicrocheckPath) -cne $MicrocheckAuditSha256
+        (& $GetSha256 $MicrocheckPath) -cne $MicrocheckAuditSha256 -or
+        (& $GetSha256 $CacheAuditPath) -cne $ModelCachePreflightAuditSha256 -or
+        (& $GetSha256 $CacheReceiptPath) -cne $ModelCacheReceiptSha256
     ) {
         throw 'A7 lease-bound audit hash changed before lease claim'
     }
     try {
         $BuildAudit = [IO.File]::ReadAllText($BuildPath, [Text.Encoding]::UTF8) | ConvertFrom-Json
         $MicrocheckAudit = [IO.File]::ReadAllText($MicrocheckPath, [Text.Encoding]::UTF8) | ConvertFrom-Json
+        $CacheAudit = [IO.File]::ReadAllText($CacheAuditPath, [Text.Encoding]::UTF8) | ConvertFrom-Json
+        $CacheReceipt = [IO.File]::ReadAllText($CacheReceiptPath, [Text.Encoding]::UTF8) | ConvertFrom-Json
     }
     catch {
         throw 'A7 lease-bound Task 7 audit JSON is invalid'
@@ -1129,7 +1449,16 @@ function New-A7Lease {
     )
     & $AssertProperties $BuildAudit $BuildProperties 'build audit'
     & $AssertProperties $MicrocheckAudit $MicrocheckProperties 'micro-check audit'
-    foreach ($Audit in @($BuildAudit, $MicrocheckAudit)) {
+    $CacheProperties = @(
+        'schema_version', 'owner_authorization_id', 'run_id', 'source_commit',
+        'spec_commit', 'plan_commit', 'branch', 'image_tag', 'image_id',
+        'base_image_digest', 'augmented_baseline_path', 'augmented_baseline_sha256',
+        'docker_argv', 'network', 'gpu_enabled', 'cache_root', 'receipt_path',
+        'receipt_sha256', 'receipt_models', 'stdout_path', 'stdout_sha256',
+        'stderr_path', 'stderr_sha256', 'exit_code', 'started_at', 'completed_at'
+    )
+    & $AssertProperties $CacheAudit $CacheProperties 'model-cache preflight audit'
+    foreach ($Audit in @($BuildAudit, $MicrocheckAudit, $CacheAudit)) {
         if ([int]$Audit.schema_version -ne 1 -or
             [string]$Audit.owner_authorization_id -cne $OwnerAuthorizationId -or
             [string]$Audit.run_id -cne $RunId -or
@@ -1176,6 +1505,20 @@ function New-A7Lease {
         if (-not $StartedValid -or -not $CompletedValid -or $CompletedAt -lt $StartedAt) {
             throw 'A7 lease-bound Task 7 audit timestamp is invalid'
         }
+    }
+    if ([string]$CacheAudit.network -cne 'bridge' -or
+        [bool]$CacheAudit.gpu_enabled -ne $false -or
+        [string]$CacheAudit.cache_root -cne $CacheRootPath -or
+        [string]$CacheAudit.receipt_path -cne $CacheReceiptPath -or
+        [string]$CacheAudit.receipt_sha256 -cne $ModelCacheReceiptSha256 -or
+        [string]$CacheReceipt.receipt_type -cne 'model-assets' -or
+        [int]$CacheReceipt.schema_version -ne 1 -or
+        [string]$CacheReceipt.metadata.run_id -cne $RunId -or
+        [string]$CacheReceipt.normative.status -cne 'PASS' -or
+        @($CacheReceipt.normative.errors).Count -ne 0 -or
+        (ConvertTo-Json -InputObject $CacheAudit.receipt_models -Depth 20 -Compress) -cne
+            (ConvertTo-Json -InputObject $CacheReceipt.normative.models -Depth 20 -Compress)) {
+        throw 'A7 lease-bound model-cache evidence mismatch'
     }
     $AuditRoot = [IO.Path]::GetDirectoryName($BuildPath)
     if ([IO.Path]::GetDirectoryName($MicrocheckPath) -cne $AuditRoot) {
@@ -1330,6 +1673,11 @@ function New-A7Lease {
         historical_baseline_sha256 = $HistoricalBaselineSha256
         build_audit_sha256 = $BuildAuditSha256
         microcheck_audit_sha256 = $MicrocheckAuditSha256
+        model_cache_root = $CacheRootPath
+        model_cache_preflight_audit_path = $CacheAuditPath
+        model_cache_preflight_audit_sha256 = $ModelCachePreflightAuditSha256
+        model_cache_receipt_path = $CacheReceiptPath
+        model_cache_receipt_sha256 = $ModelCacheReceiptSha256
         host_processes = @($HostProcesses)
         containers = @($Containers)
         claimed_at = $ClaimedAt
@@ -1342,11 +1690,19 @@ function New-A7Lease {
     catch {
         throw 'A7 published lease did not parse back'
     }
+    $ExpectedLeaseProperties = @($Document.Keys | Sort-Object -CaseSensitive)
+    $PublishedLeaseProperties = @($Published.PSObject.Properties.Name | Sort-Object -CaseSensitive)
+    if (($ExpectedLeaseProperties -join "`n") -cne ($PublishedLeaseProperties -join "`n")) {
+        throw 'A7 published lease property inventory mismatch'
+    }
     if (
         [string]$Published.run_id -cne $RunId -or
         [string]$Published.gpu_uuid -cne $GpuUuid -or
         [string]$Published.build_audit_sha256 -cne $BuildAuditSha256 -or
-        [string]$Published.microcheck_audit_sha256 -cne $MicrocheckAuditSha256
+        [string]$Published.microcheck_audit_sha256 -cne $MicrocheckAuditSha256 -or
+        [string]$Published.model_cache_root -cne $CacheRootPath -or
+        [string]$Published.model_cache_preflight_audit_sha256 -cne $ModelCachePreflightAuditSha256 -or
+        [string]$Published.model_cache_receipt_sha256 -cne $ModelCacheReceiptSha256
     ) {
         throw 'A7 published lease identity mismatch'
     }
@@ -2253,6 +2609,25 @@ function Invoke-A7Launch {
             -Text ($MicrocheckAudit | ConvertTo-Json -Depth 8 -Compress)
         $MicrocheckAuditSha256 = & $GetSha256 $MicrocheckAuditPath
 
+        $Stage = 'model_cache_preflight'
+        $ModelCachePreflight = Invoke-A7ModelCachePreflight `
+            -CampaignRoot $CampaignRoot `
+            -AuditRoot $AuditRoot `
+            -WorktreePath $WorktreePath `
+            -DockerExecutable $DockerExecutable `
+            -DockerPrefixArguments $DockerPrefixArguments `
+            -OwnerAuthorizationId $OwnerAuthorizationId `
+            -RunId $RunId `
+            -SourceCommit $ExpectedSourceCommit `
+            -SpecCommit $ExpectedSpecCommit `
+            -PlanCommit $ExpectedPlanCommit `
+            -Branch $ExpectedBranch `
+            -ImageTag $ImageTag `
+            -ImageId $ImageId `
+            -BaseImageDigest $BaseDigest `
+            -HistoricalBaselinePath $HistoricalPath `
+            -HistoricalBaselineSha256 $HistoricalBaselineSha256
+
         $Stage = 'gpu_lease'
         $LeaseResult = New-A7Lease `
             -LeasePath $LeasePath `
@@ -2273,6 +2648,11 @@ function Invoke-A7Launch {
             -BuildAuditSha256 (& $GetSha256 $BuildAuditPath) `
             -MicrocheckAuditPath $MicrocheckAuditPath `
             -MicrocheckAuditSha256 $MicrocheckAuditSha256 `
+            -ModelCacheRoot ([string]$ModelCachePreflight.cache_root) `
+            -ModelCachePreflightAuditPath ([string]$ModelCachePreflight.audit_path) `
+            -ModelCachePreflightAuditSha256 ([string]$ModelCachePreflight.audit_sha256) `
+            -ModelCacheReceiptPath ([string]$ModelCachePreflight.receipt_path) `
+            -ModelCacheReceiptSha256 ([string]$ModelCachePreflight.receipt_sha256) `
             -HostProcessesJson (ConvertTo-Json -InputObject @($Preflight.host_processes) -Depth 6 -Compress) `
             -ContainersJson (ConvertTo-Json -InputObject @($Preflight.containers) -Depth 6 -Compress) `
             -ClaimedAt ([DateTimeOffset]::UtcNow.ToString('yyyy-MM-ddTHH:mm:ss.fffffffZ'))
@@ -2329,14 +2709,13 @@ function Invoke-A7Launch {
             $ReleasePaths = Get-A7LeaseReleasePaths -ActivePath $LeasePath -RunId $RunId
             $ReleasedLeasePath = [string]$ReleasePaths.released
             $ReleaseRecordPath = [string]$ReleasePaths.release_record
-            foreach ($RequiredPath in @($ReleasedLeasePath, $ReleaseRecordPath)) {
-                if (-not [IO.File]::Exists($RequiredPath) -or [IO.Directory]::Exists($RequiredPath)) {
-                    throw 'A7 Task 8 did not publish required lease-release evidence'
-                }
-            }
-            if ([IO.File]::Exists($LeasePath)) {
-                throw 'A7 Task 8 left the active lease in place'
-            }
+            $ReleaseEvidence = Assert-A7LeaseReleaseEvidence `
+                -ActivePath $LeasePath `
+                -ReleasedPath $ReleasedLeasePath `
+                -RecordPath $ReleaseRecordPath `
+                -RunId $RunId `
+                -SourceCommit $ExpectedSourceCommit `
+                -ImageDigest $ImageId
             try {
                 $Closure = [IO.File]::ReadAllText($ClosurePath, [Text.Encoding]::UTF8) |
                     ConvertFrom-Json

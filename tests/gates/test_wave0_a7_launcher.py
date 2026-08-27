@@ -593,7 +593,7 @@ _TRANSITION_PATH = (
     "docs/superpowers/specs/2026-08-23-vision-active-learning-loop-design.md"
 )
 _COMPATIBILITY_PLAN_PATH = (
-    "docs/superpowers/plans/2026-08-26-val-wave0-a7-history-compatibility.md"
+    "docs/superpowers/plans/2026-08-27-val-wave0-a8-cache-and-lease-lifecycle.md"
 )
 
 
@@ -1009,6 +1009,183 @@ $Calls | ForEach-Object {{ $_.GetCommandName() }}
     ]
 
 
+def test_task8_runner_mounts_only_the_verified_run_scoped_cache() -> None:
+    source = _RUNNER.read_text(encoding="utf-8")
+
+    assert "$Task7Binding = Test-Task7AuditBinding" in source
+    assert "$ModelCacheRoot = [string]$Task7Binding.model_cache_root" in source
+    assert "$HistoricalModelCache" not in source
+    assert '"${ModelCacheRoot}:/artifacts/wave0/model_cache:ro"' in source
+    assert "'HF_HUB_OFFLINE=1'" in source
+    assert "'TRANSFORMERS_OFFLINE=1'" in source
+
+
+def _historical_lease_fixture(tmp_path: Path) -> dict[str, Path]:
+    artifact_root = tmp_path / "artifacts"
+    leases = artifact_root / "leases"
+    leases.mkdir(parents=True)
+    historical = artifact_root / "historical.txt"
+    historical.write_text("immutable\n", encoding="utf-8")
+    campaign = artifact_root / "a7-runs" / _RUN_ID
+    campaign.mkdir(parents=True)
+    (campaign / "current.txt").write_text("current\n", encoding="utf-8")
+    root = tmp_path / "root-baseline.json"
+    root_document = {
+        "artifact_root": str(artifact_root),
+        "artifact_files": [
+            {
+                "path": "historical.txt",
+                "size": historical.stat().st_size,
+                "sha256": _sha256(historical),
+            }
+        ],
+        "images": [],
+        "protected_git": [],
+    }
+    root.write_text(json.dumps(root_document, separators=(",", ":")), encoding="utf-8")
+    augmented = tmp_path / "augmented-baseline.json"
+    augmented.write_text(
+        json.dumps(
+            {
+                **root_document,
+                "parent_baseline_sha256": _sha256(root),
+            },
+            separators=(",", ":"),
+        ),
+        encoding="utf-8",
+    )
+    active = leases / "GPU-12345678.json"
+    active.write_text('{"lease":true}', encoding="utf-8")
+    return {
+        "artifact_root": artifact_root,
+        "campaign": campaign,
+        "root": root,
+        "augmented": augmented,
+        "active": active,
+        "released": leases / f"{_RUN_ID}.released",
+        "release_record": leases / f"{_RUN_ID}.release.json",
+    }
+
+
+def _historical_lease_body(fixture: dict[str, Path]) -> str:
+    return f"""
+$CampaignRoot = {_powershell_literal(str(fixture['campaign']))}
+$ImageTag = 'vision-active-learning-loop:wave0-current'
+$RunId = {_powershell_literal(_RUN_ID)}
+$Lease = [pscustomobject]@{{ gpu_uuid = 'GPU-12345678' }}
+function docker {{
+    param([Parameter(ValueFromRemainingArguments = $true)][string[]]$Arguments)
+    $global:LASTEXITCODE = 0
+}}
+$Result = Test-HistoricalBaseline `
+    -RootBaselinePath {_powershell_literal(str(fixture['root']))} `
+    -RootBaselineSha256 {_powershell_literal(_sha256(fixture['root']))} `
+    -AugmentedBaselinePath {_powershell_literal(str(fixture['augmented']))} `
+    -AugmentedBaselineSha256 {_powershell_literal(_sha256(fixture['augmented']))} `
+    -ActiveLeasePath {_powershell_literal(str(fixture['active']))} `
+    -ReleasedLeasePath {_powershell_literal(str(fixture['released']))} `
+    -ReleaseRecordPath {_powershell_literal(str(fixture['release_record']))}
+$Result | ConvertTo-Json -Depth 8 -Compress
+"""
+
+
+def test_task8_history_excludes_only_the_current_active_lease(tmp_path: Path) -> None:
+    fixture = _historical_lease_fixture(tmp_path)
+
+    completed = _invoke_runner_functions(
+        ("Test-HistoricalBaseline",), _historical_lease_body(fixture)
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    result = json.loads(completed.stdout)
+    active_relative = "leases/GPU-12345678.json"
+    assert result["status"] == "PRESERVED"
+    assert result["approved_lease_exclusions"] == [
+        active_relative,
+        f"leases/{_RUN_ID}.release.json",
+        f"leases/{_RUN_ID}.released",
+    ]
+    assert result["observed_lease_exclusions"] == [active_relative]
+    assert result["baseline_artifact_count"] == 1
+    assert result["observed_historical_count"] == 1
+    assert result["exact_set_match"] is True
+
+
+def test_task8_history_requires_lifecycle_paths_in_task8_context(
+    tmp_path: Path,
+) -> None:
+    fixture = _historical_lease_fixture(tmp_path)
+    body = f"""
+$CampaignRoot = {_powershell_literal(str(fixture['campaign']))}
+$ImageTag = 'vision-active-learning-loop:wave0-current'
+$RunId = {_powershell_literal(_RUN_ID)}
+$Lease = [pscustomobject]@{{ gpu_uuid = 'GPU-12345678' }}
+function docker {{ $global:LASTEXITCODE = 0 }}
+Test-HistoricalBaseline `
+    -RootBaselinePath {_powershell_literal(str(fixture['root']))} `
+    -RootBaselineSha256 {_powershell_literal(_sha256(fixture['root']))} `
+    -AugmentedBaselinePath {_powershell_literal(str(fixture['augmented']))} `
+    -AugmentedBaselineSha256 {_powershell_literal(_sha256(fixture['augmented']))}
+"""
+
+    completed = _invoke_runner_functions(("Test-HistoricalBaseline",), body)
+
+    assert completed.returncode != 0
+    assert "requires lease lifecycle paths" in completed.stderr
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    (
+        "missing_active",
+        "preexisting_released",
+        "preexisting_release_record",
+        "wrong_active_name",
+        "unapproved_extra",
+    ),
+)
+def test_task8_history_rejects_unauthorized_lease_state(
+    tmp_path: Path, mutation: str
+) -> None:
+    fixture = _historical_lease_fixture(tmp_path)
+    if mutation == "missing_active":
+        fixture["active"].unlink()
+    elif mutation == "preexisting_released":
+        fixture["released"].write_text("occupied\n", encoding="utf-8")
+    elif mutation == "preexisting_release_record":
+        fixture["release_record"].write_text("{}\n", encoding="utf-8")
+    elif mutation == "wrong_active_name":
+        wrong_active = fixture["active"].with_name("wrong.json")
+        fixture["active"].replace(wrong_active)
+        fixture["active"] = wrong_active
+    elif mutation == "unapproved_extra":
+        (fixture["active"].parent / "unapproved.json").write_text(
+            "unexpected\n", encoding="utf-8"
+        )
+
+    completed = _invoke_runner_functions(
+        ("Test-HistoricalBaseline",), _historical_lease_body(fixture)
+    )
+
+    assert completed.returncode != 0
+
+
+def test_task8_history_rejects_linked_active_lease(tmp_path: Path) -> None:
+    fixture = _historical_lease_fixture(tmp_path)
+    target = tmp_path / "lease-target.json"
+    fixture["active"].replace(target)
+    try:
+        fixture["active"].symlink_to(target)
+    except OSError as exc:
+        pytest.skip(f"symlink creation unavailable: {exc}")
+
+    completed = _invoke_runner_functions(
+        ("Test-HistoricalBaseline",), _historical_lease_body(fixture)
+    )
+
+    assert completed.returncode != 0
+
+
 def _gpu_preflight_body(mutation: str | None = None) -> str:
     gpu_row = "GPU-12345678,NVIDIA GeForce RTX 4090,24564,100,24464"
     context = "desktop-linux"
@@ -1250,6 +1427,11 @@ $Result = New-A7Lease `
     -BuildAuditSha256 {_powershell_literal(str(fixture['build_hash']))} `
     -MicrocheckAuditPath {_powershell_literal(str(fixture['microcheck']))} `
     -MicrocheckAuditSha256 {_powershell_literal(str(fixture['microcheck_hash']))} `
+    -ModelCacheRoot {_powershell_literal(str(fixture['model_cache_root']))} `
+    -ModelCachePreflightAuditPath {_powershell_literal(str(fixture['model_cache_audit']))} `
+    -ModelCachePreflightAuditSha256 {_powershell_literal(str(fixture['model_cache_audit_hash']))} `
+    -ModelCacheReceiptPath {_powershell_literal(str(fixture['model_cache_receipt']))} `
+    -ModelCacheReceiptSha256 {_powershell_literal(str(fixture['model_cache_receipt_hash']))} `
     -HostProcessesJson '[{{"gpu_uuid":"GPU-12345678","pid":4321,"process_name":"dwm.exe","used_gpu_memory_mib":null}}]' `
     -ContainersJson '[]' `
     -ClaimedAt '2026-08-26T12:00:00.0000000Z'
@@ -1525,6 +1707,7 @@ command = args[4:]
 state = json.loads(state_path.read_text(encoding="utf-8")) if state_path.exists() else {
     "build_count": 0,
     "microcheck_count": 0,
+    "model_cache_preflight_count": 0,
     "commands": [],
 }
 state["commands"].append(command)
@@ -1555,6 +1738,73 @@ if command[:2] == ["image", "inspect"]:
     state_path.write_text(json.dumps(state), encoding="utf-8")
     raise SystemExit(0)
 if command[:1] == ["run"]:
+    entrypoint = command[command.index("--entrypoint") + 1]
+    if entrypoint == "val":
+        state["model_cache_preflight_count"] += 1
+        mount = next(value for value in command if value.endswith(":/artifacts:rw"))
+        artifact_root = Path(mount[: -len(":/artifacts:rw")])
+        receipt_path = artifact_root / "wave0" / "receipts" / "model-assets.json"
+        empty_sha = __import__("hashlib").sha256(b"").hexdigest()
+        locks = {
+            f".cache/huggingface/download/{filename}.lock": {
+                "size": 0,
+                "sha256": empty_sha,
+            }
+            for filename in (
+                "README.md",
+                "config.json",
+                "model.safetensors",
+                "preprocessor_config.json",
+            )
+        }
+        models = {
+            "rtdetr": {
+                "name": "rtdetr",
+                "repo_id": "PekingU/rtdetr_r18vd",
+                "revision": "cc5b50f32f0100caaa3bd275343e2fb17762c73d",
+                "huggingface_metadata": {
+                    "commit_hash": "cc5b50f32f0100caaa3bd275343e2fb17762c73d",
+                    "inventory": locks,
+                },
+            },
+            "dinov2": {
+                "name": "dinov2",
+                "repo_id": "facebook/dinov2-small",
+                "revision": "ed25f3a31f01632728cabb09d1542f84ab7b0056",
+                "huggingface_metadata": {
+                    "commit_hash": "ed25f3a31f01632728cabb09d1542f84ab7b0056",
+                    "inventory": locks,
+                },
+            },
+        }
+        receipt = {
+            "schema_version": 1,
+            "receipt_type": "model-assets",
+            "normative": {"status": "PASS", "errors": [], "models": models},
+            "metadata": {"run_id": state["labels"]["org.opencontainers.image.val.run_id"]},
+        }
+        if mode == "cache_wrong_run":
+            receipt["metadata"]["run_id"] = "wave0-a7-20260827T000000000Z"
+        elif mode == "cache_wrong_revision":
+            receipt["normative"]["models"]["rtdetr"]["revision"] = "f" * 40
+        elif mode == "cache_missing_lock":
+            del receipt["normative"]["models"]["rtdetr"]["huggingface_metadata"]["inventory"][".cache/huggingface/download/README.md.lock"]
+        elif mode == "cache_nonzero_lock":
+            receipt["normative"]["models"]["dinov2"]["huggingface_metadata"]["inventory"][".cache/huggingface/download/config.json.lock"] = {"size": 1, "sha256": "f" * 64}
+        elif mode == "cache_extra_lock":
+            receipt["normative"]["models"]["rtdetr"]["huggingface_metadata"]["inventory"][".cache/huggingface/download/extra.lock"] = {"size": 0, "sha256": empty_sha}
+        elif mode == "cache_fail_receipt":
+            receipt["normative"]["status"] = "FAIL"
+            receipt["normative"]["errors"] = ["fixture"]
+        if mode == "cache_malformed_receipt":
+            receipt_path.write_text("not-json", encoding="utf-8")
+        elif mode != "cache_missing_receipt" and mode != "cache_exit":
+            receipt_path.write_text(json.dumps(receipt, separators=(",", ":")), encoding="utf-8")
+        state_path.write_text(json.dumps(state), encoding="utf-8")
+        if mode == "cache_stderr":
+            print("unexpected stderr", file=sys.stderr)
+        print("NOT-PASS" if mode == "cache_stdout" else "PASS")
+        raise SystemExit(7 if mode == "cache_exit" else 0)
     state["microcheck_count"] += 1
     state_path.write_text(json.dumps(state), encoding="utf-8")
     if mode == "micro_blank":
@@ -1617,16 +1867,38 @@ audit = campaign / "audit"
 lease = Path(values["-LeasePath"])
 released = lease.parent / f"{{values['-RunId']}}.released"
 release_record = lease.parent / f"{{values['-RunId']}}.release.json"
+lease_document = json.loads(lease.read_text(encoding="utf-8"))
+lease_sha256 = hashlib.sha256(lease.read_bytes()).hexdigest()
+release_document = {{
+    "schema_version": 1,
+    "run_id": values["-RunId"],
+    "source_commit": lease_document["source_commit"],
+    "image_digest": values["-ImageDigest"],
+    "released_at": "2026-08-27T12:34:56.0000000Z",
+    "original_lease_sha256": lease_sha256,
+}}
+if mode == "task8_release_hash_mismatch":
+    release_document["original_lease_sha256"] = "0" * 64
+elif mode == "task8_release_wrong_run":
+    release_document["run_id"] = "wave0-a7-20260827T000000000Z"
+elif mode == "task8_release_wrong_source":
+    release_document["source_commit"] = "f" * 40
+elif mode == "task8_release_wrong_image":
+    release_document["image_digest"] = "sha256:" + "e" * 64
+elif mode == "task8_release_extra_field":
+    release_document["unexpected"] = True
+elif mode == "task8_release_bad_timestamp":
+    release_document["released_at"] = "not-a-timestamp"
 if mode == "task8_active_lease":
     pass
 elif mode == "task8_missing_release":
     lease.unlink()
-    release_record.write_text(json.dumps({{"released": True}}), encoding="utf-8")
+    release_record.write_text(json.dumps(release_document), encoding="utf-8")
 elif mode == "task8_missing_release_record":
     os.replace(lease, released)
 else:
     os.replace(lease, released)
-    release_record.write_text(json.dumps({{"released": True}}), encoding="utf-8")
+    release_record.write_text(json.dumps(release_document), encoding="utf-8")
 terminal = "WAVE0_A7_DIAGNOSTIC_INCONCLUSIVE / WAVE0_NOT_PASSED / WAVE1_FORBIDDEN"
 if mode != "task8_missing_30":
     (audit / "30-historical-preservation.json").write_text(json.dumps({{"preserved": True}}), encoding="utf-8")
@@ -1791,9 +2063,11 @@ def _launch_fixture(
 _LAUNCH_FUNCTIONS = (
     "New-A7BuildArguments",
     "Get-A7LeaseReleasePaths",
+    "Assert-A7LeaseReleaseEvidence",
     "Assert-A7BuildArguments",
     "Write-A7NewText",
     "Invoke-A7Native",
+    "Invoke-A7ModelCachePreflight",
     "Assert-A7ImageInspect",
     "New-A7Lease",
     "Close-A7Campaign",
@@ -1874,6 +2148,34 @@ _MICROCHECK_AUDIT_FIELDS = {
     "payload_sha256",
     "payload",
     "docker_argv",
+    "stdout_path",
+    "stdout_sha256",
+    "stderr_path",
+    "stderr_sha256",
+    "exit_code",
+    "started_at",
+    "completed_at",
+}
+_MODEL_CACHE_AUDIT_FIELDS = {
+    "schema_version",
+    "owner_authorization_id",
+    "run_id",
+    "source_commit",
+    "spec_commit",
+    "plan_commit",
+    "branch",
+    "image_tag",
+    "image_id",
+    "base_image_digest",
+    "augmented_baseline_path",
+    "augmented_baseline_sha256",
+    "docker_argv",
+    "network",
+    "gpu_enabled",
+    "cache_root",
+    "receipt_path",
+    "receipt_sha256",
+    "receipt_models",
     "stdout_path",
     "stdout_sha256",
     "stderr_path",
@@ -2039,6 +2341,128 @@ def _closed_audit_fixture(tmp_path: Path) -> dict[str, object]:
         json.dumps(microcheck_document, separators=(",", ":")),
         encoding="utf-8",
     )
+    model_cache_root = campaign / "cache-preflight" / "wave0" / "model_cache"
+    model_cache_root.mkdir(parents=True)
+    model_cache_receipts = campaign / "cache-preflight" / "wave0" / "receipts"
+    model_cache_receipts.mkdir()
+    empty_sha = hashlib.sha256(b"").hexdigest()
+    locks = {
+        f".cache/huggingface/download/{filename}.lock": {
+            "size": 0,
+            "sha256": empty_sha,
+        }
+        for filename in (
+            "README.md",
+            "config.json",
+            "model.safetensors",
+            "preprocessor_config.json",
+        )
+    }
+    model_cache_models = {
+        "rtdetr": {
+            "name": "rtdetr",
+            "repo_id": "PekingU/rtdetr_r18vd",
+            "revision": "cc5b50f32f0100caaa3bd275343e2fb17762c73d",
+            "huggingface_metadata": {
+                "commit_hash": "cc5b50f32f0100caaa3bd275343e2fb17762c73d",
+                "inventory": locks,
+            },
+        },
+        "dinov2": {
+            "name": "dinov2",
+            "repo_id": "facebook/dinov2-small",
+            "revision": "ed25f3a31f01632728cabb09d1542f84ab7b0056",
+            "huggingface_metadata": {
+                "commit_hash": "ed25f3a31f01632728cabb09d1542f84ab7b0056",
+                "inventory": locks,
+            },
+        },
+    }
+    model_cache_receipt = model_cache_receipts / "model-assets.json"
+    model_cache_receipt.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "receipt_type": "model-assets",
+                "normative": {
+                    "status": "PASS",
+                    "errors": [],
+                    "models": model_cache_models,
+                },
+                "metadata": {"run_id": _RUN_ID},
+            },
+            separators=(",", ":"),
+        ),
+        encoding="utf-8",
+    )
+    model_cache_stdout = audit / "23-a7-model-cache-preflight.stdout.log"
+    model_cache_stderr = audit / "23-a7-model-cache-preflight.stderr.log"
+    model_cache_stdout.write_text("PASS\n", encoding="utf-8")
+    model_cache_stderr.write_text("", encoding="utf-8")
+    model_cache_argv = [
+        "docker",
+        "run",
+        "--rm",
+        "--network",
+        "bridge",
+        "--workdir",
+        "/workspace",
+        "--entrypoint",
+        "val",
+        "-e",
+        "VAL_ARTIFACT_ROOT=/artifacts",
+        "-e",
+        "PYTHONPATH=/workspace/src",
+        "-v",
+        f"{tmp_path / 'worktree'}:/workspace:ro",
+        "-v",
+        f"{campaign / 'cache-preflight'}:/artifacts:rw",
+        image_id,
+        "assets",
+        "verify",
+        "--config",
+        "/workspace/configs/models/pinned-models.yaml",
+        "--cache-root",
+        "/artifacts/wave0/model_cache",
+        "--output",
+        "/artifacts/wave0/receipts/model-assets.json",
+        "--run-id",
+        _RUN_ID,
+        "--download",
+    ]
+    model_cache_document = {
+        "schema_version": 1,
+        "owner_authorization_id": "owner-a7-fixture",
+        "run_id": _RUN_ID,
+        "source_commit": _SOURCE,
+        "spec_commit": _SPEC,
+        "plan_commit": _PLAN,
+        "branch": "codex/fixture",
+        "image_tag": _TAG,
+        "image_id": image_id,
+        "base_image_digest": _BASE,
+        "augmented_baseline_path": str(baseline),
+        "augmented_baseline_sha256": _sha256(baseline),
+        "docker_argv": model_cache_argv,
+        "network": "bridge",
+        "gpu_enabled": False,
+        "cache_root": str(model_cache_root),
+        "receipt_path": str(model_cache_receipt),
+        "receipt_sha256": _sha256(model_cache_receipt),
+        "receipt_models": model_cache_models,
+        "stdout_path": str(model_cache_stdout),
+        "stdout_sha256": _sha256(model_cache_stdout),
+        "stderr_path": str(model_cache_stderr),
+        "stderr_sha256": _sha256(model_cache_stderr),
+        "exit_code": 0,
+        "started_at": started,
+        "completed_at": completed,
+    }
+    model_cache_audit = audit / "23-a7-model-cache-preflight.json"
+    model_cache_audit.write_text(
+        json.dumps(model_cache_document, separators=(",", ":")),
+        encoding="utf-8",
+    )
     return {
         "audit": audit,
         "baseline": baseline,
@@ -2051,6 +2475,13 @@ def _closed_audit_fixture(tmp_path: Path) -> dict[str, object]:
         "microcheck": microcheck,
         "microcheck_argv": microcheck_argv,
         "microcheck_document": microcheck_document,
+        "model_cache_root": model_cache_root,
+        "model_cache_audit": model_cache_audit,
+        "model_cache_audit_hash": _sha256(model_cache_audit),
+        "model_cache_audit_document": model_cache_document,
+        "model_cache_receipt": model_cache_receipt,
+        "model_cache_receipt_hash": _sha256(model_cache_receipt),
+        "model_cache_argv": model_cache_argv,
         "payload": payload,
         "payload_text": payload_text,
     }
@@ -2110,6 +2541,11 @@ $Result = New-A7Lease `
     -BuildAuditSha256 {_powershell_literal(_sha256(Path(fixture['build'])))} `
     -MicrocheckAuditPath {_powershell_literal(str(fixture['microcheck']))} `
     -MicrocheckAuditSha256 {_powershell_literal(_sha256(Path(fixture['microcheck'])))} `
+    -ModelCacheRoot {_powershell_literal(str(fixture['model_cache_root']))} `
+    -ModelCachePreflightAuditPath {_powershell_literal(str(fixture['model_cache_audit']))} `
+    -ModelCachePreflightAuditSha256 {_powershell_literal(_sha256(Path(fixture['model_cache_audit'])))} `
+    -ModelCacheReceiptPath {_powershell_literal(str(fixture['model_cache_receipt']))} `
+    -ModelCacheReceiptSha256 {_powershell_literal(_sha256(Path(fixture['model_cache_receipt'])))} `
     -HostProcessesJson '[]' `
     -ContainersJson '[]' `
     -ClaimedAt '2026-08-26T12:00:02.0000000Z'
@@ -2132,12 +2568,19 @@ def _task7_audit_binding_body(fixture: dict[str, object]) -> str:
         "historical_baseline_sha256": _sha256(Path(fixture["baseline"])),
         "build_audit_sha256": _sha256(Path(fixture["build"])),
         "microcheck_audit_sha256": _sha256(Path(fixture["microcheck"])),
+        "model_cache_root": str(fixture["model_cache_root"]),
+        "model_cache_preflight_audit_path": str(fixture["model_cache_audit"]),
+        "model_cache_preflight_audit_sha256": _sha256(
+            Path(fixture["model_cache_audit"])
+        ),
+        "model_cache_receipt_path": str(fixture["model_cache_receipt"]),
+        "model_cache_receipt_sha256": _sha256(Path(fixture["model_cache_receipt"])),
     }
     return f"""
 $AuditRoot = {_powershell_literal(str(fixture['audit']))}
 $Lease = {_powershell_literal(json.dumps(lease))} | ConvertFrom-Json
-Test-Task7AuditBinding
-'PASS'
+$Binding = Test-Task7AuditBinding
+$Binding | ConvertTo-Json -Depth 8 -Compress
 """
 
 
@@ -2156,6 +2599,9 @@ def test_build_audit_and_microcheck_audit_are_closed_in_controlled_launch(
     microcheck = json.loads(
         (audit / "22-a7-cpu-micro-check.json").read_text(encoding="utf-8")
     )
+    model_cache = json.loads(
+        (audit / "23-a7-model-cache-preflight.json").read_text(encoding="utf-8")
+    )
     payload_path = audit / "22-a7-cpu-micro-check-payload.json"
     stdout_line = (
         (audit / "22-a7-cpu-micro-check.stdout.log")
@@ -2164,6 +2610,7 @@ def test_build_audit_and_microcheck_audit_are_closed_in_controlled_launch(
     )
     assert set(build) == _BUILD_AUDIT_FIELDS
     assert set(microcheck) == _MICROCHECK_AUDIT_FIELDS
+    assert set(model_cache) == _MODEL_CACHE_AUDIT_FIELDS
     assert payload_path.read_bytes() == stdout_line.encode("utf-8")
     assert microcheck["payload"] == json.loads(stdout_line)
 
@@ -2177,6 +2624,32 @@ def test_audit_binding_gpu_lease_accepts_closed_task7_audits(tmp_path: Path) -> 
 
     assert completed.returncode == 0, completed.stderr
     assert Path(fixture["lease"]).is_file()
+
+
+def test_gpu_lease_parseback_rejects_an_extra_property(tmp_path: Path) -> None:
+    fixture = _closed_audit_fixture(tmp_path)
+    body = f"""
+Remove-Item Function:Write-A7NewText
+function Write-A7NewText {{
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][AllowEmptyString()][string]$Text
+    )
+    $Document = $Text | ConvertFrom-Json
+    $Document | Add-Member -NotePropertyName unexpected -NotePropertyValue $true
+    [IO.File]::WriteAllText(
+        $Path,
+        ($Document | ConvertTo-Json -Depth 8 -Compress),
+        [Text.UTF8Encoding]::new($false)
+    )
+}}
+{_closed_audit_lease_body(fixture)}
+"""
+
+    completed = _invoke_functions(("Write-A7NewText", "New-A7Lease"), body)
+
+    assert completed.returncode != 0
+    assert "property inventory mismatch" in completed.stderr
 
 
 def test_audit_binding_gpu_lease_accepts_regular_files_under_strict_mode(
@@ -2232,7 +2705,23 @@ def test_task8_accepts_closed_task7_binding_audits(tmp_path: Path) -> None:
     )
 
     assert completed.returncode == 0, completed.stderr
-    assert completed.stdout.strip() == "PASS"
+    assert json.loads(completed.stdout) == {
+        "model_cache_root": str(fixture["model_cache_root"])
+    }
+
+
+def test_task8_binding_returns_verified_run_scoped_model_cache(
+    tmp_path: Path,
+) -> None:
+    fixture = _closed_audit_fixture(tmp_path)
+
+    completed = _invoke_runner_functions(
+        ("Test-Task7AuditBinding",), _task7_audit_binding_body(fixture)
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    result = json.loads(completed.stdout)
+    assert result == {"model_cache_root": str(fixture["model_cache_root"])}
 
 
 def test_task8_accepts_regular_audit_files_under_strict_mode(tmp_path: Path) -> None:
@@ -2244,7 +2733,9 @@ def test_task8_accepts_regular_audit_files_under_strict_mode(tmp_path: Path) -> 
     )
 
     assert completed.returncode == 0, completed.stderr
-    assert completed.stdout.strip() == "PASS"
+    assert json.loads(completed.stdout) == {
+        "model_cache_root": str(fixture["model_cache_root"])
+    }
 
 
 def test_task8_derives_run_scoped_release_evidence_paths(tmp_path: Path) -> None:
@@ -2268,6 +2759,60 @@ $Paths | ConvertTo-Json -Compress
         "released": str(expected_released),
         "release_record": str(expected_record),
     }
+
+
+@pytest.mark.parametrize("linked_kind", ("released", "record"))
+def test_task7_rejects_linked_release_evidence(
+    tmp_path: Path, linked_kind: str
+) -> None:
+    leases = tmp_path / "leases"
+    leases.mkdir()
+    active = leases / "GPU-12345678.json"
+    lease_document = {
+        "run_id": _RUN_ID,
+        "source_commit": _SOURCE,
+        "image_id": f"sha256:{'d' * 64}",
+    }
+    active.write_text(json.dumps(lease_document), encoding="utf-8")
+    lease_sha256 = _sha256(active)
+    released_target = tmp_path / "released-target.json"
+    active.replace(released_target)
+    record_document = {
+        "schema_version": 1,
+        "run_id": _RUN_ID,
+        "source_commit": _SOURCE,
+        "image_digest": f"sha256:{'d' * 64}",
+        "released_at": "2026-08-27T12:34:56.0000000Z",
+        "original_lease_sha256": lease_sha256,
+    }
+    record_target = tmp_path / "record-target.json"
+    record_target.write_text(json.dumps(record_document), encoding="utf-8")
+    released = leases / f"{_RUN_ID}.released"
+    record = leases / f"{_RUN_ID}.release.json"
+    try:
+        if linked_kind == "released":
+            released.symlink_to(released_target)
+            record.write_bytes(record_target.read_bytes())
+        else:
+            released.write_bytes(released_target.read_bytes())
+            record.symlink_to(record_target)
+    except OSError as exc:
+        pytest.skip(f"symlink creation unavailable: {exc}")
+    body = f"""
+Assert-A7LeaseReleaseEvidence `
+    -ActivePath {_powershell_literal(str(active))} `
+    -ReleasedPath {_powershell_literal(str(released))} `
+    -RecordPath {_powershell_literal(str(record))} `
+    -RunId {_powershell_literal(_RUN_ID)} `
+    -SourceCommit {_powershell_literal(_SOURCE)} `
+    -ImageDigest 'sha256:{'d' * 64}'
+"""
+
+    completed = _invoke_functions(
+        ("Get-A7LeaseReleasePaths", "Assert-A7LeaseReleaseEvidence"), body
+    )
+
+    assert completed.returncode != 0
 
 
 @pytest.mark.parametrize("kind", ["build", "microcheck"])
@@ -2313,6 +2858,7 @@ def test_microcheck_invocation_is_cpu_networkless_and_before_gpu_lease(
     docker_state = json.loads(Path(fixture["docker_state"]).read_text(encoding="utf-8"))
     task8_state = json.loads(Path(fixture["task8_state"]).read_text(encoding="utf-8"))
     assert result["state"] == "CLOSED"
+    assert result["validation_status"] == "PASSED"
     assert docker_state["build_count"] == 1
     assert docker_state["microcheck_count"] == 1
     run_argv = next(
@@ -2352,6 +2898,47 @@ def test_microcheck_invocation_is_cpu_networkless_and_before_gpu_lease(
     ]
     assert not Path(fixture["lease"]).exists()
     assert (Path(fixture["lease"]).parent / f"{_RUN_ID}.released").is_file()
+
+
+def test_model_cache_preflight_runs_once_between_microcheck_and_gpu_lease(
+    tmp_path: Path,
+) -> None:
+    fixture = _launch_fixture(tmp_path)
+
+    completed = _invoke_functions(_LAUNCH_FUNCTIONS, _launch_body(fixture))
+
+    assert completed.returncode == 0, completed.stderr
+    docker_state = json.loads(Path(fixture["docker_state"]).read_text(encoding="utf-8"))
+    run_commands = [
+        command for command in docker_state["commands"] if command[0] == "run"
+    ]
+    assert docker_state["microcheck_count"] == 1
+    assert docker_state["model_cache_preflight_count"] == 1
+    assert len(run_commands) == 2
+    assert run_commands[0][run_commands[0].index("--network") + 1] == "none"
+    assert run_commands[0][run_commands[0].index("--entrypoint") + 1] == "python"
+    assert run_commands[1][run_commands[1].index("--network") + 1] == "bridge"
+    assert run_commands[1][run_commands[1].index("--entrypoint") + 1] == "val"
+    assert "--gpus" not in run_commands[1]
+    audit = Path(fixture["campaign"]) / "audit"
+    cache_audit = audit / "23-a7-model-cache-preflight.json"
+    assert cache_audit.is_file()
+    released = Path(fixture["lease"]).parent / f"{_RUN_ID}.released"
+    lease = json.loads(released.read_text(encoding="utf-8"))
+    assert lease["model_cache_root"] == str(
+        Path(fixture["campaign"]) / "cache-preflight" / "wave0" / "model_cache"
+    )
+    assert lease["model_cache_preflight_audit_path"] == str(cache_audit)
+    assert lease["model_cache_preflight_audit_sha256"] == _sha256(cache_audit)
+    assert lease["model_cache_receipt_sha256"] == _sha256(
+        Path(lease["model_cache_receipt_path"])
+    )
+    source = _LAUNCHER.read_text(encoding="utf-8")
+    assert (
+        source.index("$Stage = 'model_cache_preflight'")
+        < source.index("$Stage = 'gpu_lease'")
+        < source.index("$Stage = 'task8'")
+    )
 
 
 def test_previous_fixed_gpu_release_evidence_does_not_block_fresh_run(
@@ -2401,6 +2988,17 @@ def test_existing_run_scoped_release_destination_fails_before_claim(
         "micro_malformed",
         "micro_cuda",
         "micro_wrong_source",
+        "cache_exit",
+        "cache_stdout",
+        "cache_stderr",
+        "cache_missing_receipt",
+        "cache_malformed_receipt",
+        "cache_fail_receipt",
+        "cache_wrong_run",
+        "cache_wrong_revision",
+        "cache_missing_lock",
+        "cache_nonzero_lock",
+        "cache_extra_lock",
     ],
 )
 def test_transition_failure_closes_without_gpu_or_task8_retry(
@@ -2418,6 +3016,7 @@ def test_transition_failure_closes_without_gpu_or_task8_retry(
     assert not Path(fixture["task8_state"]).exists()
     assert state["build_count"] == 1
     assert state["microcheck_count"] <= 1
+    assert state["model_cache_preflight_count"] <= 1
     assert (
         Path(fixture["campaign"]) / "audit" / "51-campaign-closure-manifest.json"
     ).is_file()
@@ -2455,6 +3054,12 @@ def test_task8_nonzero_with_complete_evidence_remains_a_valid_closed_result(
         "task8_active_lease",
         "task8_missing_release",
         "task8_missing_release_record",
+        "task8_release_hash_mismatch",
+        "task8_release_wrong_run",
+        "task8_release_wrong_source",
+        "task8_release_wrong_image",
+        "task8_release_extra_field",
+        "task8_release_bad_timestamp",
     ],
 )
 def test_post_task8_validation_failure_uses_only_52_53_evidence(
@@ -2621,3 +3226,164 @@ $Calls.Count
 
     assert completed.returncode == 0, completed.stderr
     assert completed.stdout.strip() == "1"
+
+
+def _write_model_cache_preflight_adapter(path: Path) -> None:
+    path.write_text(
+        """import hashlib
+import json
+import sys
+from pathlib import Path
+
+args = list(sys.argv[1:])
+if args[:1] != ["--state"] or len(args) < 3:
+    raise SystemExit(90)
+state_path = Path(args[1])
+command = args[2:]
+state_path.write_text(json.dumps({"argv": command}), encoding="utf-8")
+mount = next(value for value in command if value.endswith(":/artifacts:rw"))
+artifact_root = Path(mount[: -len(":/artifacts:rw")])
+cache_root = artifact_root / "wave0" / "model_cache"
+receipt_path = artifact_root / "wave0" / "receipts" / "model-assets.json"
+empty_sha = hashlib.sha256(b"").hexdigest()
+models = {}
+for name, repo_id, revision in (
+    ("rtdetr", "PekingU/rtdetr_r18vd", "cc5b50f32f0100caaa3bd275343e2fb17762c73d"),
+    ("dinov2", "facebook/dinov2-small", "ed25f3a31f01632728cabb09d1542f84ab7b0056"),
+):
+    inventory = {}
+    for filename in ("README.md", "config.json", "model.safetensors", "preprocessor_config.json"):
+        lock_rel = f".cache/huggingface/download/{filename}.lock"
+        inventory[lock_rel] = {"size": 0, "sha256": empty_sha}
+    models[name] = {
+        "name": name,
+        "repo_id": repo_id,
+        "revision": revision,
+        "huggingface_metadata": {
+            "commit_hash": revision,
+            "inventory": inventory,
+        },
+    }
+receipt = {
+    "schema_version": 1,
+    "receipt_type": "model-assets",
+    "normative": {
+        "status": "PASS",
+        "errors": [],
+        "invariants": {
+            "all_assets_verified": True,
+            "apache_2_0_licenses": True,
+            "data_root_unset": True,
+            "exact_file_inventory": True,
+            "exact_huggingface_metadata": True,
+            "exact_revisions": True,
+            "exact_transformers_source": True,
+        },
+        "models": models,
+    },
+    "metadata": {"run_id": "wave0-a7-20260826T120000000Z"},
+}
+receipt_path.write_text(json.dumps(receipt, separators=(",", ":")), encoding="utf-8")
+print("PASS")
+""",
+        encoding="utf-8",
+    )
+
+
+def test_model_cache_preflight_is_networked_cpu_only_and_audited(
+    tmp_path: Path,
+) -> None:
+    campaign = tmp_path / "campaign"
+    audit = campaign / "audit"
+    audit.mkdir(parents=True)
+    worktree = tmp_path / "worktree"
+    (worktree / "configs").mkdir(parents=True)
+    (worktree / "configs" / "models").mkdir(parents=True)
+    (worktree / "configs" / "models" / "pinned-models.yaml").write_text("models: {}\n")
+    baseline = tmp_path / "baseline.json"
+    baseline.write_text('{"baseline":true}', encoding="utf-8")
+    adapter = tmp_path / "model_cache_adapter.py"
+    state = tmp_path / "model_cache_state.json"
+    _write_model_cache_preflight_adapter(adapter)
+    body = f"""
+$Result = Invoke-A7ModelCachePreflight `
+    -CampaignRoot {_powershell_literal(str(campaign))} `
+    -AuditRoot {_powershell_literal(str(audit))} `
+    -WorktreePath {_powershell_literal(str(worktree))} `
+    -DockerExecutable {_powershell_literal(sys.executable)} `
+    -DockerPrefixArguments @({_powershell_literal(str(adapter))},{_powershell_literal('--state')},{_powershell_literal(str(state))}) `
+    -OwnerAuthorizationId 'owner-a8-fixture' `
+    -RunId {_powershell_literal(_RUN_ID)} `
+    -SourceCommit {_powershell_literal(_SOURCE)} `
+    -SpecCommit {_powershell_literal(_SPEC)} `
+    -PlanCommit {_powershell_literal(_PLAN)} `
+    -Branch 'codex/fixture' `
+    -ImageTag {_powershell_literal(_TAG)} `
+    -ImageId 'sha256:{'d' * 64}' `
+    -BaseImageDigest {_powershell_literal(_BASE)} `
+    -HistoricalBaselinePath {_powershell_literal(str(baseline))} `
+    -HistoricalBaselineSha256 {_powershell_literal(_sha256(baseline))}
+$Result | ConvertTo-Json -Depth 8 -Compress
+"""
+
+    completed = _invoke_functions(
+        ("Write-A7NewText", "Invoke-A7Native", "Invoke-A7ModelCachePreflight"),
+        body,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    result = json.loads(completed.stdout)
+    argv = json.loads(state.read_text(encoding="utf-8"))["argv"]
+    assert argv[:8] == [
+        "run",
+        "--rm",
+        "--network",
+        "bridge",
+        "--workdir",
+        "/workspace",
+        "--entrypoint",
+        "val",
+    ]
+    assert "--gpus" not in argv
+    assert "VAL_DATA_ROOT" not in "\n".join(argv)
+    assert "HF_HUB_OFFLINE" not in "\n".join(argv)
+    assert "TRANSFORMERS_OFFLINE" not in "\n".join(argv)
+    assert argv[-11:] == [
+        "assets",
+        "verify",
+        "--config",
+        "/workspace/configs/models/pinned-models.yaml",
+        "--cache-root",
+        "/artifacts/wave0/model_cache",
+        "--output",
+        "/artifacts/wave0/receipts/model-assets.json",
+        "--run-id",
+        _RUN_ID,
+        "--download",
+    ]
+    audit_path = Path(result["audit_path"])
+    receipt_path = Path(result["receipt_path"])
+    assert audit_path.is_file()
+    assert receipt_path.is_file()
+    assert result["audit_sha256"] == _sha256(audit_path)
+    assert result["receipt_sha256"] == _sha256(receipt_path)
+    document = json.loads(audit_path.read_text(encoding="utf-8"))
+    assert document["network"] == "bridge"
+    assert document["gpu_enabled"] is False
+    assert (
+        document["receipt_models"]
+        == json.loads(receipt_path.read_text(encoding="utf-8"))["normative"]["models"]
+    )
+    before = {
+        "audit": audit_path.read_bytes(),
+        "receipt": receipt_path.read_bytes(),
+    }
+
+    repeated = _invoke_functions(
+        ("Write-A7NewText", "Invoke-A7Native", "Invoke-A7ModelCachePreflight"),
+        body,
+    )
+
+    assert repeated.returncode != 0
+    assert audit_path.read_bytes() == before["audit"]
+    assert receipt_path.read_bytes() == before["receipt"]

@@ -119,6 +119,7 @@ function Release-A7Lease {
 function Test-Task7AuditBinding {
     $BuildPath = Join-Path $AuditRoot '20-image-build-result.json'
     $MicrocheckPath = Join-Path $AuditRoot '22-a7-cpu-micro-check.json'
+    $ModelCacheAuditPath = Join-Path $AuditRoot '23-a7-model-cache-preflight.json'
     $AssertRegularFile = {
         param([Parameter(Mandatory = $true)][string]$Path)
         $FullPath = [IO.Path]::GetFullPath($Path)
@@ -142,16 +143,44 @@ function Test-Task7AuditBinding {
         param([Parameter(Mandatory = $true)][string]$Path)
         return (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant()
     }
-    foreach ($Path in @($BuildPath, $MicrocheckPath)) { [void](& $AssertRegularFile $Path) }
+    $AssertRegularDirectory = {
+        param([Parameter(Mandatory = $true)][string]$Path)
+        $FullPath = [IO.Path]::GetFullPath($Path)
+        if (-not [IO.Directory]::Exists($FullPath) -or [IO.File]::Exists($FullPath)) {
+            throw 'Task 7 audit-bound directory is missing'
+        }
+        $Current = [IO.DirectoryInfo]::new($FullPath)
+        while ($null -ne $Current) {
+            if (($Current.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+                throw 'Task 7 audit-bound link or junction is forbidden'
+            }
+            $Current = $Current.Parent
+        }
+        return $FullPath
+    }
+    foreach ($Path in @($BuildPath, $MicrocheckPath, $ModelCacheAuditPath)) {
+        [void](& $AssertRegularFile $Path)
+    }
+    $ModelCacheRoot = & $AssertRegularDirectory ([string]$Lease.model_cache_root)
+    $ModelCacheReceiptPath = & $AssertRegularFile ([string]$Lease.model_cache_receipt_path)
     if ([string]$Lease.build_audit_sha256 -cnotmatch '^[0-9a-f]{64}$' -or
         [string]$Lease.microcheck_audit_sha256 -cnotmatch '^[0-9a-f]{64}$' -or
+        [string]$Lease.model_cache_preflight_audit_sha256 -cnotmatch '^[0-9a-f]{64}$' -or
+        [string]$Lease.model_cache_receipt_sha256 -cnotmatch '^[0-9a-f]{64}$' -or
+        [string]$Lease.model_cache_preflight_audit_path -cne $ModelCacheAuditPath -or
         (& $GetSha256 $BuildPath) -cne [string]$Lease.build_audit_sha256 -or
-        (& $GetSha256 $MicrocheckPath) -cne [string]$Lease.microcheck_audit_sha256) {
+        (& $GetSha256 $MicrocheckPath) -cne [string]$Lease.microcheck_audit_sha256 -or
+        (& $GetSha256 $ModelCacheAuditPath) -cne [string]$Lease.model_cache_preflight_audit_sha256 -or
+        (& $GetSha256 $ModelCacheReceiptPath) -cne [string]$Lease.model_cache_receipt_sha256) {
         throw 'Task 7 binding-audit identity mismatch'
     }
     try {
         $BuildAudit = Get-Content -LiteralPath $BuildPath -Raw -Encoding UTF8 | ConvertFrom-Json
         $MicrocheckAudit = Get-Content -LiteralPath $MicrocheckPath -Raw -Encoding UTF8 | ConvertFrom-Json
+        $ModelCacheAudit = Get-Content -LiteralPath $ModelCacheAuditPath -Raw -Encoding UTF8 |
+            ConvertFrom-Json
+        $ModelCacheReceipt = Get-Content -LiteralPath $ModelCacheReceiptPath -Raw -Encoding UTF8 |
+            ConvertFrom-Json
     }
     catch {
         throw 'Task 7 binding-audit JSON is invalid'
@@ -184,7 +213,15 @@ function Test-Task7AuditBinding {
         'payload_sha256', 'payload', 'docker_argv', 'stdout_path', 'stdout_sha256',
         'stderr_path', 'stderr_sha256', 'exit_code', 'started_at', 'completed_at'
     ) 'micro-check audit'
-    foreach ($Audit in @($BuildAudit, $MicrocheckAudit)) {
+    & $AssertProperties $ModelCacheAudit @(
+        'schema_version', 'owner_authorization_id', 'run_id', 'source_commit',
+        'spec_commit', 'plan_commit', 'branch', 'image_tag', 'image_id',
+        'base_image_digest', 'augmented_baseline_path', 'augmented_baseline_sha256',
+        'docker_argv', 'network', 'gpu_enabled', 'cache_root', 'receipt_path',
+        'receipt_sha256', 'receipt_models', 'stdout_path', 'stdout_sha256',
+        'stderr_path', 'stderr_sha256', 'exit_code', 'started_at', 'completed_at'
+    ) 'model-cache preflight audit'
+    foreach ($Audit in @($BuildAudit, $MicrocheckAudit, $ModelCacheAudit)) {
         if ([int]$Audit.schema_version -ne 1 -or
             [string]::IsNullOrWhiteSpace([string]$Lease.branch) -or
             [string]$Audit.owner_authorization_id -cne [string]$Lease.owner_authorization_id -or
@@ -241,6 +278,8 @@ function Test-Task7AuditBinding {
         payload = Join-Path $AuditRoot '22-a7-cpu-micro-check-payload.json'
         microcheck_stdout = Join-Path $AuditRoot '22-a7-cpu-micro-check.stdout.log'
         microcheck_stderr = Join-Path $AuditRoot '22-a7-cpu-micro-check.stderr.log'
+        model_cache_stdout = Join-Path $AuditRoot '23-a7-model-cache-preflight.stdout.log'
+        model_cache_stderr = Join-Path $AuditRoot '23-a7-model-cache-preflight.stderr.log'
     }
     if ([string]$BuildAudit.argv_audit_path -cne $Paths.build_argv -or
         [string]$BuildAudit.stdout_path -cne $Paths.build_stdout -or
@@ -248,7 +287,12 @@ function Test-Task7AuditBinding {
         [string]$MicrocheckAudit.source_inventory_path -cne $Paths.source_inventory -or
         [string]$MicrocheckAudit.payload_path -cne $Paths.payload -or
         [string]$MicrocheckAudit.stdout_path -cne $Paths.microcheck_stdout -or
-        [string]$MicrocheckAudit.stderr_path -cne $Paths.microcheck_stderr) {
+        [string]$MicrocheckAudit.stderr_path -cne $Paths.microcheck_stderr -or
+        [string]$ModelCacheAudit.stdout_path -cne $Paths.model_cache_stdout -or
+        [string]$ModelCacheAudit.stderr_path -cne $Paths.model_cache_stderr -or
+        [string]$ModelCacheAudit.cache_root -cne $ModelCacheRoot -or
+        [string]$ModelCacheAudit.receipt_path -cne $ModelCacheReceiptPath -or
+        [string]$ModelCacheAudit.receipt_sha256 -cne [string]$Lease.model_cache_receipt_sha256) {
         throw 'Task 7 binding-audit supporting path mismatch'
     }
     $Hashes = [ordered]@{
@@ -259,6 +303,8 @@ function Test-Task7AuditBinding {
         payload = [string]$MicrocheckAudit.payload_sha256
         microcheck_stdout = [string]$MicrocheckAudit.stdout_sha256
         microcheck_stderr = [string]$MicrocheckAudit.stderr_sha256
+        model_cache_stdout = [string]$ModelCacheAudit.stdout_sha256
+        model_cache_stderr = [string]$ModelCacheAudit.stderr_sha256
     }
     foreach ($Name in $Paths.Keys) {
         [void](& $AssertRegularFile $Paths[$Name])
@@ -336,6 +382,94 @@ function Test-Task7AuditBinding {
     if ($StdoutLines.Count -ne 1 -or [string]$StdoutLines[0] -cne $PayloadText) {
         throw 'Task 7 micro-check stdout does not equal the raw payload'
     }
+    $CampaignPath = [IO.Path]::GetFullPath((Split-Path -Parent $AuditRoot))
+    $ExpectedPreflightRoot = [IO.Path]::Combine($CampaignPath, 'cache-preflight')
+    $ExpectedModelCacheRoot = [IO.Path]::Combine($ExpectedPreflightRoot, 'wave0', 'model_cache')
+    $ExpectedModelCacheReceipt = [IO.Path]::Combine(
+        $ExpectedPreflightRoot,
+        'wave0',
+        'receipts',
+        'model-assets.json'
+    )
+    $ModelCacheArgv = @($ModelCacheAudit.docker_argv)
+    $WorkspaceMountSuffix = ':/workspace:ro'
+    if ($ModelCacheRoot -cne $ExpectedModelCacheRoot -or
+        $ModelCacheReceiptPath -cne $ExpectedModelCacheReceipt -or
+        [string]$ModelCacheAudit.network -cne 'bridge' -or
+        [bool]$ModelCacheAudit.gpu_enabled -ne $false -or
+        $ModelCacheArgv.Count -ne 29 -or
+        [string]$ModelCacheArgv[0] -cne 'docker' -or
+        [string]$ModelCacheArgv[1] -cne 'run' -or
+        [string]$ModelCacheArgv[2] -cne '--rm' -or
+        [string]$ModelCacheArgv[3] -cne '--network' -or
+        [string]$ModelCacheArgv[4] -cne 'bridge' -or
+        [string]$ModelCacheArgv[5] -cne '--workdir' -or
+        [string]$ModelCacheArgv[6] -cne '/workspace' -or
+        [string]$ModelCacheArgv[7] -cne '--entrypoint' -or
+        [string]$ModelCacheArgv[8] -cne 'val' -or
+        [string]$ModelCacheArgv[9] -cne '-e' -or
+        [string]$ModelCacheArgv[10] -cne 'VAL_ARTIFACT_ROOT=/artifacts' -or
+        [string]$ModelCacheArgv[11] -cne '-e' -or
+        [string]$ModelCacheArgv[12] -cne 'PYTHONPATH=/workspace/src' -or
+        [string]$ModelCacheArgv[13] -cne '-v' -or
+        -not ([string]$ModelCacheArgv[14]).EndsWith($WorkspaceMountSuffix, [StringComparison]::Ordinal) -or
+        [string]$ModelCacheArgv[15] -cne '-v' -or
+        [string]$ModelCacheArgv[16] -cne "${ExpectedPreflightRoot}:/artifacts:rw" -or
+        [string]$ModelCacheArgv[17] -cne [string]$Lease.image_id -or
+        (ConvertTo-Json -InputObject @($ModelCacheArgv[18..28]) -Compress) -cne
+            (ConvertTo-Json -InputObject @(
+                    'assets', 'verify',
+                    '--config', '/workspace/configs/models/pinned-models.yaml',
+                    '--cache-root', '/artifacts/wave0/model_cache',
+                    '--output', '/artifacts/wave0/receipts/model-assets.json',
+                    '--run-id', [string]$Lease.run_id,
+                    '--download'
+                ) -Compress)) {
+        throw 'Task 7 model-cache Docker argv binding mismatch'
+    }
+    $ModelCacheStdoutLines = @(Get-Content -LiteralPath $Paths.model_cache_stdout -Encoding UTF8)
+    if ($ModelCacheStdoutLines.Count -ne 1 -or [string]$ModelCacheStdoutLines[0] -cne 'PASS' -or
+        (Get-Item -LiteralPath $Paths.model_cache_stderr -Force).Length -ne 0 -or
+        [string]$ModelCacheReceipt.receipt_type -cne 'model-assets' -or
+        [int]$ModelCacheReceipt.schema_version -ne 1 -or
+        [string]$ModelCacheReceipt.metadata.run_id -cne [string]$Lease.run_id -or
+        [string]$ModelCacheReceipt.normative.status -cne 'PASS' -or
+        @($ModelCacheReceipt.normative.errors).Count -ne 0 -or
+        (ConvertTo-Json -InputObject $ModelCacheAudit.receipt_models -Depth 20 -Compress) -cne
+            (ConvertTo-Json -InputObject $ModelCacheReceipt.normative.models -Depth 20 -Compress)) {
+        throw 'Task 7 model-cache receipt binding mismatch'
+    }
+    $ExpectedModels = [ordered]@{
+        rtdetr = [ordered]@{ repo_id = 'PekingU/rtdetr_r18vd'; revision = 'cc5b50f32f0100caaa3bd275343e2fb17762c73d' }
+        dinov2 = [ordered]@{ repo_id = 'facebook/dinov2-small'; revision = 'ed25f3a31f01632728cabb09d1542f84ab7b0056' }
+    }
+    if ((@($ModelCacheReceipt.normative.models.PSObject.Properties.Name | Sort-Object -CaseSensitive) -join '|') -cne 'dinov2|rtdetr') {
+        throw 'Task 7 model-cache model inventory mismatch'
+    }
+    $EmptySha256 = 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855'
+    $ExpectedLocks = @(
+        '.cache/huggingface/download/README.md.lock',
+        '.cache/huggingface/download/config.json.lock',
+        '.cache/huggingface/download/model.safetensors.lock',
+        '.cache/huggingface/download/preprocessor_config.json.lock'
+    )
+    foreach ($Name in $ExpectedModels.Keys) {
+        $Model = $ModelCacheReceipt.normative.models.$Name
+        $Inventory = $Model.huggingface_metadata.inventory
+        $Locks = @($Inventory.PSObject.Properties.Name | Where-Object { $_.EndsWith('.lock', [StringComparison]::Ordinal) } | Sort-Object -CaseSensitive)
+        if ([string]$Model.repo_id -cne [string]$ExpectedModels[$Name].repo_id -or
+            [string]$Model.revision -cne [string]$ExpectedModels[$Name].revision -or
+            [string]$Model.huggingface_metadata.commit_hash -cne [string]$ExpectedModels[$Name].revision -or
+            ($Locks -join '|') -cne (($ExpectedLocks | Sort-Object -CaseSensitive) -join '|')) {
+            throw 'Task 7 model-cache pinned identity mismatch'
+        }
+        foreach ($Lock in $ExpectedLocks) {
+            if ([long]$Inventory.$Lock.size -ne 0 -or [string]$Inventory.$Lock.sha256 -cne $EmptySha256) {
+                throw 'Task 7 model-cache lock identity mismatch'
+            }
+        }
+    }
+    return [pscustomobject][ordered]@{ model_cache_root = $ModelCacheRoot }
 }
 
 function Test-A7ProtectedGitLineage {
@@ -350,7 +484,7 @@ function Test-A7ProtectedGitLineage {
         [Parameter(Mandatory = $true)][string]$PlanCommit
     )
     $TransitionPath = 'docs/superpowers/specs/2026-08-23-vision-active-learning-loop-design.md'
-    $PlanPath = 'docs/superpowers/plans/2026-08-26-val-wave0-a7-history-compatibility.md'
+    $PlanPath = 'docs/superpowers/plans/2026-08-27-val-wave0-a8-cache-and-lease-lifecycle.md'
     $TransitionReason = 'owner-approved-design-amendment'
     foreach ($Commit in @($SourceCommit, $SpecCommit, $PlanCommit)) {
         if ($Commit -cnotmatch '^[0-9a-f]{40}$') {
@@ -586,7 +720,10 @@ function Test-HistoricalBaseline {
         [Parameter(Mandatory = $true)][string]$RootBaselinePath,
         [Parameter(Mandatory = $true)][string]$RootBaselineSha256,
         [Parameter(Mandatory = $true)][string]$AugmentedBaselinePath,
-        [Parameter(Mandatory = $true)][string]$AugmentedBaselineSha256
+        [Parameter(Mandatory = $true)][string]$AugmentedBaselineSha256,
+        [string]$ActiveLeasePath = '',
+        [string]$ReleasedLeasePath = '',
+        [string]$ReleaseRecordPath = ''
     )
     foreach ($Path in @($RootBaselinePath, $AugmentedBaselinePath)) {
         if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
@@ -668,6 +805,76 @@ function Test-HistoricalBaseline {
         }
     }
     $ArtifactRoot = [string]$Baseline.artifact_root
+    $ArtifactRootFull = [System.IO.Path]::GetFullPath($ArtifactRoot).TrimEnd('\')
+    $ProvidedLeasePaths = @()
+    $ApprovedLeaseExclusions = @()
+    $LifecycleArgumentCount = @(
+        $ActiveLeasePath,
+        $ReleasedLeasePath,
+        $ReleaseRecordPath
+    ).Where({ -not [string]::IsNullOrWhiteSpace($_) }).Count
+    if ($LifecycleArgumentCount -ne 0 -and $LifecycleArgumentCount -ne 3) {
+        throw 'lease lifecycle paths must be supplied together'
+    }
+    $LifecycleValidationEnabled = $LifecycleArgumentCount -eq 3
+    if (-not $LifecycleValidationEnabled) {
+        $RunVariable = Get-Variable -Name RunId -ErrorAction SilentlyContinue
+        $LeaseVariable = Get-Variable -Name Lease -ErrorAction SilentlyContinue
+        if (($null -ne $RunVariable -and -not [string]::IsNullOrWhiteSpace([string]$RunVariable.Value)) -or
+            $null -ne $LeaseVariable) {
+            throw 'Task 8 historical validation requires lease lifecycle paths'
+        }
+    }
+    else {
+        $LeaseRoot = Join-Path $ArtifactRootFull 'leases'
+        if (-not (Test-Path -LiteralPath $LeaseRoot -PathType Container)) {
+            throw 'lease root is unavailable'
+        }
+        $LeaseRootItem = Get-Item -LiteralPath $LeaseRoot -Force
+        if (($LeaseRootItem.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
+            throw 'lease root must not be linked'
+        }
+        $ExpectedActiveLeasePath = Join-Path $LeaseRoot ([string]$Lease.gpu_uuid + '.json')
+        $ExpectedReleasedLeasePath = Join-Path $LeaseRoot ($RunId + '.released')
+        $ExpectedReleaseRecordPath = Join-Path $LeaseRoot ($RunId + '.release.json')
+        $ProvidedLeasePaths = @(
+            [System.IO.Path]::GetFullPath($ActiveLeasePath),
+            [System.IO.Path]::GetFullPath($ReleasedLeasePath),
+            [System.IO.Path]::GetFullPath($ReleaseRecordPath)
+        )
+        $ExpectedLeasePaths = @(
+            [System.IO.Path]::GetFullPath($ExpectedActiveLeasePath),
+            [System.IO.Path]::GetFullPath($ExpectedReleasedLeasePath),
+            [System.IO.Path]::GetFullPath($ExpectedReleaseRecordPath)
+        )
+        if (@($ProvidedLeasePaths | Sort-Object -Unique).Count -ne 3) {
+            throw 'lease lifecycle paths must be distinct'
+        }
+        for ($Index = 0; $Index -lt $ExpectedLeasePaths.Count; $Index++) {
+            if ($ProvidedLeasePaths[$Index] -ine $ExpectedLeasePaths[$Index]) {
+                throw 'lease lifecycle path identity mismatch'
+            }
+            if ([System.IO.Path]::GetDirectoryName($ProvidedLeasePaths[$Index]) -ine $LeaseRoot) {
+                throw 'lease lifecycle path must be directly below the lease root'
+            }
+        }
+        if (-not (Test-Path -LiteralPath $ProvidedLeasePaths[0] -PathType Leaf)) {
+            throw 'active lease is unavailable during historical validation'
+        }
+        $ActiveLeaseItem = Get-Item -LiteralPath $ProvidedLeasePaths[0] -Force
+        if (($ActiveLeaseItem.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
+            throw 'active lease must not be linked'
+        }
+        if (Test-Path -LiteralPath $ProvidedLeasePaths[1]) {
+            throw 'released lease destination must not exist before release'
+        }
+        if (Test-Path -LiteralPath $ProvidedLeasePaths[2]) {
+            throw 'release record destination must not exist before release'
+        }
+        $ApprovedLeaseExclusions = @($ProvidedLeasePaths | ForEach-Object {
+            $_.Substring($ArtifactRootFull.Length).TrimStart('\').Replace('\', '/')
+        } | Sort-Object)
+    }
     $ExpectedArtifactPaths = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::Ordinal)
     foreach ($Record in $Baseline.artifact_files) {
         [void]$ExpectedArtifactPaths.Add([string]$Record.path)
@@ -678,11 +885,29 @@ function Test-HistoricalBaseline {
         $Hash = (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant()
         if ($Hash -ne [string]$Record.sha256) { throw "historical artifact hash drift: $($Record.path)" }
     }
-    $CampaignPrefix = $CampaignRoot.TrimEnd('\') + '\'
-    $CurrentHistoricalPaths = @(Get-ChildItem -LiteralPath $ArtifactRoot -File -Recurse -Force | Where-Object {
-        -not $_.FullName.StartsWith($CampaignPrefix, [System.StringComparison]::OrdinalIgnoreCase)
+    $CampaignPrefix = [System.IO.Path]::GetFullPath($CampaignRoot).TrimEnd('\') + '\'
+    $ObservedLeaseExclusions = [System.Collections.Generic.List[string]]::new()
+    $CurrentHistoricalPaths = @(Get-ChildItem -LiteralPath $ArtifactRootFull -File -Recurse -Force | Where-Object {
+        $FullPath = [System.IO.Path]::GetFullPath($_.FullName)
+        if ($FullPath.StartsWith($CampaignPrefix, [System.StringComparison]::OrdinalIgnoreCase)) {
+            return $false
+        }
+        $IsApprovedLeasePath = $false
+        foreach ($Candidate in $ProvidedLeasePaths) {
+            if ([string]$Candidate -ieq $FullPath) {
+                $IsApprovedLeasePath = $true
+                break
+            }
+        }
+        if ($IsApprovedLeasePath) {
+            [void]$ObservedLeaseExclusions.Add(
+                $FullPath.Substring($ArtifactRootFull.Length).TrimStart('\').Replace('\', '/')
+            )
+            return $false
+        }
+        return $true
     } | ForEach-Object {
-        $_.FullName.Substring($ArtifactRoot.Length).TrimStart('\').Replace('\', '/')
+        $_.FullName.Substring($ArtifactRootFull.Length).TrimStart('\').Replace('\', '/')
     })
     if ($CurrentHistoricalPaths.Count -ne $ExpectedArtifactPaths.Count -or
         @($CurrentHistoricalPaths | Where-Object { -not $ExpectedArtifactPaths.Contains($_) }).Count -ne 0) {
@@ -710,6 +935,10 @@ function Test-HistoricalBaseline {
         artifact_count = $ExpectedArtifactPaths.Count
         image_count = $ExpectedImages.Count
         protected_git_count = @($Baseline.protected_git).Count
+        approved_lease_exclusions = @($ApprovedLeaseExclusions)
+        observed_lease_exclusions = @($ObservedLeaseExclusions | Sort-Object)
+        baseline_artifact_count = $ExpectedArtifactPaths.Count
+        observed_historical_count = $CurrentHistoricalPaths.Count
         exact_set_match = $true
         status = 'PRESERVED'
     }
@@ -739,7 +968,7 @@ function Invoke-A7Stage {
         '-e', 'CUBLAS_WORKSPACE_CONFIG=:4096:8',
         '-v', "${ProjectRoot}:/workspace:ro",
         '-v', "${CampaignRoot}:/artifacts:rw",
-        '-v', "${HistoricalModelCache}:/artifacts/wave0/model_cache:ro",
+        '-v', "${ModelCacheRoot}:/artifacts/wave0/model_cache:ro",
         $ImageDigest
     ) + $Command
     $Started = [DateTimeOffset]::UtcNow
@@ -817,6 +1046,8 @@ if ($Lease.source_commit -ne $SourceCommit -or
     [string]::IsNullOrWhiteSpace([string]$Lease.gpu_uuid) -or
     [string]$Lease.build_audit_sha256 -notmatch '^[0-9a-f]{64}$' -or
     [string]$Lease.microcheck_audit_sha256 -notmatch '^[0-9a-f]{64}$' -or
+    [string]$Lease.model_cache_preflight_audit_sha256 -notmatch '^[0-9a-f]{64}$' -or
+    [string]$Lease.model_cache_receipt_sha256 -notmatch '^[0-9a-f]{64}$' -or
     [string]::IsNullOrWhiteSpace([string]$Lease.historical_baseline_path) -or
     [string]$Lease.historical_baseline_sha256 -notmatch '^[0-9a-f]{64}$') {
     throw 'GPU lease source/image/GPU binding mismatch'
@@ -830,8 +1061,6 @@ if (-not [string]::Equals(
     throw 'GPU lease campaign-root binding mismatch'
 }
 $AuditRoot = Join-Path $CampaignRoot 'audit'
-$HistoricalWaveRoot = Split-Path -Parent (Split-Path -Parent $CampaignRoot)
-$HistoricalModelCache = Join-Path $HistoricalWaveRoot 'model_cache'
 $Terminal = $TerminalInconclusive
 $Failure = $null
 $ExitCode = 2
@@ -849,11 +1078,9 @@ try {
         throw 'image label identity mismatch'
     }
     if (-not (Test-Path -LiteralPath $AuditRoot -PathType Container)) { throw 'Task 7 audit root is required' }
-    Test-Task7AuditBinding
+    $Task7Binding = Test-Task7AuditBinding
+    $ModelCacheRoot = [string]$Task7Binding.model_cache_root
     Write-NewText -Path (Join-Path $AuditRoot '20-task8-image-inspect.json') -Text $InspectResult.Text
-    if (-not (Test-Path -LiteralPath $HistoricalModelCache -PathType Container)) {
-        throw 'historical verified model cache is unavailable'
-    }
 
     $WaveRoot = New-Item -ItemType Directory -Path (Join-Path $CampaignRoot 'wave0') -ErrorAction Stop
     $ReceiptsRoot = New-Item -ItemType Directory -Path (Join-Path $WaveRoot.FullName 'receipts') -ErrorAction Stop
@@ -975,7 +1202,10 @@ try {
                 -RootBaselinePath $RootBaselinePath `
                 -RootBaselineSha256 $RootBaselineSha256 `
                 -AugmentedBaselinePath ([string]$Lease.historical_baseline_path) `
-                -AugmentedBaselineSha256 ([string]$Lease.historical_baseline_sha256)
+                -AugmentedBaselineSha256 ([string]$Lease.historical_baseline_sha256) `
+                -ActiveLeasePath $LeasePath `
+                -ReleasedLeasePath $ReleasedLeasePath `
+                -ReleaseRecordPath $ReleaseRecordPath
         } catch {
             $Historical = [ordered]@{
                 schema_version = 1
