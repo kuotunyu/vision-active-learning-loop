@@ -431,9 +431,16 @@ function Test-Task7AuditBinding {
                 ) -Compress)) {
         throw 'Task 7 model-cache Docker argv binding mismatch'
     }
-    $ModelCacheStdoutLines = @(Get-Content -LiteralPath $Paths.model_cache_stdout -Encoding UTF8)
-    if ($ModelCacheStdoutLines.Count -ne 1 -or [string]$ModelCacheStdoutLines[0] -cne 'PASS' -or
-        (Get-Item -LiteralPath $Paths.model_cache_stderr -Force).Length -ne 0 -or
+    $ModelCacheStdoutBytes = [IO.File]::ReadAllBytes($Paths.model_cache_stdout)
+    if ($ModelCacheStdoutBytes.Count -ne 5 -or
+        $ModelCacheStdoutBytes[0] -ne 0x50 -or
+        $ModelCacheStdoutBytes[1] -ne 0x41 -or
+        $ModelCacheStdoutBytes[2] -ne 0x53 -or
+        $ModelCacheStdoutBytes[3] -ne 0x53 -or
+        $ModelCacheStdoutBytes[4] -ne 0x0A) {
+        throw 'Task 7 model-cache stdout byte contract mismatch'
+    }
+    if ((Get-Item -LiteralPath $Paths.model_cache_stderr -Force).Length -ne 0 -or
         [string]$ModelCacheReceipt.receipt_type -cne 'model-assets' -or
         [int]$ModelCacheReceipt.schema_version -ne 1 -or
         [string]$ModelCacheReceipt.metadata.run_id -cne [string]$Lease.run_id -or
@@ -488,7 +495,7 @@ function Test-A7ProtectedGitLineage {
         [Parameter(Mandatory = $true)][string]$PlanCommit
     )
     $TransitionPath = 'docs/superpowers/specs/2026-08-23-vision-active-learning-loop-design.md'
-    $PlanPath = 'docs/superpowers/plans/2026-08-27-val-wave0-a9-deterministic-hf-download-logging.md'
+    $PlanPath = 'docs/superpowers/plans/2026-08-27-val-wave0-a10-linux-stdout-bytes.md'
     $TransitionReason = 'owner-approved-design-amendment'
     foreach ($Commit in @($SourceCommit, $SpecCommit, $PlanCommit)) {
         if ($Commit -cnotmatch '^[0-9a-f]{40}$') {

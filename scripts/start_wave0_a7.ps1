@@ -396,7 +396,7 @@ function Invoke-A7ModelCachePreflight {
         -WorkingDirectory $Worktree
     $CompletedAt = [DateTimeOffset]::UtcNow.ToString('o')
     if ([int]$Result.exit_code -ne 0 -or
-        [string]$Result.stdout -cne "PASS$([Environment]::NewLine)" -or
+        [string]$Result.stdout -cne "PASS`n" -or
         [string]$Result.stderr -cne '') {
         throw 'A7 model-cache preflight process contract failed'
     }
@@ -921,7 +921,7 @@ function New-A7AugmentedBaseline {
     $CurrentImageRecords = @($CurrentImageRecords | Sort-Object -CaseSensitive tag)
 
     $TransitionPath = 'docs/superpowers/specs/2026-08-23-vision-active-learning-loop-design.md'
-    $PlanPath = 'docs/superpowers/plans/2026-08-27-val-wave0-a9-deterministic-hf-download-logging.md'
+    $PlanPath = 'docs/superpowers/plans/2026-08-27-val-wave0-a10-linux-stdout-bytes.md'
     $TransitionReason = 'owner-approved-design-amendment'
     if ((& $InvokeGit @('-C', $ProtectedRootPath, 'rev-parse', 'HEAD')) -cne $SourceCommit) {
         throw 'A7 protected Git HEAD does not equal the reviewed source commit'
@@ -2914,7 +2914,7 @@ function Invoke-A7Production {
     if ([string]$Resolved.worktree -cne $ScriptWorktree) {
         throw 'A7 launcher script is not running from the reviewed registered worktree'
     }
-    $PlanRelativePath = 'docs/superpowers/plans/2026-08-27-val-wave0-a9-deterministic-hf-download-logging.md'
+    $PlanRelativePath = 'docs/superpowers/plans/2026-08-27-val-wave0-a10-linux-stdout-bytes.md'
     $SpecRelativePath = 'docs/superpowers/specs/2026-08-23-vision-active-learning-loop-design.md'
     $PlanLog = & $InvokeReadOnly $GitExecutable @(
         '-C', $ScriptWorktree, 'log', '-1', '--format=%H', '--', $PlanRelativePath

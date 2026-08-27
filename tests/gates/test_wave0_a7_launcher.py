@@ -20,6 +20,27 @@ _PLAN = "c" * 40
 _RUN_ID = "wave0-a7-20260826T120000000Z"
 _TAG = f"vision-active-learning-loop:wave0-a7-{_SOURCE[:12]}-{_RUN_ID}"
 _BASE = "sha256:8aef630a54bc5c5146ae5ce68e6af5caa3df0fb690bb91544175c91f307e4356"
+_NONCANONICAL_TASK7_STDOUT = (
+    b"PASS",
+    b"PASS\r\n",
+    b"PASS\n\n",
+    b" PASS\n",
+    b"PASS \n",
+    b"pass\n",
+    b"PASS\nextra",
+    b"",
+)
+_NONCANONICAL_MODEL_CACHE_STDOUT = (
+    b"PASS",
+    b"PASS\r\n",
+    b"PASS\n\n",
+    b" PASS\n",
+    b"PASS \n",
+    b"\xef\xbb\xbfPASS\n",
+    b"pass\n",
+    b"PASS\nextra",
+    b"",
+)
 
 
 def _powershell_literal(value: str) -> str:
@@ -592,7 +613,9 @@ def test_history_rejects_symlinked_baseline_path(tmp_path: Path) -> None:
 _TRANSITION_PATH = (
     "docs/superpowers/specs/2026-08-23-vision-active-learning-loop-design.md"
 )
-_COMPATIBILITY_PLAN_PATH = "docs/superpowers/plans/2026-08-27-val-wave0-a9-deterministic-hf-download-logging.md"
+_COMPATIBILITY_PLAN_PATH = (
+    "docs/superpowers/plans/2026-08-27-val-wave0-a10-linux-stdout-bytes.md"
+)
 
 
 def _git_stdout(repository: Path, *arguments: str) -> str:
@@ -1018,15 +1041,17 @@ def test_task8_runner_mounts_only_the_verified_run_scoped_cache() -> None:
     assert "'TRANSFORMERS_OFFLINE=1'" in source
 
 
-def test_launcher_and_runner_bind_the_a9_plan_identity() -> None:
+def test_launcher_and_runner_bind_the_a10_plan_identity() -> None:
     expected = (
-        "docs/superpowers/plans/"
-        "2026-08-27-val-wave0-a9-deterministic-hf-download-logging.md"
+        "docs/superpowers/plans/" "2026-08-27-val-wave0-a10-linux-stdout-bytes.md"
     )
 
     for path in (_LAUNCHER, _RUNNER):
         source = path.read_text(encoding="utf-8")
         assert expected in source
+        assert (
+            "2026-08-27-val-wave0-a9-deterministic-hf-download-logging.md" not in source
+        )
         assert "2026-08-27-val-wave0-a8-cache-and-lease-lifecycle.md" not in source
         assert "2026-08-26-val-wave0-a7-history-compatibility.md" not in source
 
@@ -1814,7 +1839,9 @@ if command[:1] == ["run"]:
         state_path.write_text(json.dumps(state), encoding="utf-8")
         if mode == "cache_stderr":
             print("unexpected stderr", file=sys.stderr)
-        print("NOT-PASS" if mode == "cache_stdout" else "PASS")
+        sys.stdout.buffer.write(
+            b"NOT-PASS\\n" if mode == "cache_stdout" else b"PASS\\n"
+        )
         raise SystemExit(7 if mode == "cache_exit" else 0)
     state["microcheck_count"] += 1
     state_path.write_text(json.dumps(state), encoding="utf-8")
@@ -2408,7 +2435,7 @@ def _closed_audit_fixture(tmp_path: Path) -> dict[str, object]:
     )
     model_cache_stdout = audit / "23-a7-model-cache-preflight.stdout.log"
     model_cache_stderr = audit / "23-a7-model-cache-preflight.stderr.log"
-    model_cache_stdout.write_text("PASS\n", encoding="utf-8")
+    model_cache_stdout.write_bytes(b"PASS\n")
     model_cache_stderr.write_text("", encoding="utf-8")
     model_cache_argv = [
         "docker",
@@ -2496,6 +2523,7 @@ def _closed_audit_fixture(tmp_path: Path) -> dict[str, object]:
         "model_cache_audit_document": model_cache_document,
         "model_cache_receipt": model_cache_receipt,
         "model_cache_receipt_hash": _sha256(model_cache_receipt),
+        "model_cache_stdout": model_cache_stdout,
         "model_cache_argv": model_cache_argv,
         "payload": payload,
         "payload_text": payload_text,
@@ -2723,6 +2751,24 @@ def test_task8_accepts_closed_task7_binding_audits(tmp_path: Path) -> None:
     assert json.loads(completed.stdout) == {
         "model_cache_root": str(fixture["model_cache_root"])
     }
+
+
+@pytest.mark.parametrize("stdout_bytes", _NONCANONICAL_MODEL_CACHE_STDOUT)
+def test_task8_rejects_noncanonical_model_cache_stdout(
+    tmp_path: Path, stdout_bytes: bytes
+) -> None:
+    fixture = _closed_audit_fixture(tmp_path)
+    stdout_path = Path(fixture["model_cache_stdout"])
+    stdout_path.write_bytes(stdout_bytes)
+    fixture["model_cache_audit_document"]["stdout_sha256"] = _sha256(stdout_path)
+    _rewrite_closed_audit(fixture, "model_cache_audit")
+
+    completed = _invoke_runner_functions(
+        ("Test-Task7AuditBinding",), _task7_audit_binding_body(fixture)
+    )
+
+    assert completed.returncode != 0
+    assert "Task 7 model-cache stdout byte contract mismatch" in completed.stderr
 
 
 @pytest.mark.parametrize(
@@ -3281,7 +3327,9 @@ $Calls.Count
     assert completed.stdout.strip() == "1"
 
 
-def _write_model_cache_preflight_adapter(path: Path) -> None:
+def _write_model_cache_preflight_adapter(
+    path: Path, stdout_bytes: bytes = b"PASS\n"
+) -> None:
     path.write_text(
         """import hashlib
 import json
@@ -3337,34 +3385,22 @@ receipt = {
     "metadata": {"run_id": "wave0-a7-20260826T120000000Z"},
 }
 receipt_path.write_text(json.dumps(receipt, separators=(",", ":")), encoding="utf-8")
-print("PASS")
-""",
+sys.stdout.buffer.write(__STDOUT_BYTES__)
+""".replace(
+            "__STDOUT_BYTES__", repr(stdout_bytes)
+        ),
         encoding="utf-8",
     )
 
 
-def test_model_cache_preflight_is_networked_cpu_only_and_audited(
-    tmp_path: Path,
-) -> None:
-    campaign = tmp_path / "campaign"
-    audit = campaign / "audit"
-    audit.mkdir(parents=True)
-    worktree = tmp_path / "worktree"
-    (worktree / "configs").mkdir(parents=True)
-    (worktree / "configs" / "models").mkdir(parents=True)
-    (worktree / "configs" / "models" / "pinned-models.yaml").write_text("models: {}\n")
-    baseline = tmp_path / "baseline.json"
-    baseline.write_text('{"baseline":true}', encoding="utf-8")
-    adapter = tmp_path / "model_cache_adapter.py"
-    state = tmp_path / "model_cache_state.json"
-    _write_model_cache_preflight_adapter(adapter)
-    body = f"""
+def _model_cache_preflight_body(paths: dict[str, Path]) -> str:
+    return f"""
 $Result = Invoke-A7ModelCachePreflight `
-    -CampaignRoot {_powershell_literal(str(campaign))} `
-    -AuditRoot {_powershell_literal(str(audit))} `
-    -WorktreePath {_powershell_literal(str(worktree))} `
+    -CampaignRoot {_powershell_literal(str(paths['campaign']))} `
+    -AuditRoot {_powershell_literal(str(paths['audit']))} `
+    -WorktreePath {_powershell_literal(str(paths['worktree']))} `
     -DockerExecutable {_powershell_literal(sys.executable)} `
-    -DockerPrefixArguments @({_powershell_literal(str(adapter))},{_powershell_literal('--state')},{_powershell_literal(str(state))}) `
+    -DockerPrefixArguments @({_powershell_literal(str(paths['adapter']))},{_powershell_literal('--state')},{_powershell_literal(str(paths['state']))}) `
     -OwnerAuthorizationId 'owner-a8-fixture' `
     -RunId {_powershell_literal(_RUN_ID)} `
     -SourceCommit {_powershell_literal(_SOURCE)} `
@@ -3374,19 +3410,50 @@ $Result = Invoke-A7ModelCachePreflight `
     -ImageTag {_powershell_literal(_TAG)} `
     -ImageId 'sha256:{'d' * 64}' `
     -BaseImageDigest {_powershell_literal(_BASE)} `
-    -HistoricalBaselinePath {_powershell_literal(str(baseline))} `
-    -HistoricalBaselineSha256 {_powershell_literal(_sha256(baseline))}
+    -HistoricalBaselinePath {_powershell_literal(str(paths['baseline']))} `
+    -HistoricalBaselineSha256 {_powershell_literal(_sha256(paths['baseline']))}
 $Result | ConvertTo-Json -Depth 8 -Compress
 """
 
+
+def _invoke_model_cache_preflight(
+    tmp_path: Path, stdout_bytes: bytes = b"PASS\n"
+) -> tuple[subprocess.CompletedProcess[str], dict[str, Path]]:
+    campaign = tmp_path / "campaign"
+    audit = campaign / "audit"
+    audit.mkdir(parents=True)
+    worktree = tmp_path / "worktree"
+    models = worktree / "configs" / "models"
+    models.mkdir(parents=True)
+    (models / "pinned-models.yaml").write_text("models: {}\n")
+    baseline = tmp_path / "baseline.json"
+    baseline.write_text('{"baseline":true}', encoding="utf-8")
+    adapter = tmp_path / "model_cache_adapter.py"
+    state = tmp_path / "model_cache_state.json"
+    _write_model_cache_preflight_adapter(adapter, stdout_bytes)
+    paths = {
+        "adapter": adapter,
+        "audit": audit,
+        "baseline": baseline,
+        "campaign": campaign,
+        "state": state,
+        "worktree": worktree,
+    }
     completed = _invoke_functions(
         ("Write-A7NewText", "Invoke-A7Native", "Invoke-A7ModelCachePreflight"),
-        body,
+        _model_cache_preflight_body(paths),
     )
+    return completed, paths
+
+
+def test_model_cache_preflight_is_networked_cpu_only_and_audited(
+    tmp_path: Path,
+) -> None:
+    completed, paths = _invoke_model_cache_preflight(tmp_path)
 
     assert completed.returncode == 0, completed.stderr
     result = json.loads(completed.stdout)
-    argv = json.loads(state.read_text(encoding="utf-8"))["argv"]
+    argv = json.loads(paths["state"].read_text(encoding="utf-8"))["argv"]
     assert argv[:8] == [
         "run",
         "--rm",
@@ -3436,6 +3503,8 @@ $Result | ConvertTo-Json -Depth 8 -Compress
     assert result["audit_sha256"] == _sha256(audit_path)
     assert result["receipt_sha256"] == _sha256(receipt_path)
     document = json.loads(audit_path.read_text(encoding="utf-8"))
+    stdout_path = Path(document["stdout_path"])
+    assert stdout_path.read_bytes() == b"PASS\n"
     assert document["docker_argv"] == ["docker", *argv]
     assert document["network"] == "bridge"
     assert document["gpu_enabled"] is False
@@ -3450,9 +3519,21 @@ $Result | ConvertTo-Json -Depth 8 -Compress
 
     repeated = _invoke_functions(
         ("Write-A7NewText", "Invoke-A7Native", "Invoke-A7ModelCachePreflight"),
-        body,
+        _model_cache_preflight_body(paths),
     )
 
     assert repeated.returncode != 0
     assert audit_path.read_bytes() == before["audit"]
     assert receipt_path.read_bytes() == before["receipt"]
+
+
+@pytest.mark.parametrize("stdout_bytes", _NONCANONICAL_TASK7_STDOUT)
+def test_model_cache_preflight_rejects_noncanonical_stdout(
+    tmp_path: Path, stdout_bytes: bytes
+) -> None:
+    # Process.StandardOutput consumes a leading UTF-8 preamble; Task 8 separately
+    # rejects a BOM in the persisted evidence file where the bytes are observable.
+    completed, _ = _invoke_model_cache_preflight(tmp_path, stdout_bytes)
+
+    assert completed.returncode != 0
+    assert "A7 model-cache preflight process contract failed" in completed.stderr
