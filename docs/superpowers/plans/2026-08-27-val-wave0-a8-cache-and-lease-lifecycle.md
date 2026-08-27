@@ -10,8 +10,8 @@
 
 ## Global Constraints
 
-- The authoritative A8 specification is `docs/superpowers/specs/2026-08-23-vision-active-learning-loop-design.md` at commit `becb35b45d7a3f7f8a5a450705ad7ccdd2ad4aaa`, especially Section 5.2.12.
-- At that commit the specification is exactly 167,798 bytes, SHA-256 `010ddf28a382492a675284a1f3b0d1e2cf5c049b0486687ef3ec6741a8f70c5b`, and Git object `66d4d5ac63889b7724edb250a01d7db796304514`.
+- The authoritative A8 specification is `docs/superpowers/specs/2026-08-23-vision-active-learning-loop-design.md` at commit `f24b6f226ad395c7c97c2dc59c093ce91248fe25`, especially Section 5.2.12.
+- At that commit the specification is exactly 167,453 bytes, SHA-256 `34f3b33fd7bea63236b11d9ae90fde3b65f585bb768d9b66b43687a228687100`, and Git object `6f14de788c2d74779fd710d5c5893e8c9d7843f9`.
 - This plan is `docs/superpowers/plans/2026-08-27-val-wave0-a8-cache-and-lease-lifecycle.md`. Its commit must be the direct child of the specification commit and must change only this new plan document.
 - Implementation entry branch is exactly `codex/wave0-model-contract`. Both the registered linked worktree and canonical `main` worktree must be clean, staging must be empty, and implementation starts only from the committed plan.
 - The implementation tracked-file allowlist is closed to exactly:
@@ -56,7 +56,7 @@ No source verifier or receipt schema changes are needed: `assets.py` and `schema
 - Modify: none
 
 **Interfaces:**
-- Consumes: specification commit `becb35b45d7a3f7f8a5a450705ad7ccdd2ad4aaa` and this plan's direct-child commit
+- Consumes: specification commit `f24b6f226ad395c7c97c2dc59c093ce91248fe25` and this plan's direct-child commit
 - Produces: exact entry SHA and a no-clobber temporary pre-change preservation record for the final review
 
 - [ ] **Step 1: Verify branch, lineage, scopes, and clean worktrees**
@@ -64,7 +64,7 @@ No source verifier or receipt schema changes are needed: `assets.py` and `schema
 ```powershell
 $PlanPath = 'docs/superpowers/plans/2026-08-27-val-wave0-a8-cache-and-lease-lifecycle.md'
 $SpecPath = 'docs/superpowers/specs/2026-08-23-vision-active-learning-loop-design.md'
-$SpecCommit = 'becb35b45d7a3f7f8a5a450705ad7ccdd2ad4aaa'
+$SpecCommit = 'f24b6f226ad395c7c97c2dc59c093ce91248fe25'
 $PlanCommit = (git log -1 --format='%H' -- $PlanPath).Trim()
 $PlanFiles = @(git diff-tree --no-commit-id --name-only -r $PlanCommit)
 git worktree list --porcelain
@@ -436,7 +436,7 @@ $OwnerAuthorizationId = 'OWNER-STANDING-A8-20260827-UNATTENDED-01'
 pwsh -NoProfile -NonInteractive -File scripts/start_wave0_a7.ps1 `
   -OwnerAuthorizationId $OwnerAuthorizationId `
   -ExpectedSourceCommit $SourceCommit `
-  -ExpectedSpecCommit 'becb35b45d7a3f7f8a5a450705ad7ccdd2ad4aaa' `
+  -ExpectedSpecCommit 'f24b6f226ad395c7c97c2dc59c093ce91248fe25' `
   -ExpectedPlanCommit $PlanCommit `
   -ExpectedBranch 'codex/wave0-model-contract'
 $Task7Exit = $LASTEXITCODE
