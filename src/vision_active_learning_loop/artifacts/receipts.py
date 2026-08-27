@@ -31,6 +31,12 @@ _ALLOWED_SCHEMAS = {
     ("grid-sample-attribution", 1): (
         _SCHEMA_ROOT / "grid-sample-attribution-receipt.schema.json"
     ),
+    ("statistical-replay-calibration", 1): (
+        _SCHEMA_ROOT / "statistical-replay-calibration-receipt.schema.json"
+    ),
+    ("statistical-replay-validation", 1): (
+        _SCHEMA_ROOT / "statistical-replay-validation-receipt.schema.json"
+    ),
 }
 _APPROVED_ENVIRONMENT_CONTRACT = {
     "schema_version": 1,
@@ -256,6 +262,8 @@ def _validate_receipt(
         "feasibility",
         "wave0-gate",
         "grid-sample-attribution",
+        "statistical-replay-calibration",
+        "statistical-replay-validation",
     }:
         run_id = metadata.get("run_id")
         if not isinstance(run_id, str) or not run_id.strip():
@@ -274,6 +282,23 @@ def _validate_receipt(
         _validate_wave0_gate_consistency(normative)
     elif receipt_type == "grid-sample-attribution":
         _validate_grid_sample_attribution_consistency(normative, metadata)
+    elif receipt_type in {
+        "statistical-replay-calibration",
+        "statistical-replay-validation",
+    }:
+        from .statistical_replay_receipts import (
+            StatisticalReplayReceiptError,
+            validate_calibration_consistency,
+            validate_validation_consistency,
+        )
+
+        try:
+            if receipt_type == "statistical-replay-calibration":
+                validate_calibration_consistency(normative, metadata)
+            else:
+                validate_validation_consistency(normative, metadata)
+        except StatisticalReplayReceiptError as error:
+            raise ReceiptValidationError(str(error)) from error
     invariants = normative.get("invariants")
     if not isinstance(invariants, Mapping):
         raise ReceiptValidationError("invariants must be an object")
@@ -1746,9 +1771,9 @@ def _validate_a7_component(
         "model_contract": "wave0/receipts/model-contract.json",
     }
     if kind == "isolated-vjp":
-        expected_parent_paths[
-            "instrumented"
-        ] = "a7/components/instrumented-0/receipt.json"
+        expected_parent_paths["instrumented"] = (
+            "a7/components/instrumented-0/receipt.json"
+        )
     if set(parents) != set(expected_parent_paths):
         raise ReceiptValidationError("A7 parent receipt kind mismatch")
     for name, expected_path in expected_parent_paths.items():

@@ -1,0 +1,420 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "statistical-replay-validation-receipt.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["receipt_type", "schema_version", "normative", "metadata"],
+  "properties": {
+    "receipt_type": {"const": "statistical-replay-validation"},
+    "schema_version": {"const": 1},
+    "normative": {"$ref": "#/$defs/normative"},
+    "metadata": {"$ref": "#/$defs/metadata"}
+  },
+  "$defs": {
+    "sha": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "commit": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "image": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "nonempty": {"type": "string", "pattern": "^[^\\r\\n]+$"},
+    "file_record": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "size", "sha256"],
+      "properties": {
+        "path": {"$ref": "#/$defs/nonempty"},
+        "size": {"type": "integer"},
+        "sha256": {"$ref": "#/$defs/sha"}
+      }
+    },
+    "metadata": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "run_id", "source_commit", "specification_commit", "plan_commit",
+        "image_tag", "image_id", "base_image_digest",
+        "owner_authorization_id", "timestamp"
+      ],
+      "properties": {
+        "run_id": {"type": "string", "pattern": "^wave0-a11-validation-[A-Za-z0-9._-]+$"},
+        "source_commit": {"$ref": "#/$defs/commit"},
+        "specification_commit": {"$ref": "#/$defs/commit"},
+        "plan_commit": {"$ref": "#/$defs/commit"},
+        "image_tag": {"type": "string", "pattern": "^vision-active-learning-loop:wave0-a11-validation-[^\\r\\n]+$"},
+        "image_id": {"$ref": "#/$defs/image"},
+        "base_image_digest": {"$ref": "#/$defs/image"},
+        "owner_authorization_id": {"$ref": "#/$defs/nonempty"},
+        "timestamp": {"$ref": "#/$defs/nonempty"},
+        "receipt_content_sha256": {"$ref": "#/$defs/sha"}
+      }
+    },
+    "packages": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "python", "uv", "scipy", "torch", "torchvision", "transformers",
+        "pycocotools"
+      ],
+      "properties": {
+        "python": {"const": "3.12.11"},
+        "uv": {"const": "0.8.15"},
+        "scipy": {"const": "1.18.0"},
+        "torch": {"const": "2.12.0+cu126"},
+        "torchvision": {"const": "0.27.0+cu126"},
+        "transformers": {"const": "5.15.0"},
+        "pycocotools": {"const": "2.0.10"}
+      }
+    },
+    "gpu": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "uuid", "driver", "cuda_runtime"],
+      "properties": {
+        "name": {"const": "NVIDIA GeForce RTX 4090"},
+        "uuid": {"type": "string", "pattern": "^GPU-[0-9A-Fa-f-]+$"},
+        "driver": {"$ref": "#/$defs/nonempty"},
+        "cuda_runtime": {"const": "12.6"}
+      }
+    },
+    "static_identity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "source_commit", "specification_commit", "plan_commit",
+        "base_image_digest", "detector_revision", "detector_sha256",
+        "processor_revision", "processor_sha256", "dinov2_revision",
+        "dinov2_sha256", "config_sha256", "fixture_sha256", "packages",
+        "gpu", "model_cache_inventory_sha256"
+      ],
+      "properties": {
+        "source_commit": {"$ref": "#/$defs/commit"},
+        "specification_commit": {"$ref": "#/$defs/commit"},
+        "plan_commit": {"$ref": "#/$defs/commit"},
+        "base_image_digest": {"$ref": "#/$defs/image"},
+        "detector_revision": {"$ref": "#/$defs/commit"},
+        "detector_sha256": {"$ref": "#/$defs/sha"},
+        "processor_revision": {"$ref": "#/$defs/commit"},
+        "processor_sha256": {"$ref": "#/$defs/sha"},
+        "dinov2_revision": {"$ref": "#/$defs/commit"},
+        "dinov2_sha256": {"$ref": "#/$defs/sha"},
+        "config_sha256": {"$ref": "#/$defs/sha"},
+        "fixture_sha256": {"$ref": "#/$defs/sha"},
+        "packages": {"$ref": "#/$defs/packages"},
+        "gpu": {"$ref": "#/$defs/gpu"},
+        "model_cache_inventory_sha256": {"$ref": "#/$defs/sha"}
+      }
+    },
+    "runtime_identity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "run_id", "image_tag", "image_id", "campaign_root",
+        "model_cache_root", "lease_id", "lease_path", "container_ids",
+        "replica_receipt_paths", "replica_receipt_sha256",
+        "checkpoint_paths", "checkpoint_sha256", "timestamps",
+        "audit_paths", "replica_ids"
+      ],
+      "properties": {
+        "run_id": {"type": "string", "pattern": "^wave0-a11-(calibration|validation)-[A-Za-z0-9._-]+$"},
+        "image_tag": {"type": "string", "pattern": "^vision-active-learning-loop:wave0-a11-(calibration|validation)-[^\\r\\n]+$"},
+        "image_id": {"$ref": "#/$defs/image"},
+        "campaign_root": {"$ref": "#/$defs/nonempty"},
+        "model_cache_root": {"$ref": "#/$defs/nonempty"},
+        "lease_id": {"$ref": "#/$defs/nonempty"},
+        "lease_path": {"$ref": "#/$defs/nonempty"},
+        "container_ids": {"type": "array", "minItems": 12, "maxItems": 12, "items": {"$ref": "#/$defs/sha"}},
+        "replica_receipt_paths": {"type": "array", "minItems": 12, "maxItems": 12, "items": {"$ref": "#/$defs/nonempty"}},
+        "replica_receipt_sha256": {"type": "array", "minItems": 12, "maxItems": 12, "items": {"$ref": "#/$defs/sha"}},
+        "checkpoint_paths": {"type": "array", "minItems": 12, "maxItems": 12, "items": {"$ref": "#/$defs/nonempty"}},
+        "checkpoint_sha256": {"type": "array", "minItems": 12, "maxItems": 12, "items": {"$ref": "#/$defs/sha"}},
+        "timestamps": {"type": "array", "minItems": 12, "maxItems": 12, "items": {"$ref": "#/$defs/nonempty"}},
+        "audit_paths": {"type": "array", "minItems": 5, "maxItems": 5, "items": {"$ref": "#/$defs/nonempty"}},
+        "replica_ids": {"type": "array", "minItems": 12, "maxItems": 12, "items": {"type": "string", "pattern": "^(calibration|validation)-[0-9]{2}$"}}
+      }
+    },
+    "identity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["static", "runtime"],
+      "properties": {
+        "static": {"$ref": "#/$defs/static_identity"},
+        "runtime": {"$ref": "#/$defs/runtime_identity"}
+      }
+    },
+    "replica": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["replica_id", "feasibility", "checkpoint"],
+      "properties": {
+        "replica_id": {"type": "string", "pattern": "^validation-[0-9]{2}$"},
+        "feasibility": {"$ref": "#/$defs/file_record"},
+        "checkpoint": {"$ref": "#/$defs/file_record"}
+      }
+    },
+    "exact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["rule", "canonical_exact_sha256", "replay_exact_sha256", "passed", "errors"],
+      "properties": {
+        "rule": {"const": "wave0-a3-exact-checkpoint-fields-v1"},
+        "canonical_exact_sha256": {"$ref": "#/$defs/sha"},
+        "replay_exact_sha256": {"$ref": "#/$defs/sha"},
+        "passed": {"const": true},
+        "errors": {"type": "array", "maxItems": 0, "items": {"type": "string"}}
+      }
+    },
+    "metrics": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "gradient_norm.relative_difference",
+        "model_update.backbone.cosine_defect",
+        "model_update.backbone.relative_l2",
+        "model_update.detector.cosine_defect",
+        "model_update.detector.relative_l2",
+        "optimizer_state.backbone.exp_avg.cosine_defect",
+        "optimizer_state.backbone.exp_avg.relative_l2",
+        "optimizer_state.backbone.exp_avg_sq.cosine_defect",
+        "optimizer_state.backbone.exp_avg_sq.relative_l2",
+        "optimizer_state.detector.exp_avg.cosine_defect",
+        "optimizer_state.detector.exp_avg.relative_l2",
+        "optimizer_state.detector.exp_avg_sq.cosine_defect",
+        "optimizer_state.detector.exp_avg_sq.relative_l2"
+      ],
+      "properties": {
+        "gradient_norm.relative_difference": {"type": "number"},
+        "model_update.backbone.cosine_defect": {"type": "number"},
+        "model_update.backbone.relative_l2": {"type": "number"},
+        "model_update.detector.cosine_defect": {"type": "number"},
+        "model_update.detector.relative_l2": {"type": "number"},
+        "optimizer_state.backbone.exp_avg.cosine_defect": {"type": "number"},
+        "optimizer_state.backbone.exp_avg.relative_l2": {"type": "number"},
+        "optimizer_state.backbone.exp_avg_sq.cosine_defect": {"type": "number"},
+        "optimizer_state.backbone.exp_avg_sq.relative_l2": {"type": "number"},
+        "optimizer_state.detector.exp_avg.cosine_defect": {"type": "number"},
+        "optimizer_state.detector.exp_avg.relative_l2": {"type": "number"},
+        "optimizer_state.detector.exp_avg_sq.cosine_defect": {"type": "number"},
+        "optimizer_state.detector.exp_avg_sq.relative_l2": {"type": "number"}
+      }
+    },
+    "pair": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["left_replica_id", "right_replica_id", "exact", "metrics"],
+      "properties": {
+        "left_replica_id": {"type": "string", "pattern": "^validation-[0-9]{2}$"},
+        "right_replica_id": {"type": "string", "pattern": "^validation-[0-9]{2}$"},
+        "exact": {"$ref": "#/$defs/exact"},
+        "metrics": {"$ref": "#/$defs/metrics"}
+      }
+    },
+    "practical_ceilings": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "threshold_multiplier", "threshold_multiplier_hex",
+        "gradient_relative_difference", "gradient_relative_difference_hex",
+        "vector_relative_l2", "vector_relative_l2_hex",
+        "cosine_defect", "cosine_defect_hex"
+      ],
+      "properties": {
+        "threshold_multiplier": {"const": 1.5},
+        "threshold_multiplier_hex": {"const": "0x1.8000000000000p+0"},
+        "gradient_relative_difference": {"const": 0.01},
+        "gradient_relative_difference_hex": {"const": "0x1.47ae147ae147bp-7"},
+        "vector_relative_l2": {"const": 0.1},
+        "vector_relative_l2_hex": {"const": "0x1.999999999999ap-4"},
+        "cosine_defect": {"const": 0.005},
+        "cosine_defect_hex": {"const": "0x1.47ae147ae147bp-8"}
+      }
+    },
+    "threshold_entry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["maximum", "maximum_hex", "threshold", "threshold_hex"],
+      "properties": {
+        "maximum": {"type": "number"},
+        "maximum_hex": {"$ref": "#/$defs/nonempty"},
+        "threshold": {"type": "number"},
+        "threshold_hex": {"$ref": "#/$defs/nonempty"}
+      }
+    },
+    "thresholds": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "gradient_norm.relative_difference",
+        "model_update.backbone.cosine_defect",
+        "model_update.backbone.relative_l2",
+        "model_update.detector.cosine_defect",
+        "model_update.detector.relative_l2",
+        "optimizer_state.backbone.exp_avg.cosine_defect",
+        "optimizer_state.backbone.exp_avg.relative_l2",
+        "optimizer_state.backbone.exp_avg_sq.cosine_defect",
+        "optimizer_state.backbone.exp_avg_sq.relative_l2",
+        "optimizer_state.detector.exp_avg.cosine_defect",
+        "optimizer_state.detector.exp_avg.relative_l2",
+        "optimizer_state.detector.exp_avg_sq.cosine_defect",
+        "optimizer_state.detector.exp_avg_sq.relative_l2"
+      ],
+      "properties": {
+        "gradient_norm.relative_difference": {"$ref": "#/$defs/threshold_entry"},
+        "model_update.backbone.cosine_defect": {"$ref": "#/$defs/threshold_entry"},
+        "model_update.backbone.relative_l2": {"$ref": "#/$defs/threshold_entry"},
+        "model_update.detector.cosine_defect": {"$ref": "#/$defs/threshold_entry"},
+        "model_update.detector.relative_l2": {"$ref": "#/$defs/threshold_entry"},
+        "optimizer_state.backbone.exp_avg.cosine_defect": {"$ref": "#/$defs/threshold_entry"},
+        "optimizer_state.backbone.exp_avg.relative_l2": {"$ref": "#/$defs/threshold_entry"},
+        "optimizer_state.backbone.exp_avg_sq.cosine_defect": {"$ref": "#/$defs/threshold_entry"},
+        "optimizer_state.backbone.exp_avg_sq.relative_l2": {"$ref": "#/$defs/threshold_entry"},
+        "optimizer_state.detector.exp_avg.cosine_defect": {"$ref": "#/$defs/threshold_entry"},
+        "optimizer_state.detector.exp_avg.relative_l2": {"$ref": "#/$defs/threshold_entry"},
+        "optimizer_state.detector.exp_avg_sq.cosine_defect": {"$ref": "#/$defs/threshold_entry"},
+        "optimizer_state.detector.exp_avg_sq.relative_l2": {"$ref": "#/$defs/threshold_entry"}
+      }
+    },
+    "calibration_binding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "size", "sha256", "run_id", "threshold_inventory_sha256", "thresholds"],
+      "properties": {
+        "path": {"$ref": "#/$defs/nonempty"},
+        "size": {"type": "integer"},
+        "sha256": {"$ref": "#/$defs/sha"},
+        "run_id": {"type": "string", "pattern": "^wave0-a11-calibration-[A-Za-z0-9._-]+$"},
+        "threshold_inventory_sha256": {"$ref": "#/$defs/sha"},
+        "thresholds": {"$ref": "#/$defs/thresholds"}
+      }
+    },
+    "cross_phase_identity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["equal", "distinct"],
+      "properties": {
+        "equal": {"$ref": "#/$defs/static_identity"},
+        "distinct": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["calibration", "validation"],
+          "properties": {
+            "calibration": {"$ref": "#/$defs/runtime_identity"},
+            "validation": {"$ref": "#/$defs/runtime_identity"}
+          }
+        }
+      }
+    },
+    "summary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["minimum", "median", "maximum"],
+      "properties": {
+        "minimum": {"type": "number"},
+        "median": {"type": "number"},
+        "maximum": {"type": "number"}
+      }
+    },
+    "summaries": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "gradient_norm.relative_difference",
+        "model_update.backbone.cosine_defect",
+        "model_update.backbone.relative_l2",
+        "model_update.detector.cosine_defect",
+        "model_update.detector.relative_l2",
+        "optimizer_state.backbone.exp_avg.cosine_defect",
+        "optimizer_state.backbone.exp_avg.relative_l2",
+        "optimizer_state.backbone.exp_avg_sq.cosine_defect",
+        "optimizer_state.backbone.exp_avg_sq.relative_l2",
+        "optimizer_state.detector.exp_avg.cosine_defect",
+        "optimizer_state.detector.exp_avg.relative_l2",
+        "optimizer_state.detector.exp_avg_sq.cosine_defect",
+        "optimizer_state.detector.exp_avg_sq.relative_l2"
+      ],
+      "properties": {
+        "gradient_norm.relative_difference": {"$ref": "#/$defs/summary"},
+        "model_update.backbone.cosine_defect": {"$ref": "#/$defs/summary"},
+        "model_update.backbone.relative_l2": {"$ref": "#/$defs/summary"},
+        "model_update.detector.cosine_defect": {"$ref": "#/$defs/summary"},
+        "model_update.detector.relative_l2": {"$ref": "#/$defs/summary"},
+        "optimizer_state.backbone.exp_avg.cosine_defect": {"$ref": "#/$defs/summary"},
+        "optimizer_state.backbone.exp_avg.relative_l2": {"$ref": "#/$defs/summary"},
+        "optimizer_state.backbone.exp_avg_sq.cosine_defect": {"$ref": "#/$defs/summary"},
+        "optimizer_state.backbone.exp_avg_sq.relative_l2": {"$ref": "#/$defs/summary"},
+        "optimizer_state.detector.exp_avg.cosine_defect": {"$ref": "#/$defs/summary"},
+        "optimizer_state.detector.exp_avg.relative_l2": {"$ref": "#/$defs/summary"},
+        "optimizer_state.detector.exp_avg_sq.cosine_defect": {"$ref": "#/$defs/summary"},
+        "optimizer_state.detector.exp_avg_sq.relative_l2": {"$ref": "#/$defs/summary"}
+      }
+    },
+    "decision": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["within_thresholds", "within_ceilings", "passed"],
+      "properties": {
+        "within_thresholds": {"type": "boolean"},
+        "within_ceilings": {"type": "boolean"},
+        "passed": {"type": "boolean"}
+      }
+    },
+    "invariants": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "replica_count_exact", "replica_ids_exact", "replica_receipts_valid",
+        "cohort_identity_exact", "pair_count_exact", "pair_order_exact",
+        "metric_keys_exact", "exact_comparisons_pass", "finite_metrics",
+        "calibration_binding_exact", "cross_phase_static_identity_exact",
+        "cross_phase_runtime_identity_distinct", "all_pairs_within_thresholds",
+        "all_pairs_within_ceilings", "publication_no_clobber",
+        "historical_evidence_preserved"
+      ],
+      "properties": {
+        "replica_count_exact": {"type": "boolean"},
+        "replica_ids_exact": {"type": "boolean"},
+        "replica_receipts_valid": {"type": "boolean"},
+        "cohort_identity_exact": {"type": "boolean"},
+        "pair_count_exact": {"type": "boolean"},
+        "pair_order_exact": {"type": "boolean"},
+        "metric_keys_exact": {"type": "boolean"},
+        "exact_comparisons_pass": {"type": "boolean"},
+        "finite_metrics": {"type": "boolean"},
+        "calibration_binding_exact": {"type": "boolean"},
+        "cross_phase_static_identity_exact": {"type": "boolean"},
+        "cross_phase_runtime_identity_distinct": {"type": "boolean"},
+        "all_pairs_within_thresholds": {"type": "boolean"},
+        "all_pairs_within_ceilings": {"type": "boolean"},
+        "publication_no_clobber": {"type": "boolean"},
+        "historical_evidence_preserved": {"type": "boolean"}
+      }
+    },
+    "normative": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "phase", "identity", "replicas", "pairs", "metric_keys",
+        "practical_ceilings", "calibration_binding", "cross_phase_identity",
+        "summaries", "all_pairs_decision", "invariants",
+        "historical_preservation", "status", "errors", "terminal"
+      ],
+      "properties": {
+        "phase": {"const": "validation"},
+        "identity": {"$ref": "#/$defs/identity"},
+        "replicas": {"type": "array", "minItems": 12, "maxItems": 12, "items": {"$ref": "#/$defs/replica"}},
+        "pairs": {"type": "array", "minItems": 66, "maxItems": 66, "items": {"$ref": "#/$defs/pair"}},
+        "metric_keys": {"type": "array", "minItems": 13, "maxItems": 13, "items": {"type": "string"}},
+        "practical_ceilings": {"$ref": "#/$defs/practical_ceilings"},
+        "calibration_binding": {"$ref": "#/$defs/calibration_binding"},
+        "cross_phase_identity": {"$ref": "#/$defs/cross_phase_identity"},
+        "summaries": {"$ref": "#/$defs/summaries"},
+        "all_pairs_decision": {"$ref": "#/$defs/decision"},
+        "invariants": {"$ref": "#/$defs/invariants"},
+        "historical_preservation": {"$ref": "#/$defs/file_record"},
+        "status": {"enum": ["PASS", "FAIL"]},
+        "errors": {"type": "array", "items": {"type": "string"}},
+        "terminal": {"enum": [
+          "WAVE0_A11_PASS / WAVE1_NOT_STARTED / OWNER_WAVE1_REVIEW_REQUIRED",
+          "WAVE0_A11_NORMATIVE_FAIL / WAVE1_FORBIDDEN"
+        ]}
+      }
+    }
+  }
+}
