@@ -375,6 +375,8 @@ function Invoke-A7ModelCachePreflight {
         '--workdir', '/workspace', '--entrypoint', 'val',
         '-e', 'VAL_ARTIFACT_ROOT=/artifacts',
         '-e', 'PYTHONPATH=/workspace/src',
+        '-e', 'HF_HUB_DISABLE_PROGRESS_BARS=1',
+        '-e', 'HF_HUB_VERBOSITY=error',
         '-v', "${Worktree}:/workspace:ro",
         '-v', "${PreflightRoot}:/artifacts:rw",
         $ImageId,
@@ -919,7 +921,7 @@ function New-A7AugmentedBaseline {
     $CurrentImageRecords = @($CurrentImageRecords | Sort-Object -CaseSensitive tag)
 
     $TransitionPath = 'docs/superpowers/specs/2026-08-23-vision-active-learning-loop-design.md'
-    $PlanPath = 'docs/superpowers/plans/2026-08-27-val-wave0-a8-cache-and-lease-lifecycle.md'
+    $PlanPath = 'docs/superpowers/plans/2026-08-27-val-wave0-a9-deterministic-hf-download-logging.md'
     $TransitionReason = 'owner-approved-design-amendment'
     if ((& $InvokeGit @('-C', $ProtectedRootPath, 'rev-parse', 'HEAD')) -cne $SourceCommit) {
         throw 'A7 protected Git HEAD does not equal the reviewed source commit'
@@ -2912,7 +2914,7 @@ function Invoke-A7Production {
     if ([string]$Resolved.worktree -cne $ScriptWorktree) {
         throw 'A7 launcher script is not running from the reviewed registered worktree'
     }
-    $PlanRelativePath = 'docs/superpowers/plans/2026-08-27-val-wave0-a8-cache-and-lease-lifecycle.md'
+    $PlanRelativePath = 'docs/superpowers/plans/2026-08-27-val-wave0-a9-deterministic-hf-download-logging.md'
     $SpecRelativePath = 'docs/superpowers/specs/2026-08-23-vision-active-learning-loop-design.md'
     $PlanLog = & $InvokeReadOnly $GitExecutable @(
         '-C', $ScriptWorktree, 'log', '-1', '--format=%H', '--', $PlanRelativePath

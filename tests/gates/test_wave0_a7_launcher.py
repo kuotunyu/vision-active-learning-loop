@@ -592,9 +592,7 @@ def test_history_rejects_symlinked_baseline_path(tmp_path: Path) -> None:
 _TRANSITION_PATH = (
     "docs/superpowers/specs/2026-08-23-vision-active-learning-loop-design.md"
 )
-_COMPATIBILITY_PLAN_PATH = (
-    "docs/superpowers/plans/2026-08-27-val-wave0-a8-cache-and-lease-lifecycle.md"
-)
+_COMPATIBILITY_PLAN_PATH = "docs/superpowers/plans/2026-08-27-val-wave0-a9-deterministic-hf-download-logging.md"
 
 
 def _git_stdout(repository: Path, *arguments: str) -> str:
@@ -1020,14 +1018,17 @@ def test_task8_runner_mounts_only_the_verified_run_scoped_cache() -> None:
     assert "'TRANSFORMERS_OFFLINE=1'" in source
 
 
-def test_production_launcher_binds_the_a8_plan_identity() -> None:
-    source = _LAUNCHER.read_text(encoding="utf-8")
+def test_launcher_and_runner_bind_the_a9_plan_identity() -> None:
+    expected = (
+        "docs/superpowers/plans/"
+        "2026-08-27-val-wave0-a9-deterministic-hf-download-logging.md"
+    )
 
-    assert (
-        "$PlanRelativePath = "
-        "'docs/superpowers/plans/2026-08-27-val-wave0-a8-cache-and-lease-lifecycle.md'"
-    ) in source
-    assert "2026-08-26-val-wave0-a7-history-compatibility.md" not in source
+    for path in (_LAUNCHER, _RUNNER):
+        source = path.read_text(encoding="utf-8")
+        assert expected in source
+        assert "2026-08-27-val-wave0-a8-cache-and-lease-lifecycle.md" not in source
+        assert "2026-08-26-val-wave0-a7-history-compatibility.md" not in source
 
 
 def _historical_lease_fixture(tmp_path: Path) -> dict[str, Path]:
@@ -2423,6 +2424,10 @@ def _closed_audit_fixture(tmp_path: Path) -> dict[str, object]:
         "VAL_ARTIFACT_ROOT=/artifacts",
         "-e",
         "PYTHONPATH=/workspace/src",
+        "-e",
+        "HF_HUB_DISABLE_PROGRESS_BARS=1",
+        "-e",
+        "HF_HUB_VERBOSITY=error",
         "-v",
         f"{tmp_path / 'worktree'}:/workspace:ro",
         "-v",
@@ -2718,6 +2723,44 @@ def test_task8_accepts_closed_task7_binding_audits(tmp_path: Path) -> None:
     assert json.loads(completed.stdout) == {
         "model_cache_root": str(fixture["model_cache_root"])
     }
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    (
+        "missing",
+        "extra",
+        "reordered",
+        "wrong_progress_value",
+        "wrong_verbosity_value",
+        "token_added",
+    ),
+)
+def test_task8_rejects_mutated_hf_logging_environment(
+    tmp_path: Path, mutation: str
+) -> None:
+    fixture = _closed_audit_fixture(tmp_path)
+    argv = fixture["model_cache_audit_document"]["docker_argv"]
+    if mutation == "missing":
+        del argv[13:15]
+    elif mutation == "extra":
+        argv[17:17] = ["-e", "HF_HUB_DISABLE_PROGRESS_BARS=1"]
+    elif mutation == "reordered":
+        argv[13:17] = argv[15:17] + argv[13:15]
+    elif mutation == "wrong_progress_value":
+        argv[14] = "HF_HUB_DISABLE_PROGRESS_BARS=0"
+    elif mutation == "wrong_verbosity_value":
+        argv[16] = "HF_HUB_VERBOSITY=warning"
+    elif mutation == "token_added":
+        argv[17:17] = ["-e", "HF_TOKEN=forbidden"]
+    _rewrite_closed_audit(fixture, "model_cache_audit")
+
+    completed = _invoke_runner_functions(
+        ("Test-Task7AuditBinding",), _task7_audit_binding_body(fixture)
+    )
+
+    assert completed.returncode != 0
+    assert "Task 7 model-cache Docker argv binding mismatch" in completed.stderr
 
 
 def test_task8_binding_returns_verified_run_scoped_model_cache(
@@ -3358,6 +3401,21 @@ $Result | ConvertTo-Json -Depth 8 -Compress
     assert "VAL_DATA_ROOT" not in "\n".join(argv)
     assert "HF_HUB_OFFLINE" not in "\n".join(argv)
     assert "TRANSFORMERS_OFFLINE" not in "\n".join(argv)
+    assert argv[12:16] == [
+        "-e",
+        "HF_HUB_DISABLE_PROGRESS_BARS=1",
+        "-e",
+        "HF_HUB_VERBOSITY=error",
+    ]
+    joined = "\n".join(argv)
+    for forbidden in (
+        "HF_TOKEN",
+        "HUGGING_FACE_HUB_TOKEN",
+        "HF_HOME",
+        "--env-file",
+        "--secret",
+    ):
+        assert forbidden not in joined
     assert argv[-11:] == [
         "assets",
         "verify",
@@ -3378,6 +3436,7 @@ $Result | ConvertTo-Json -Depth 8 -Compress
     assert result["audit_sha256"] == _sha256(audit_path)
     assert result["receipt_sha256"] == _sha256(receipt_path)
     document = json.loads(audit_path.read_text(encoding="utf-8"))
+    assert document["docker_argv"] == ["docker", *argv]
     assert document["network"] == "bridge"
     assert document["gpu_enabled"] is False
     assert (

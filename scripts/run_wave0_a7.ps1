@@ -397,7 +397,7 @@ function Test-Task7AuditBinding {
         $ModelCacheReceiptPath -cne $ExpectedModelCacheReceipt -or
         [string]$ModelCacheAudit.network -cne 'bridge' -or
         [bool]$ModelCacheAudit.gpu_enabled -ne $false -or
-        $ModelCacheArgv.Count -ne 29 -or
+        $ModelCacheArgv.Count -ne 33 -or
         [string]$ModelCacheArgv[0] -cne 'docker' -or
         [string]$ModelCacheArgv[1] -cne 'run' -or
         [string]$ModelCacheArgv[2] -cne '--rm' -or
@@ -411,12 +411,16 @@ function Test-Task7AuditBinding {
         [string]$ModelCacheArgv[10] -cne 'VAL_ARTIFACT_ROOT=/artifacts' -or
         [string]$ModelCacheArgv[11] -cne '-e' -or
         [string]$ModelCacheArgv[12] -cne 'PYTHONPATH=/workspace/src' -or
-        [string]$ModelCacheArgv[13] -cne '-v' -or
-        -not ([string]$ModelCacheArgv[14]).EndsWith($WorkspaceMountSuffix, [StringComparison]::Ordinal) -or
-        [string]$ModelCacheArgv[15] -cne '-v' -or
-        [string]$ModelCacheArgv[16] -cne "${ExpectedPreflightRoot}:/artifacts:rw" -or
-        [string]$ModelCacheArgv[17] -cne [string]$Lease.image_id -or
-        (ConvertTo-Json -InputObject @($ModelCacheArgv[18..28]) -Compress) -cne
+        [string]$ModelCacheArgv[13] -cne '-e' -or
+        [string]$ModelCacheArgv[14] -cne 'HF_HUB_DISABLE_PROGRESS_BARS=1' -or
+        [string]$ModelCacheArgv[15] -cne '-e' -or
+        [string]$ModelCacheArgv[16] -cne 'HF_HUB_VERBOSITY=error' -or
+        [string]$ModelCacheArgv[17] -cne '-v' -or
+        -not ([string]$ModelCacheArgv[18]).EndsWith($WorkspaceMountSuffix, [StringComparison]::Ordinal) -or
+        [string]$ModelCacheArgv[19] -cne '-v' -or
+        [string]$ModelCacheArgv[20] -cne "${ExpectedPreflightRoot}:/artifacts:rw" -or
+        [string]$ModelCacheArgv[21] -cne [string]$Lease.image_id -or
+        (ConvertTo-Json -InputObject @($ModelCacheArgv[22..32]) -Compress) -cne
             (ConvertTo-Json -InputObject @(
                     'assets', 'verify',
                     '--config', '/workspace/configs/models/pinned-models.yaml',
@@ -484,7 +488,7 @@ function Test-A7ProtectedGitLineage {
         [Parameter(Mandatory = $true)][string]$PlanCommit
     )
     $TransitionPath = 'docs/superpowers/specs/2026-08-23-vision-active-learning-loop-design.md'
-    $PlanPath = 'docs/superpowers/plans/2026-08-27-val-wave0-a8-cache-and-lease-lifecycle.md'
+    $PlanPath = 'docs/superpowers/plans/2026-08-27-val-wave0-a9-deterministic-hf-download-logging.md'
     $TransitionReason = 'owner-approved-design-amendment'
     foreach ($Commit in @($SourceCommit, $SpecCommit, $PlanCommit)) {
         if ($Commit -cnotmatch '^[0-9a-f]{40}$') {
