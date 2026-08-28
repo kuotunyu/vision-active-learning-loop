@@ -29,9 +29,9 @@ RUN test -n "${PYTHON_SHA256}" \
 
 WORKDIR /opt/val
 COPY pyproject.toml uv.lock ./
-RUN uv sync --frozen --no-dev --no-install-project
+RUN UV_HTTP_TIMEOUT=300 uv sync --frozen --no-dev --no-install-project
 COPY src ./src
 COPY configs ./configs
-RUN uv sync --frozen --no-dev
+RUN UV_HTTP_TIMEOUT=300 uv sync --frozen --no-dev
 
 ENTRYPOINT ["val"]
