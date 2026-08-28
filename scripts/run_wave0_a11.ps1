@@ -169,6 +169,85 @@ function Get-A11HistoricalImageInventory {
     }
 }
 
+function Get-A11PriorAttemptInventory {
+    param([Parameter(Mandatory = $true)][string]$ArtifactRoot)
+    $RunId = 'wave0-a11-calibration-20260828T045848083Z-b9917463'
+    $ImageTag = 'vision-active-learning-loop:wave0-a11-calibration-2622e402e4f5-20260828T045848083Z-b9917463'
+    $A11Root = [IO.Path]::Combine($ArtifactRoot, 'a11-runs')
+    $RunRoot = [IO.Path]::Combine($A11Root, $RunId)
+    $LeaseRoot = [IO.Path]::Combine($ArtifactRoot, 'leases')
+    $ReleasedPath = [IO.Path]::Combine($LeaseRoot, "$RunId.released")
+    $ReleaseRecordPath = [IO.Path]::Combine($LeaseRoot, "$RunId.release.json")
+    foreach ($Path in @(
+        $A11Root, $RunRoot, $LeaseRoot, $ReleasedPath, $ReleaseRecordPath
+    )) {
+        $Item = Get-Item -LiteralPath $Path -Force -ErrorAction Stop
+        if ($Item.Attributes -band [IO.FileAttributes]::ReparsePoint) {
+            throw "A11 prior attempt path contains a link: $Path"
+        }
+    }
+    $Linked = @(Get-ChildItem -LiteralPath $RunRoot -Recurse -Force |
+        Where-Object { $_.Attributes -band [IO.FileAttributes]::ReparsePoint })
+    if ($Linked.Count -ne 0) { throw 'A11 prior attempt tree contains a link' }
+    $Records = @(
+        Get-ChildItem -LiteralPath $RunRoot -File -Recurse -Force |
+            Sort-Object FullName |
+            ForEach-Object {
+                [ordered]@{
+                    path = $_.FullName.Substring($RunRoot.Length + 1).Replace('\', '/')
+                    size = [long]$_.Length
+                    sha256 = (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+                }
+            }
+    )
+    $RunNames = @(Get-ChildItem -LiteralPath $A11Root -Directory -Force |
+        Sort-Object Name -CaseSensitive | ForEach-Object Name)
+    $LeaseNames = @(Get-ChildItem -LiteralPath $LeaseRoot -File -Force |
+        Where-Object { $_.Name -like 'wave0-a11-*' } |
+        Sort-Object Name -CaseSensitive | ForEach-Object Name)
+    $ClosurePresent = @(@(
+        '78-failure-diagnostic.json', '80-campaign-result.json',
+        '81-campaign-file-manifest.json', '82-campaign-closure.json'
+    ) | Where-Object {
+        Test-Path -LiteralPath ([IO.Path]::Combine($RunRoot, 'audit', $_))
+    })
+    $List = Invoke-A11Native -FilePath 'docker' -ArgumentList @(
+        'image', 'ls', '--filter',
+        'reference=vision-active-learning-loop:wave0-a11-*',
+        '--format', '{{.Repository}}:{{.Tag}}'
+    )
+    if ($List.ExitCode -ne 0 -or $List.Stderr -cne '') {
+        throw 'A11 prior image inventory failed'
+    }
+    $ImageTags = @($List.Stdout -split "`r?`n" | Where-Object {
+        -not [string]::IsNullOrWhiteSpace($_)
+    } | Sort-Object -CaseSensitive -Unique)
+    $Inspect = Invoke-A11Native -FilePath 'docker' `
+        -ArgumentList @('image', 'inspect', '--', $ImageTag)
+    if ($Inspect.ExitCode -ne 0 -or $Inspect.Stderr -cne '') {
+        throw 'A11 prior image inspect failed'
+    }
+    $Images = @($Inspect.Stdout | ConvertFrom-Json)
+    if ($Images.Count -ne 1) { throw 'A11 prior image inspect count mismatch' }
+    return [pscustomobject][ordered]@{
+        run_names = $RunNames
+        run_file_count = $Records.Count
+        run_inventory_sha256 = Get-A11JsonSha256 -Value $Records -Depth 6
+        historical_preservation_sha256 = (Get-FileHash -LiteralPath `
+            ([IO.Path]::Combine($RunRoot, 'audit', '79-historical-preservation-final.json')) `
+            -Algorithm SHA256).Hash.ToLowerInvariant()
+        released_lease_sha256 = (Get-FileHash -LiteralPath $ReleasedPath `
+            -Algorithm SHA256).Hash.ToLowerInvariant()
+        release_record_sha256 = (Get-FileHash -LiteralPath $ReleaseRecordPath `
+            -Algorithm SHA256).Hash.ToLowerInvariant()
+        closure_paths_present = $ClosurePresent
+        image_tags = $ImageTags
+        image_id = [string]$Images[0].Id
+        lease_names = $LeaseNames
+        links_absent = $true
+    }
+}
+
 function Invoke-A11Native {
     param(
         [Parameter(Mandatory = $true)][string]$FilePath,
@@ -355,21 +434,9 @@ function Resolve-A11Worktree {
             "${ContainerId}|$ImageId"
         }
     })
-    $A11ImageTags = @(& docker image ls `
-        --filter 'reference=vision-active-learning-loop:wave0-a11-*' `
-        --format '{{.Repository}}:{{.Tag}}')
+    $PriorA11 = Get-A11PriorAttemptInventory -ArtifactRoot $ArtifactRoot
     $LeaseRoot = [IO.Path]::Combine($ArtifactRoot, 'leases')
     $ActiveLeases = @(Get-A11ActiveLeasePaths -LeaseRoot $LeaseRoot)
-    $A11Root = [IO.Path]::Combine($ArtifactRoot, 'a11-runs')
-    $A11LeaseDestinations = if (Test-Path -LiteralPath $LeaseRoot -PathType Container) {
-        @(Get-ChildItem -LiteralPath $LeaseRoot -Force | Where-Object {
-            $_.Name -like 'wave0-a11-*'
-        } | ForEach-Object FullName)
-    } else { @() }
-    $ExistingDestinations = @()
-    if (Test-Path -LiteralPath $A11Root) { $ExistingDestinations += $A11Root }
-    $ExistingDestinations += $A11ImageTags
-    $ExistingDestinations += $A11LeaseDestinations
     return [ordered]@{
         worktree_path = $Worktree
         git_dir = $GitDirectory
@@ -389,7 +456,7 @@ function Resolve-A11Worktree {
         gpu_rows = $GpuRows
         project_containers = $ProjectContainers
         active_leases = $ActiveLeases
-        existing_destinations = @($ExistingDestinations)
+        prior_a11_attempt = $PriorA11
         historical_file_count = @($HistoricalInventory.records).Count
         historical_image_count = @($ImageInventory.records).Count
         historical_file_inventory_sha256 = $HistoricalInventory.sha256
@@ -422,13 +489,16 @@ function Test-A11ReadOnlyPreflight {
         [string]::IsNullOrWhiteSpace($ExpectedBranch) -or
         $OwnerAuthorizationId -cnotmatch '^[A-Za-z0-9][A-Za-z0-9._:-]{2,127}$'
     ) { throw 'A11 branch or owner authorization identity is malformed' }
+    if ($OwnerAuthorizationId -ceq 'OWNER-A11-RUNTIME-20260828-01') {
+        throw 'A11 prior owner authorization cannot be reused'
+    }
     $Evidence = $EvidenceJson | ConvertFrom-Json
     $ExpectedKeys = @(
         'worktree_path', 'git_dir', 'common_dir', 'linked_worktree', 'branch',
         'head', 'spec_commit', 'plan_commit', 'plan_parent_is_spec',
         'linked_status', 'canonical_status', 'val_data_root_present',
         'docker_context', 'docker_os', 'docker_server_version', 'gpu_rows',
-        'project_containers', 'active_leases', 'existing_destinations',
+        'project_containers', 'active_leases', 'prior_a11_attempt',
         'historical_file_count', 'historical_image_count',
         'historical_file_inventory_sha256', 'historical_image_inventory_sha256',
         'historical_preserved'
@@ -465,9 +535,40 @@ function Test-A11ReadOnlyPreflight {
     ) { throw 'A11 requires exactly one idle registered RTX 4090' }
     if (
         @($Evidence.project_containers).Count -ne 0 -or
-        @($Evidence.active_leases).Count -ne 0 -or
-        @($Evidence.existing_destinations).Count -ne 0
+        @($Evidence.active_leases).Count -ne 0
     ) { throw 'A11 runtime destination or exclusive resource is occupied' }
+    $Prior = $Evidence.prior_a11_attempt
+    $ExpectedPriorKeys = @(
+        'run_names', 'run_file_count', 'run_inventory_sha256',
+        'historical_preservation_sha256', 'released_lease_sha256',
+        'release_record_sha256', 'closure_paths_present', 'image_tags',
+        'image_id', 'lease_names', 'links_absent'
+    )
+    $ActualPriorKeys = @($Prior.PSObject.Properties.Name | Sort-Object)
+    if (Compare-Object ($ExpectedPriorKeys | Sort-Object) $ActualPriorKeys) {
+        throw 'A11 prior A11 evidence fields mismatch'
+    }
+    $ExpectedRunId = 'wave0-a11-calibration-20260828T045848083Z-b9917463'
+    $ExpectedImageTag = 'vision-active-learning-loop:wave0-a11-calibration-2622e402e4f5-20260828T045848083Z-b9917463'
+    $RunNames = @($Prior.run_names)
+    $ClosurePaths = @($Prior.closure_paths_present)
+    $ImageTags = @($Prior.image_tags)
+    $LeaseNames = @($Prior.lease_names)
+    if (
+        $RunNames.Count -ne 1 -or [string]$RunNames[0] -cne $ExpectedRunId -or
+        [int]$Prior.run_file_count -ne 48 -or
+        [string]$Prior.run_inventory_sha256 -cne 'fb6009c0618b8a520c217c627ceab906bef8952cc7270d9e7928dd815896479b' -or
+        [string]$Prior.historical_preservation_sha256 -cne '927c57d5390bf2267b22b6af2718035530f48071ea48cc926329a696397b319d' -or
+        [string]$Prior.released_lease_sha256 -cne '146c280df6f4c7f3b2d38078cac303324ab24755c09cdead0c567ec7d7f73322' -or
+        [string]$Prior.release_record_sha256 -cne '35cd6e614bade69f663dbe10a152af6a6b471d269828ba0715b33d7c7a117060' -or
+        $ClosurePaths.Count -ne 0 -or
+        $ImageTags.Count -ne 1 -or [string]$ImageTags[0] -cne $ExpectedImageTag -or
+        [string]$Prior.image_id -cne 'sha256:52b62e99d65269649d1e75e7397e9cab7d20cc5fe0e5dc46d661b1ec6625b0d5' -or
+        $LeaseNames.Count -ne 2 -or
+        [string]$LeaseNames[0] -cne "$ExpectedRunId.release.json" -or
+        [string]$LeaseNames[1] -cne "$ExpectedRunId.released" -or
+        $Prior.links_absent -cne $true
+    ) { throw 'A11 prior A11 attempt drifted' }
     if (
         [int]$Evidence.historical_file_count -ne 64306 -or
         [int]$Evidence.historical_image_count -ne 21 -or
@@ -543,6 +644,94 @@ function New-A11PhaseIdentity {
         current_stage = 'preregistered'
         terminal = $null
     }
+}
+
+function Test-A11PathEntryPresent {
+    param([Parameter(Mandatory = $true)][string]$Path)
+    $FullPath = [IO.Path]::GetFullPath($Path)
+    $Parent = [IO.Path]::GetDirectoryName($FullPath)
+    if ([string]::IsNullOrWhiteSpace($Parent)) {
+        throw "A11 destination path has no parent: $Path"
+    }
+    $Name = [IO.Path]::GetFileName($FullPath)
+    try {
+        $Entries = @([IO.DirectoryInfo]::new($Parent).EnumerateFileSystemInfos() |
+            Where-Object { $_.Name.Equals($Name, [StringComparison]::OrdinalIgnoreCase) })
+    } catch [IO.DirectoryNotFoundException] {
+        return $false
+    } catch [IO.FileNotFoundException] {
+        return $false
+    } catch {
+        throw "A11 destination parent inspection failed: $Parent"
+    }
+    return $Entries.Count -ne 0
+}
+
+function Test-A11PhaseDestinationsAbsent {
+    param(
+        [Parameter(Mandatory = $true)]
+        [ValidateCount(2, 2)]
+        [object[]]$Identities
+    )
+    if (
+        [string]$Identities[0].phase -cne 'calibration' -or
+        [string]$Identities[1].phase -cne 'validation'
+    ) { throw 'A11 phase destination identities are not ordered' }
+    foreach ($Name in @('run_id', 'image_tag', 'campaign_root', 'cache_root', 'lease_id', 'lease_path')) {
+        if ([string]$Identities[0].$Name -ceq [string]$Identities[1].$Name) {
+            throw "A11 phase runtime identity is reused: $Name"
+        }
+    }
+    $Timestamps = [Collections.Generic.List[string]]::new()
+    $Nonces = [Collections.Generic.List[string]]::new()
+    foreach ($Identity in $Identities) {
+        $Match = [regex]::Match(
+            [string]$Identity.run_id,
+            '^wave0-a11-(calibration|validation)-([0-9]{8}T[0-9]{9}Z)-([0-9a-f]{8})$'
+        )
+        if (-not $Match.Success) { throw 'A11 phase run identity is malformed' }
+        [void]$Timestamps.Add($Match.Groups[2].Value)
+        [void]$Nonces.Add($Match.Groups[3].Value)
+    }
+    if ($Timestamps[0] -ceq $Timestamps[1] -or $Nonces[0] -ceq $Nonces[1]) {
+        throw 'A11 phase timestamp or nonce is reused'
+    }
+
+    $CheckedPaths = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+    foreach ($Identity in $Identities) {
+        $LeaseRoot = [IO.Path]::GetDirectoryName([string]$Identity.lease_lock_path)
+        $Paths = @(
+            [string]$Identity.campaign_root,
+            [string]$Identity.cache_root,
+            [string]$Identity.lease_path,
+            [string]$Identity.lease_lock_path,
+            [IO.Path]::Combine($LeaseRoot, "$($Identity.run_id).released"),
+            [IO.Path]::Combine($LeaseRoot, "$($Identity.run_id).release.json"),
+            [IO.Path]::Combine([string]$Identity.campaign_root, 'audit'),
+            [IO.Path]::Combine([string]$Identity.campaign_root, 'wave0', 'receipts'),
+            [IO.Path]::Combine([string]$Identity.campaign_root, 'wave0', 'checkpoints')
+        )
+        foreach ($Path in $Paths) {
+            if (
+                $CheckedPaths.Add([IO.Path]::GetFullPath($Path)) -and
+                (Test-A11PathEntryPresent -Path $Path)
+            ) {
+                throw "A11 fresh runtime destination exists: $Path"
+            }
+        }
+        $List = Invoke-A11Native -FilePath 'docker' -ArgumentList @(
+            'image', 'ls', '--filter', "reference=$($Identity.image_tag)",
+            '--format', '{{.Repository}}:{{.Tag}}'
+        )
+        if ($List.ExitCode -ne 0 -or $List.Stderr -cne '') {
+            throw "A11 image destination inspection failed: $($Identity.image_tag)"
+        }
+        $Tags = @($List.Stdout -split "`r?`n" | Where-Object {
+            -not [string]::IsNullOrWhiteSpace($_)
+        })
+        if ($Tags.Count -ne 0) { throw "A11 image tag exists: $($Identity.image_tag)" }
+    }
+    return $true
 }
 
 function New-A11BuildArguments {
@@ -865,13 +1054,18 @@ function Initialize-A11Phase {
         [Parameter(Mandatory = $true)][object]$Peer
     )
     $CampaignParent = [IO.Path]::GetDirectoryName([string]$Identity.campaign_root)
-    if ($Identity.phase -ceq 'calibration') {
-        New-Item -ItemType Directory -Path $CampaignParent -ErrorAction Stop | Out-Null
-    } else {
+    if (Test-Path -LiteralPath $CampaignParent) {
         $ParentItem = Get-Item -LiteralPath $CampaignParent -Force -ErrorAction Stop
-        if (-not $ParentItem.PSIsContainer -or ($ParentItem.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+        if (
+            -not $ParentItem.PSIsContainer -or
+            ($ParentItem.Attributes -band [IO.FileAttributes]::ReparsePoint)
+        ) {
             throw 'A11 campaign parent is not a non-link directory'
         }
+    } elseif ($Identity.phase -ceq 'calibration') {
+        New-Item -ItemType Directory -Path $CampaignParent -ErrorAction Stop | Out-Null
+    } else {
+        throw 'A11 validation campaign parent is missing'
     }
     $Root = New-Item -ItemType Directory -Path $Identity.campaign_root -ErrorAction Stop
     New-Item -ItemType Directory -Path ([IO.Path]::Combine($Root.FullName, 'audit')) -ErrorAction Stop | Out-Null
@@ -1503,7 +1697,7 @@ function Invoke-A11Campaign {
         'spec_commit', 'plan_commit', 'plan_parent_is_spec', 'linked_status',
         'canonical_status', 'val_data_root_present', 'docker_context', 'docker_os',
         'docker_server_version', 'gpu_rows', 'project_containers', 'active_leases',
-        'existing_destinations', 'historical_file_count', 'historical_image_count',
+        'prior_a11_attempt', 'historical_file_count', 'historical_image_count',
         'historical_file_inventory_sha256', 'historical_image_inventory_sha256',
         'historical_preserved'
     )
@@ -1516,6 +1710,7 @@ function Invoke-A11Campaign {
     } else { 'D:\vision-active-learning-loop-artifacts\wave0' }
     $Calibration = New-A11PhaseIdentity 'calibration' $SourceCommit $SpecCommit $PlanCommit $AuthorizationId $ArtifactRoot
     $Validation = New-A11PhaseIdentity 'validation' $SourceCommit $SpecCommit $PlanCommit $AuthorizationId $ArtifactRoot
+    Test-A11PhaseDestinationsAbsent -Identities @($Calibration, $Validation) | Out-Null
     $CrossPhaseEvidence = {
         param([Parameter(Mandatory = $true)][object]$Value)
         [pscustomobject]@{

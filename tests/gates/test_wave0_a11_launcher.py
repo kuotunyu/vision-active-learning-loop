@@ -24,6 +24,41 @@ _HISTORICAL_FILES_SHA256 = (
 _HISTORICAL_IMAGES_SHA256 = (
     "9a41d2c8e277f230400187874547b33ea0d9a3376707b46da4f267ee0cb3231f"
 )
+_FAILED_RUN_ID = "wave0-a11-calibration-20260828T045848083Z-b9917463"
+_FAILED_RUN_SHA256 = "fb6009c0618b8a520c217c627ceab906bef8952cc7270d9e7928dd815896479b"
+_FAILED_OWNER = "OWNER-A11-RUNTIME-20260828-01"
+_FAILED_IMAGE_TAG = (
+    "vision-active-learning-loop:wave0-a11-calibration-"
+    "2622e402e4f5-20260828T045848083Z-b9917463"
+)
+_FAILED_IMAGE_ID = (
+    "sha256:52b62e99d65269649d1e75e7397e9cab" "7d20cc5fe0e5dc46d661b1ec6625b0d5"
+)
+
+
+def _prior_attempt() -> dict[str, object]:
+    return {
+        "run_names": [_FAILED_RUN_ID],
+        "run_file_count": 48,
+        "run_inventory_sha256": _FAILED_RUN_SHA256,
+        "historical_preservation_sha256": (
+            "927c57d5390bf2267b22b6af2718035530f48071ea48cc926329a696397b319d"
+        ),
+        "released_lease_sha256": (
+            "146c280df6f4c7f3b2d38078cac303324ab24755c09cdead0c567ec7d7f73322"
+        ),
+        "release_record_sha256": (
+            "35cd6e614bade69f663dbe10a152af6a6b471d269828ba0715b33d7c7a117060"
+        ),
+        "closure_paths_present": [],
+        "image_tags": [_FAILED_IMAGE_TAG],
+        "image_id": _FAILED_IMAGE_ID,
+        "lease_names": [
+            f"{_FAILED_RUN_ID}.release.json",
+            f"{_FAILED_RUN_ID}.released",
+        ],
+        "links_absent": True,
+    }
 
 
 def _ps(value: str) -> str:
@@ -302,7 +337,7 @@ def _preflight() -> dict[str, object]:
         ],
         "project_containers": [],
         "active_leases": [],
-        "existing_destinations": [],
+        "prior_a11_attempt": _prior_attempt(),
         "historical_file_count": 64306,
         "historical_image_count": 21,
         "historical_file_inventory_sha256": _HISTORICAL_FILES_SHA256,
@@ -311,7 +346,7 @@ def _preflight() -> dict[str, object]:
     }
 
 
-def _preflight_body(evidence: dict[str, object]) -> str:
+def _preflight_body(evidence: dict[str, object], *, owner: str = _OWNER) -> str:
     return f"""
 $Result = Test-A11ReadOnlyPreflight `
     -EvidenceJson {_ps(json.dumps(evidence))} `
@@ -319,9 +354,206 @@ $Result = Test-A11ReadOnlyPreflight `
     -ExpectedSpecCommit {_ps(_SPEC)} `
     -ExpectedPlanCommit {_ps(_PLAN)} `
     -ExpectedBranch {_ps(_BRANCH)} `
-    -OwnerAuthorizationId {_ps(_OWNER)}
+    -OwnerAuthorizationId {_ps(owner)}
 $Result | ConvertTo-Json -Depth 8 -Compress
 """
+
+
+def _run_prior_attempt_inventory(
+    tmp_path: Path, defect: str = ""
+) -> tuple[subprocess.CompletedProcess[str], Path, Path]:
+    artifact = tmp_path / "artifacts"
+    a11_root = artifact / "a11-runs"
+    expected_run = a11_root / _FAILED_RUN_ID
+    outside_run = tmp_path / "outside-run"
+    run_root = outside_run if defect == "run-link" else expected_run
+    expected_leases = artifact / "leases"
+    outside_leases = tmp_path / "outside-leases"
+    lease_root = outside_leases if defect == "lease-link" else expected_leases
+    (run_root / "audit").mkdir(parents=True)
+    lease_root.mkdir(parents=True)
+    (run_root / "audit" / "79-historical-preservation-final.json").write_text(
+        "history", encoding="utf-8"
+    )
+    (run_root / "payload.bin").write_bytes(b"payload")
+    (lease_root / f"{_FAILED_RUN_ID}.released").write_text("released", encoding="utf-8")
+    (lease_root / f"{_FAILED_RUN_ID}.release.json").write_text(
+        "release", encoding="utf-8"
+    )
+    junctions = []
+    if defect == "run-link":
+        a11_root.mkdir(parents=True)
+        junctions.append(
+            f"New-Item -ItemType Junction -Path {_ps(str(expected_run))} "
+            f"-Target {_ps(str(outside_run))} | Out-Null"
+        )
+    if defect == "lease-link":
+        artifact.mkdir(exist_ok=True)
+        junctions.append(
+            f"New-Item -ItemType Junction -Path {_ps(str(expected_leases))} "
+            f"-Target {_ps(str(outside_leases))} | Out-Null"
+        )
+    native = (
+        "return [pscustomobject]@{ExitCode=125;Stdout='';Stderr='daemon unavailable'}"
+        if defect == "docker-failure"
+        else f"""
+if ($ArgumentList[1] -ceq 'ls') {{
+    return [pscustomobject]@{{
+        ExitCode=0;Stdout={_ps(_FAILED_IMAGE_TAG + chr(10))};Stderr=''
+    }}
+}}
+return [pscustomobject]@{{
+    ExitCode=0
+    Stdout={_ps(json.dumps([{'Id': _FAILED_IMAGE_ID}]))}
+    Stderr=''
+}}
+"""
+    )
+    body = f"""
+{chr(10).join(junctions)}
+function Invoke-A11Native {{ param($FilePath,$ArgumentList) {native} }}
+Get-A11PriorAttemptInventory -ArtifactRoot {_ps(str(artifact))} |
+    ConvertTo-Json -Depth 8 -Compress
+"""
+    completed = _invoke_functions(
+        (
+            "Get-A11FileRecord",
+            "Get-A11JsonSha256",
+            "Get-A11PriorAttemptInventory",
+        ),
+        body,
+    )
+    return completed, run_root, lease_root
+
+
+def _phase_destination_identities(tmp_path: Path) -> list[dict[str, str]]:
+    lease_lock = tmp_path / "leases" / f"{_GPU}.json"
+    return [
+        {
+            "phase": "calibration",
+            "run_id": "wave0-a11-calibration-20260828T010101001Z-aaaaaaaa",
+            "image_tag": "vision-active-learning-loop:wave0-a11-calibration-a",
+            "campaign_root": str(tmp_path / "calibration"),
+            "cache_root": str(tmp_path / "calibration" / "wave0" / "model_cache"),
+            "lease_id": ("wave0-a11-calibration-lease-20260828T010101001Z-aaaaaaaa"),
+            "lease_path": str(tmp_path / "calibration" / "audit" / "active-lease.json"),
+            "lease_lock_path": str(lease_lock),
+        },
+        {
+            "phase": "validation",
+            "run_id": "wave0-a11-validation-20260828T010101002Z-bbbbbbbb",
+            "image_tag": "vision-active-learning-loop:wave0-a11-validation-b",
+            "campaign_root": str(tmp_path / "validation"),
+            "cache_root": str(tmp_path / "validation" / "wave0" / "model_cache"),
+            "lease_id": ("wave0-a11-validation-lease-20260828T010101002Z-bbbbbbbb"),
+            "lease_path": str(tmp_path / "validation" / "audit" / "active-lease.json"),
+            "lease_lock_path": str(lease_lock),
+        },
+    ]
+
+
+def _run_phase_destination_gate(
+    identities: list[dict[str, str]],
+    *,
+    exit_code: int = 0,
+    stdout: str = "",
+    stderr: str = "",
+    setup: str = "",
+    present_only: str | None = None,
+) -> subprocess.CompletedProcess[str]:
+    boundary = (
+        ""
+        if present_only is None
+        else f"""
+function Test-A11PathEntryPresent {{
+    param($Path)
+    return [IO.Path]::GetFullPath($Path) -ceq `
+        [IO.Path]::GetFullPath({_ps(present_only)})
+}}
+"""
+    )
+    body = f"""
+{setup}
+{boundary}
+function Invoke-A11Native {{
+    return [pscustomobject]@{{
+        ExitCode={exit_code}; Stdout={_ps(stdout)}; Stderr={_ps(stderr)}
+    }}
+}}
+$Identities = {_ps(json.dumps(identities))} | ConvertFrom-Json
+Test-A11PhaseDestinationsAbsent -Identities $Identities | Out-Null
+"""
+    return _invoke_functions(
+        ("Test-A11PathEntryPresent", "Test-A11PhaseDestinationsAbsent"), body
+    )
+
+
+def _run_initialize_phase(
+    tmp_path: Path,
+    *,
+    parent_kind: str = "directory",
+    child_exists: bool = False,
+) -> tuple[subprocess.CompletedProcess[str], Path, Path, Path]:
+    artifact = tmp_path / "artifacts"
+    parent = artifact / "a11-runs"
+    target = tmp_path / "junction-target"
+    junction_setup = ""
+    if parent_kind == "directory":
+        (parent / "prior").mkdir(parents=True)
+        sentinel = parent / "prior" / "sentinel.bin"
+    elif parent_kind == "file":
+        artifact.mkdir(parents=True)
+        sentinel = parent
+    elif parent_kind == "junction":
+        artifact.mkdir(parents=True)
+        (target / "prior").mkdir(parents=True)
+        sentinel = target / "prior" / "sentinel.bin"
+        junction_setup = (
+            f"New-Item -ItemType Junction -Path {_ps(str(parent))} "
+            f"-Target {_ps(str(target))} | Out-Null"
+        )
+    else:
+        raise AssertionError(f"unsupported parent kind: {parent_kind}")
+    sentinel.write_bytes(b"immutable-prior")
+
+    new_root = parent / "wave0-a11-calibration-20260828T010101001Z-aaaaaaaa"
+    peer_root = parent / "wave0-a11-validation-20260828T010101002Z-bbbbbbbb"
+    if child_exists:
+        new_root.mkdir(parents=True)
+        sentinel = new_root / "sentinel.bin"
+        sentinel.write_bytes(b"immutable-child")
+    body = f"""
+{junction_setup}
+function nvidia-smi {{
+    $FlatArgs = @($args | ForEach-Object {{ $_ }})
+    if (($FlatArgs -join ' ') -like '*--query-gpu=name uuid driver_version*') {{
+        return 'NVIDIA GeForce RTX 4090, {_GPU}, 591.86'
+    }}
+    return ''
+}}
+$Identity = New-A11PhaseIdentity `
+    -Phase calibration -SourceCommit {_ps(_SOURCE)} `
+    -SpecCommit {_ps(_SPEC)} -PlanCommit {_ps(_PLAN)} `
+    -OwnerAuthorizationId {_ps(_OWNER)} -ArtifactRoot {_ps(str(artifact))} `
+    -TimestampToken '20260828T010101001Z' -Nonce 'aaaaaaaa'
+$Peer = New-A11PhaseIdentity `
+    -Phase validation -SourceCommit {_ps(_SOURCE)} `
+    -SpecCommit {_ps(_SPEC)} -PlanCommit {_ps(_PLAN)} `
+    -OwnerAuthorizationId {_ps(_OWNER)} -ArtifactRoot {_ps(str(artifact))} `
+    -TimestampToken '20260828T010101002Z' -Nonce 'bbbbbbbb'
+Initialize-A11Phase -Identity $Identity -Peer $Peer | Out-Null
+"""
+    completed = _invoke_functions(
+        (
+            "Write-A11NewText",
+            "Get-A11FileRecord",
+            "ConvertTo-A11GpuRows",
+            "New-A11PhaseIdentity",
+            "Initialize-A11Phase",
+        ),
+        body,
+    )
+    return completed, new_root, peer_root, sentinel
 
 
 def test_launcher_has_exact_parameters_and_required_functions() -> None:
@@ -342,6 +574,9 @@ def test_launcher_has_exact_parameters_and_required_functions() -> None:
         "Test-A11ReadOnlyPreflight",
         "Confirm-A11ProtectedGit",
         "New-A11PhaseIdentity",
+        "Get-A11PriorAttemptInventory",
+        "Test-A11PathEntryPresent",
+        "Test-A11PhaseDestinationsAbsent",
         "New-A11BuildArguments",
         "Invoke-A11CachePreflight",
         "Get-A11VerifiedStageReceipt",
@@ -671,6 +906,58 @@ def test_read_only_preflight_accepts_exact_closed_evidence() -> None:
     assert json.loads(completed.stdout)["head"] == _SOURCE
 
 
+def test_read_only_preflight_rejects_registered_prior_authorization() -> None:
+    completed = _invoke_functions(
+        ("Test-A11ReadOnlyPreflight",),
+        _preflight_body(_preflight(), owner=_FAILED_OWNER),
+    )
+
+    assert completed.returncode != 0
+    assert "prior owner authorization" in completed.stderr
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("run_names", []),
+        ("run_names", [_FAILED_RUN_ID, "wave0-a11-unknown"]),
+        ("run_file_count", 47),
+        ("run_inventory_sha256", "0" * 64),
+        ("historical_preservation_sha256", "0" * 64),
+        ("released_lease_sha256", "0" * 64),
+        ("release_record_sha256", "0" * 64),
+        ("closure_paths_present", ["80-campaign-result.json"]),
+        ("image_tags", []),
+        (
+            "image_tags",
+            [
+                _FAILED_IMAGE_TAG,
+                "vision-active-learning-loop:wave0-a11-extra",
+            ],
+        ),
+        ("image_id", "sha256:" + "0" * 64),
+        ("lease_names", []),
+        (
+            "lease_names",
+            [f"{_FAILED_RUN_ID}.released", "wave0-a11-extra.released"],
+        ),
+        ("links_absent", False),
+    ],
+)
+def test_read_only_preflight_rejects_prior_a11_drift(field: str, value: object) -> None:
+    evidence = _preflight()
+    prior = dict(evidence["prior_a11_attempt"])
+    prior[field] = value
+    evidence["prior_a11_attempt"] = prior
+
+    completed = _invoke_functions(
+        ("Test-A11ReadOnlyPreflight",), _preflight_body(evidence)
+    )
+
+    assert completed.returncode != 0
+    assert "prior A11" in completed.stderr
+
+
 def test_gpu_inventory_ignores_wddm_na_rows_but_counts_numeric_cuda() -> None:
     body = f"""
 $Rows = ConvertTo-A11GpuRows `
@@ -724,6 +1011,52 @@ Get-A11ActiveLeasePaths -LeaseRoot {_ps(str(tmp_path))} |
     assert without_active.stdout.strip() == ""
 
 
+def test_prior_attempt_inventory_returns_closed_sorted_evidence(
+    tmp_path: Path,
+) -> None:
+    completed, run_root, lease_root = _run_prior_attempt_inventory(tmp_path)
+
+    assert completed.returncode == 0, completed.stderr
+    evidence = json.loads(completed.stdout)
+    records = []
+    for path in sorted(run_root.rglob("*")):
+        if path.is_file():
+            content = path.read_bytes()
+            records.append(
+                {
+                    "path": path.relative_to(run_root).as_posix(),
+                    "size": len(content),
+                    "sha256": hashlib.sha256(content).hexdigest(),
+                }
+            )
+    expected_digest = hashlib.sha256(
+        json.dumps(records, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+    assert evidence == {
+        "run_names": [_FAILED_RUN_ID],
+        "run_file_count": len(records),
+        "run_inventory_sha256": expected_digest,
+        "historical_preservation_sha256": hashlib.sha256(b"history").hexdigest(),
+        "released_lease_sha256": hashlib.sha256(b"released").hexdigest(),
+        "release_record_sha256": hashlib.sha256(b"release").hexdigest(),
+        "closure_paths_present": [],
+        "image_tags": [_FAILED_IMAGE_TAG],
+        "image_id": _FAILED_IMAGE_ID,
+        "lease_names": sorted(path.name for path in lease_root.iterdir()),
+        "links_absent": True,
+    }
+
+
+@pytest.mark.parametrize("defect", ["run-link", "lease-link", "docker-failure"])
+def test_prior_attempt_inventory_rejects_links_or_docker_failure(
+    tmp_path: Path, defect: str
+) -> None:
+    completed, _, _ = _run_prior_attempt_inventory(tmp_path, defect)
+
+    assert completed.returncode != 0
+    assert completed.stderr
+
+
 @pytest.mark.parametrize(
     ("field", "value"),
     [
@@ -739,7 +1072,6 @@ Get-A11ActiveLeasePaths -LeaseRoot {_ps(str(tmp_path))} |
         ("docker_server_version", ""),
         ("project_containers", ["running"]),
         ("active_leases", ["active.json"]),
-        ("existing_destinations", ["calibration-root"]),
         ("historical_file_count", 64305),
         ("historical_image_count", 20),
         ("historical_file_inventory_sha256", "0" * 64),
@@ -839,6 +1171,257 @@ $Validation = New-A11PhaseIdentity `
     assert calibration["cache_root"].endswith("wave0\\model_cache")
     assert calibration["source_commit"] == validation["source_commit"] == _SOURCE
     assert calibration["owner_authorization_id"] == _OWNER
+
+
+def test_phase_destination_gate_accepts_two_fresh_identities(
+    tmp_path: Path,
+) -> None:
+    completed = _run_phase_destination_gate(_phase_destination_identities(tmp_path))
+
+    assert completed.returncode == 0, completed.stderr
+
+
+@pytest.mark.parametrize(
+    "field",
+    ["run_id", "image_tag", "campaign_root", "cache_root", "lease_id", "lease_path"],
+)
+def test_phase_destination_gate_rejects_cross_phase_identity_reuse(
+    tmp_path: Path, field: str
+) -> None:
+    identities = _phase_destination_identities(tmp_path)
+    identities[1][field] = identities[0][field]
+
+    completed = _run_phase_destination_gate(identities)
+
+    assert completed.returncode != 0
+    assert field in completed.stderr
+
+
+@pytest.mark.parametrize(
+    "collision",
+    [
+        "calibration-root",
+        "validation-root",
+        "calibration-cache-root",
+        "validation-lease-path",
+        "lease-lock",
+        "calibration-released",
+        "validation-release-record",
+    ],
+)
+def test_phase_destination_gate_rejects_exact_path_collision(
+    tmp_path: Path, collision: str
+) -> None:
+    identities = _phase_destination_identities(tmp_path)
+    paths = {
+        "calibration-root": Path(identities[0]["campaign_root"]),
+        "validation-root": Path(identities[1]["campaign_root"]),
+        "calibration-cache-root": Path(identities[0]["cache_root"]),
+        "validation-lease-path": Path(identities[1]["lease_path"]),
+        "lease-lock": Path(identities[0]["lease_lock_path"]),
+        "calibration-released": (
+            Path(identities[0]["lease_lock_path"]).parent
+            / f"{identities[0]['run_id']}.released"
+        ),
+        "validation-release-record": (
+            Path(identities[1]["lease_lock_path"]).parent
+            / f"{identities[1]['run_id']}.release.json"
+        ),
+    }
+    path = paths[collision]
+    target_specific = collision in {"calibration-cache-root", "validation-lease-path"}
+    if not target_specific:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.mkdir() if collision.endswith("root") else path.write_text(
+            "occupied", encoding="utf-8"
+        )
+
+    completed = _run_phase_destination_gate(
+        identities, present_only=str(path) if target_specific else None
+    )
+
+    assert completed.returncode != 0
+    assert "fresh runtime destination exists" in completed.stderr
+    assert str(path) in completed.stderr
+
+
+@pytest.mark.parametrize("reused_token", ["timestamp", "nonce"])
+def test_phase_destination_gate_rejects_timestamp_or_nonce_reuse(
+    tmp_path: Path, reused_token: str
+) -> None:
+    identities = _phase_destination_identities(tmp_path)
+    if reused_token == "timestamp":
+        identities[1]["run_id"] = "wave0-a11-validation-20260828T010101001Z-bbbbbbbb"
+    else:
+        identities[1]["run_id"] = "wave0-a11-validation-20260828T010101002Z-aaaaaaaa"
+
+    completed = _run_phase_destination_gate(identities)
+
+    assert completed.returncode != 0
+    assert "timestamp or nonce is reused" in completed.stderr
+
+
+def test_phase_destination_gate_queries_each_exact_phase_image_tag(
+    tmp_path: Path,
+) -> None:
+    identities = _phase_destination_identities(tmp_path)
+    body = f"""
+$script:RequestedTags = [Collections.Generic.List[string]]::new()
+function Invoke-A11Native {{
+    param($FilePath, $ArgumentList)
+    $Reference = @($ArgumentList | Where-Object {{ $_ -like 'reference=*' }})
+    if ($Reference.Count -ne 1) {{ throw 'unexpected Docker image query' }}
+    [void]$script:RequestedTags.Add($Reference[0].Substring(10))
+    return [pscustomobject]@{{ ExitCode=0; Stdout=''; Stderr='' }}
+}}
+$Identities = {_ps(json.dumps(identities))} | ConvertFrom-Json
+Test-A11PhaseDestinationsAbsent -Identities $Identities | Out-Null
+$script:RequestedTags | ConvertTo-Json -Compress
+"""
+    completed = _invoke_functions(
+        ("Test-A11PathEntryPresent", "Test-A11PhaseDestinationsAbsent"), body
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert json.loads(completed.stdout) == [
+        identities[0]["image_tag"],
+        identities[1]["image_tag"],
+    ]
+
+
+def test_phase_destination_gate_rejects_validation_only_image_collision(
+    tmp_path: Path,
+) -> None:
+    identities = _phase_destination_identities(tmp_path)
+    validation_tag = identities[1]["image_tag"]
+    body = f"""
+function Invoke-A11Native {{
+    param($FilePath, $ArgumentList)
+    $Reference = @($ArgumentList | Where-Object {{ $_ -like 'reference=*' }})[0]
+    $Tag = $Reference.Substring(10)
+    $Stdout = if ($Tag -ceq {_ps(validation_tag)}) {{ "$Tag`n" }} else {{ '' }}
+    return [pscustomobject]@{{ ExitCode=0; Stdout=$Stdout; Stderr='' }}
+}}
+$Identities = {_ps(json.dumps(identities))} | ConvertFrom-Json
+Test-A11PhaseDestinationsAbsent -Identities $Identities | Out-Null
+"""
+    completed = _invoke_functions(
+        ("Test-A11PathEntryPresent", "Test-A11PhaseDestinationsAbsent"), body
+    )
+
+    assert completed.returncode != 0
+    assert validation_tag in completed.stderr
+
+
+@pytest.mark.parametrize(
+    ("exit_code", "stdout", "stderr", "accepted"),
+    [
+        (0, "requested-tag\n", "", False),
+        (125, "", "daemon unavailable", False),
+        (0, "", "warning", False),
+        (0, "", "", True),
+    ],
+)
+def test_phase_destination_gate_distinguishes_image_collision_from_docker_failure(
+    tmp_path: Path,
+    exit_code: int,
+    stdout: str,
+    stderr: str,
+    accepted: bool,
+) -> None:
+    completed = _run_phase_destination_gate(
+        _phase_destination_identities(tmp_path),
+        exit_code=exit_code,
+        stdout=stdout,
+        stderr=stderr,
+    )
+
+    assert (completed.returncode == 0) is accepted
+    if not accepted:
+        assert completed.stderr
+
+
+@pytest.mark.parametrize("destination_kind", ["file", "directory"])
+def test_phase_destination_gate_rejects_dangling_reparse_point(
+    tmp_path: Path, destination_kind: str
+) -> None:
+    identities = _phase_destination_identities(tmp_path)
+    if destination_kind == "file":
+        destination = Path(identities[0]["lease_lock_path"])
+        target = tmp_path / "file-target.bin"
+        target.write_bytes(b"target")
+        item_type = "SymbolicLink"
+    else:
+        destination = Path(identities[0]["campaign_root"])
+        target = tmp_path / "directory-target"
+        target.mkdir()
+        item_type = "Junction"
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    moved_target = target.with_name(f"{target.name}-moved")
+    setup = f"""
+New-Item -ItemType {item_type} -Path {_ps(str(destination))} `
+    -Target {_ps(str(target))} | Out-Null
+Move-Item -LiteralPath {_ps(str(target))} -Destination {_ps(str(moved_target))}
+"""
+
+    completed = _run_phase_destination_gate(identities, setup=setup)
+
+    if destination_kind == "file" and (
+        "Administrator privilege required" in completed.stderr
+    ):
+        pytest.skip("creating a Windows file symlink requires unavailable privilege")
+    assert completed.returncode != 0
+    assert "fresh runtime destination exists" in completed.stderr
+
+
+def test_phase_destination_gate_does_not_trust_test_path_false_negative(
+    tmp_path: Path,
+) -> None:
+    identities = _phase_destination_identities(tmp_path)
+    destination = Path(identities[0]["lease_lock_path"])
+    destination.parent.mkdir(parents=True)
+    destination.write_bytes(b"occupied")
+    setup = "function Test-Path { return $false }"
+
+    completed = _run_phase_destination_gate(identities, setup=setup)
+
+    assert completed.returncode != 0
+    assert "fresh runtime destination exists" in completed.stderr
+
+
+def test_initialize_calibration_accepts_existing_parent_and_preserves_prior(
+    tmp_path: Path,
+) -> None:
+    completed, new_root, peer_root, sentinel = _run_initialize_phase(tmp_path)
+
+    assert completed.returncode == 0, completed.stderr
+    assert sentinel.read_bytes() == b"immutable-prior"
+    assert new_root.is_dir()
+    assert sorted(path.name for path in new_root.iterdir()) == ["audit", "wave0"]
+    assert not peer_root.exists()
+
+
+@pytest.mark.parametrize("parent_kind", ["file", "junction"])
+def test_initialize_rejects_linked_or_non_directory_campaign_parent(
+    tmp_path: Path, parent_kind: str
+) -> None:
+    completed, _new_root, _peer_root, sentinel = _run_initialize_phase(
+        tmp_path, parent_kind=parent_kind
+    )
+
+    assert completed.returncode != 0
+    assert "campaign parent is not a non-link directory" in completed.stderr
+    assert sentinel.read_bytes() == b"immutable-prior"
+
+
+def test_initialize_keeps_exact_campaign_child_no_clobber(tmp_path: Path) -> None:
+    completed, _new_root, peer_root, sentinel = _run_initialize_phase(
+        tmp_path, child_exists=True
+    )
+
+    assert completed.returncode != 0
+    assert sentinel.read_bytes() == b"immutable-child"
+    assert not peer_root.exists()
 
 
 def test_build_arguments_have_exact_independent_labels() -> None:
@@ -1292,6 +1875,10 @@ def test_campaign_orders_both_phases_and_never_retries() -> None:
 $script:Events = [Collections.Generic.List[string]]::new()
 function Resolve-A11Worktree {{ [void]$script:Events.Add('preflight'); return @{{}} }}
 function Test-A11ReadOnlyPreflight {{ return @{{}} }}
+function Test-A11PhaseDestinationsAbsent {{
+    [void]$script:Events.Add('destinations')
+    return $true
+}}
 function Confirm-A11ProtectedGit {{ return $true }}
 function New-A11PhaseIdentity {{
     param($Phase)
@@ -1333,10 +1920,11 @@ $script:Events | ConvertTo-Json -Compress
 
     assert completed.returncode == 0, completed.stderr
     events = json.loads(completed.stdout)
-    assert events[:5] == [
+    assert events[:6] == [
         "preflight",
         "identity:calibration",
         "identity:validation",
+        "destinations",
         "init:calibration",
         "build:calibration",
     ]
@@ -1373,6 +1961,34 @@ $script:Events | ConvertTo-Json -Compress
     assert events[-1] == "close:validation"
 
 
+def test_campaign_destination_failure_precedes_initialization_and_writes_nothing(
+    tmp_path: Path,
+) -> None:
+    marker = tmp_path / "initialize-called"
+    body = f"""
+function Resolve-A11Worktree {{ return @{{}} }}
+function Test-A11ReadOnlyPreflight {{ return @{{}} }}
+function New-A11PhaseIdentity {{
+    param($Phase)
+    return [pscustomobject]@{{ phase=$Phase; current_stage='preregistered' }}
+}}
+function Test-A11PhaseDestinationsAbsent {{ throw 'injected:destination' }}
+function Confirm-A11ProtectedGit {{ return $true }}
+function Initialize-A11Phase {{
+    [IO.File]::WriteAllText({_ps(str(marker))}, 'called')
+    throw 'injected:initialize'
+}}
+function Close-A11Phase {{}}
+Invoke-A11Campaign {_ps(_SOURCE)} {_ps(_SPEC)} {_ps(_PLAN)} `
+    {_ps(_BRANCH)} {_ps(_OWNER)} | Out-Null
+"""
+    completed = _invoke_functions(("Invoke-A11Campaign",), body)
+
+    assert completed.returncode != 0
+    assert "injected:destination" in completed.stderr
+    assert not marker.exists()
+
+
 def test_campaign_surfaces_closure_write_failure_without_retry(
     tmp_path: Path,
 ) -> None:
@@ -1384,6 +2000,7 @@ $script:ArtifactInventoryCalls = 0
 $script:ImageInventoryCalls = 0
 function Resolve-A11Worktree {{ return @{{}} }}
 function Test-A11ReadOnlyPreflight {{}}
+function Test-A11PhaseDestinationsAbsent {{ return $true }}
 function Confirm-A11ProtectedGit {{ return $true }}
 function New-A11PhaseIdentity {{
     param($Phase)
@@ -1466,6 +2083,7 @@ def test_campaign_suppresses_cache_evidence_and_emits_one_result() -> None:
     body = f"""
 function Resolve-A11Worktree {{ return @{{}} }}
 function Test-A11ReadOnlyPreflight {{}}
+function Test-A11PhaseDestinationsAbsent {{ return $true }}
 function Confirm-A11ProtectedGit {{ return $true }}
 function New-A11PhaseIdentity {{
     param($Phase)
@@ -1542,6 +2160,7 @@ def test_calibration_failure_prohibits_validation_and_second_invocation() -> Non
 $script:Events = [Collections.Generic.List[string]]::new()
 function Resolve-A11Worktree {{ [void]$script:Events.Add('preflight'); return @{{}} }}
 function Test-A11ReadOnlyPreflight {{ return @{{}} }}
+function Test-A11PhaseDestinationsAbsent {{ return $true }}
 function Confirm-A11ProtectedGit {{ return $true }}
 function New-A11PhaseIdentity {{ param($Phase); return [pscustomobject]@{{
     phase=$Phase; source_commit={_ps(_SOURCE)}; specification_commit={_ps(_SPEC)}
@@ -1604,6 +2223,7 @@ function Step {{
 }}
 function Resolve-A11Worktree {{ return @{{}} }}
 function Test-A11ReadOnlyPreflight {{ return @{{}} }}
+function Test-A11PhaseDestinationsAbsent {{ return $true }}
 function Confirm-A11ProtectedGit {{ return $true }}
 function New-A11PhaseIdentity {{ param($Phase); return [pscustomobject]@{{
     phase=$Phase; run_id="run-$Phase"; source_commit={_ps(_SOURCE)}
