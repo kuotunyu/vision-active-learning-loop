@@ -41,6 +41,63 @@ function Get-A11FileRecord {
     }
 }
 
+function Get-A11VerifiedStageReceipt {
+    param(
+        [Parameter(Mandatory = $true)][object]$Identity,
+        [Parameter(Mandatory = $true)][string]$Path
+    )
+    $Root = [IO.Path]::GetFullPath([string]$Identity.campaign_root)
+    $FullPath = [IO.Path]::GetFullPath($Path)
+    $Relative = [IO.Path]::GetRelativePath($Root, $FullPath)
+    if (
+        [IO.Path]::IsPathRooted($Relative) -or $Relative -ceq '..' -or
+        $Relative.StartsWith('..\', [StringComparison]::Ordinal) -or
+        $Relative.StartsWith('../', [StringComparison]::Ordinal)
+    ) { throw "A11 stage receipt escapes the phase root: $Path" }
+    $Separators = [char[]]@(
+        [IO.Path]::DirectorySeparatorChar,
+        [IO.Path]::AltDirectorySeparatorChar
+    )
+    $Segments = @($Relative.Split($Separators, [StringSplitOptions]::RemoveEmptyEntries))
+    if ($Segments.Count -eq 0) { throw "A11 stage receipt path is invalid: $Path" }
+    $Cursor = $Root
+    for ($Index = -1; $Index -lt $Segments.Count; $Index++) {
+        if ($Index -ge 0) { $Cursor = [IO.Path]::Combine($Cursor, $Segments[$Index]) }
+        $Item = Get-Item -LiteralPath $Cursor -Force -ErrorAction Stop
+        if ($Item.Attributes -band [IO.FileAttributes]::ReparsePoint) {
+            throw "A11 stage receipt path contains a link: $Path"
+        }
+        if ($Index -lt ($Segments.Count - 1) -and -not $Item.PSIsContainer) {
+            throw "A11 stage receipt ancestor is not a directory: $Path"
+        }
+        if ($Index -eq ($Segments.Count - 1) -and $Item.PSIsContainer) {
+            throw "A11 stage receipt is not a regular file: $Path"
+        }
+    }
+    $Document = Get-Content -Raw -LiteralPath $FullPath | ConvertFrom-Json
+    if (
+        [string]$Document.metadata.run_id -cne [string]$Identity.run_id -or
+        [string]$Document.normative.status -cne 'PASS' -or
+        @($Document.normative.errors).Count -ne 0
+    ) { throw "A11 stage receipt contract failed: $Path" }
+    return Get-A11FileRecord -Path $FullPath
+}
+
+function Assert-A11FileRecordUnchanged {
+    param(
+        [Parameter(Mandatory = $true)][object]$Identity,
+        [Parameter(Mandatory = $true)][object]$Expected,
+        [Parameter(Mandatory = $true)][string]$Path
+    )
+    $Observed = Get-A11VerifiedStageReceipt -Identity $Identity -Path $Path
+    if (
+        [string]$Observed.path -cne [string]$Expected.path -or
+        [long]$Observed.size -ne [long]$Expected.size -or
+        [string]$Observed.sha256 -cne [string]$Expected.sha256
+    ) { throw "A11 verified receipt changed before use: $Path" }
+    return $true
+}
+
 function Get-A11JsonSha256 {
     param(
         [Parameter(Mandatory = $true)][AllowEmptyCollection()][object[]]$Value,
@@ -149,7 +206,8 @@ function Write-A11ProcessAudit {
         [Parameter(Mandatory = $true)][object]$Identity,
         [Parameter(Mandatory = $true)][string]$Name,
         [Parameter(Mandatory = $true)][string[]]$Argv,
-        [Parameter(Mandatory = $true)][object]$Result
+        [Parameter(Mandatory = $true)][object]$Result,
+        [AllowNull()][object]$ReceiptRecord = $null
     )
     $AuditRoot = [IO.Path]::Combine($Identity.campaign_root, 'audit')
     $StdoutPath = [IO.Path]::Combine($AuditRoot, "$Name.stdout.log")
@@ -164,6 +222,7 @@ function Write-A11ProcessAudit {
         stdout = Get-A11FileRecord -Path $StdoutPath
         stderr = Get-A11FileRecord -Path $StderrPath
     }
+    if ($null -ne $ReceiptRecord) { $Document['receipt'] = $ReceiptRecord }
     $Path = [IO.Path]::Combine($AuditRoot, "$Name.json")
     Write-A11NewText -Path $Path -Text (($Document | ConvertTo-Json -Depth 10 -Compress) + "`n")
     return Get-A11FileRecord -Path $Path
@@ -475,6 +534,7 @@ function New-A11PhaseIdentity {
         owner_authorization_id = $OwnerAuthorizationId
         replica_records = [Collections.Generic.List[object]]::new()
         audit_records = [ordered]@{}
+        foundation_receipts = [ordered]@{}
         cache_inventory_sha256 = $null
         gpu_driver = $null
         lease_acquired = $false
@@ -896,7 +956,9 @@ function Invoke-A11DockerStage {
     param(
         [Parameter(Mandatory = $true)][object]$Identity,
         [Parameter(Mandatory = $true)][string]$Name,
-        [Parameter(Mandatory = $true)][string[]]$Command
+        [Parameter(Mandatory = $true)][string[]]$Command,
+        [Parameter(Mandatory = $true)][AllowEmptyString()][string]$ExpectedStdout,
+        [Parameter(Mandatory = $true)][string]$ReceiptPath
     )
     $Worktree = [IO.Path]::GetFullPath([IO.Path]::Combine($PSScriptRoot, '..'))
     $ContainerRoot = "/a11/$($Identity.phase)"
@@ -913,28 +975,54 @@ function Invoke-A11DockerStage {
         [string]$Identity.image_id
     ) + $Command
     $Result = Invoke-A11Native -FilePath 'docker' -ArgumentList $Arguments
-    $Identity.audit_records[$Name] = Write-A11ProcessAudit $Identity $Name `
-        (@('docker') + $Arguments) $Result
-    if (
-        $Result.ExitCode -ne 0 -or $Result.Stdout -cne "PASS`n" -or
-        -not [string]::IsNullOrEmpty($Result.Stderr)
-    ) { throw "A11 stage failed: $Name" }
+    $StreamsSucceeded = (
+        $Result.ExitCode -eq 0 -and $Result.Stdout -ceq $ExpectedStdout -and
+        $Result.Stderr -ceq ''
+    )
+    $ReceiptRecord = $null
+    $ReceiptFailure = $null
+    if ($StreamsSucceeded) {
+        try {
+            $ReceiptRecord = Get-A11VerifiedStageReceipt -Identity $Identity -Path $ReceiptPath
+        } catch {
+            $ReceiptFailure = $_
+        }
+    }
+    $Identity.audit_records[$Name] = Write-A11ProcessAudit `
+        -Identity $Identity -Name $Name -Argv (@('docker') + $Arguments) `
+        -Result $Result -ReceiptRecord $ReceiptRecord
+    if (-not $StreamsSucceeded) { throw "A11 stage failed: $Name" }
+    if ($null -ne $ReceiptFailure) { throw $ReceiptFailure.Exception }
+    return $ReceiptRecord
 }
 
 function Invoke-A11Foundation {
     param([Parameter(Mandatory = $true)][object]$Identity)
-    Invoke-A11DockerStage $Identity '30-environment' @(
+    $ReceiptRoot = [IO.Path]::Combine($Identity.campaign_root, 'wave0', 'receipts')
+    $EnvironmentPath = [IO.Path]::Combine($ReceiptRoot, 'environment.json')
+    $AssetsPath = [IO.Path]::Combine($ReceiptRoot, 'model-assets.json')
+    $ModelContractPath = [IO.Path]::Combine($ReceiptRoot, 'model-contract.json')
+    $EnvironmentRecord = Invoke-A11DockerStage `
+        -Identity $Identity -Name '30-environment' -Command @(
         'environment', 'check', '--config', '/workspace/configs/environment/wave0.yaml',
         '--run-id', $Identity.run_id,
         '--output', "/a11/$($Identity.phase)/wave0/receipts/environment.json"
-    )
-    Invoke-A11DockerStage $Identity '31-model-assets' @(
+    ) -ExpectedStdout '' -ReceiptPath $EnvironmentPath
+    $Identity.foundation_receipts['environment'] = $EnvironmentRecord
+    $AssetsRecord = Invoke-A11DockerStage `
+        -Identity $Identity -Name '31-model-assets' -Command @(
         'assets', 'verify', '--config', '/workspace/configs/models/pinned-models.yaml',
         '--cache-root', "/a11/$($Identity.phase)/wave0/model_cache",
         '--output', "/a11/$($Identity.phase)/wave0/receipts/model-assets.json",
         '--run-id', $Identity.run_id
-    )
-    Invoke-A11DockerStage $Identity '32-model-contract' @(
+    ) -ExpectedStdout "PASS`n" -ReceiptPath $AssetsPath
+    $Identity.foundation_receipts['model_assets'] = $AssetsRecord
+    Assert-A11FileRecordUnchanged -Identity $Identity -Expected $EnvironmentRecord `
+        -Path $EnvironmentPath | Out-Null
+    Assert-A11FileRecordUnchanged -Identity $Identity -Expected $AssetsRecord `
+        -Path $AssetsPath | Out-Null
+    $ModelContractRecord = Invoke-A11DockerStage `
+        -Identity $Identity -Name '32-model-contract' -Command @(
         'probe', 'model-contract',
         '--assets', "/a11/$($Identity.phase)/wave0/receipts/model-assets.json",
         '--environment', "/a11/$($Identity.phase)/wave0/receipts/environment.json",
@@ -942,7 +1030,8 @@ function Invoke-A11Foundation {
         '/workspace/fixtures/synthetic/wave0/fixture-manifest.json', '--run-id',
         $Identity.run_id,
         '--output', "/a11/$($Identity.phase)/wave0/receipts/model-contract.json"
-    )
+    ) -ExpectedStdout "PASS`n" -ReceiptPath $ModelContractPath
+    $Identity.foundation_receipts['model_contract'] = $ModelContractRecord
 }
 
 function Invoke-A11Replica {
@@ -958,6 +1047,9 @@ function Invoke-A11Replica {
         [IO.File]::Exists($ReceiptPath) -or [IO.Directory]::Exists($ReceiptPath) -or
         [IO.File]::Exists($CheckpointRoot) -or [IO.Directory]::Exists($CheckpointRoot)
     ) { throw "A11 replica destinations must be absent: $ReplicaId" }
+    Assert-A11FileRecordUnchanged `
+        -Identity $Identity -Expected $Identity.foundation_receipts.model_contract `
+        -Path $ModelContract | Out-Null
     $Arguments = New-A11ReplicaArguments $Identity $Worktree $ReplicaId $ModelContract $ReceiptPath $CheckpointRoot
     $Result = Invoke-A11Native -FilePath 'docker' -ArgumentList $Arguments
     $AuditRoot = [IO.Path]::Combine($Identity.campaign_root, 'audit')
@@ -1249,15 +1341,6 @@ function Close-A11Phase {
         $Historical.sha256 -ceq 'e1ff7a7d7ede1ae479f9525d35cedece14949d64991c9acf6cc6b11bcf1fba95' -and
         $Images.sha256 -ceq '9a41d2c8e277f230400187874547b33ea0d9a3376707b46da4f267ee0cb3231f'
     )
-    $FinalHistoryPath = [IO.Path]::Combine($AuditRoot, '79-historical-preservation-final.json')
-    Write-A11NewText -Path $FinalHistoryPath -Text (([ordered]@{
-        schema_version = 1
-        historical_file_count = @($Historical.records).Count
-        historical_image_count = @($Images.records).Count
-        historical_file_inventory_sha256 = $Historical.sha256
-        historical_image_inventory_sha256 = $Images.sha256
-        preserved = $Preserved
-    } | ConvertTo-Json -Compress) + "`n")
     if (-not $Preserved) {
         $Terminal = 'WAVE0_A11_NORMATIVE_FAIL / WAVE1_FORBIDDEN'
         $ErrorList += 'A11 final historical preservation rehash failed'
@@ -1310,6 +1393,15 @@ function Close-A11Phase {
         Write-A11NewText -Path $DiagnosticPath -Text (($Diagnostic | ConvertTo-Json -Depth 8 -Compress) + "`n")
         $DiagnosticRecord = Get-A11FileRecord -Path $DiagnosticPath
     }
+    $FinalHistoryPath = [IO.Path]::Combine($AuditRoot, '79-historical-preservation-final.json')
+    Write-A11NewText -Path $FinalHistoryPath -Text (([ordered]@{
+        schema_version = 1
+        historical_file_count = @($Historical.records).Count
+        historical_image_count = @($Images.records).Count
+        historical_file_inventory_sha256 = $Historical.sha256
+        historical_image_inventory_sha256 = $Images.sha256
+        preserved = $Preserved
+    } | ConvertTo-Json -Compress) + "`n")
     $ResultPath = [IO.Path]::Combine($AuditRoot, '80-campaign-result.json')
     $Result = [ordered]@{
         schema_version = 1
@@ -1379,6 +1471,22 @@ function Test-A11CrossPhaseIdentity {
         }
     }
     return [pscustomobject]@{ valid = $true }
+}
+
+function Get-A11SingleCampaignResult {
+    param(
+        [Parameter(Mandatory = $true)]
+        [AllowEmptyCollection()]
+        [object[]]$Values
+    )
+    if ($Values.Count -ne 1) {
+        throw "A11 campaign result cardinality mismatch: expected 1, observed $($Values.Count)"
+    }
+    $Result = $Values[0]
+    if ($null -eq $Result -or $null -eq $Result.PSObject.Properties['terminal']) {
+        throw 'A11 campaign result terminal is missing'
+    }
+    return $Result
 }
 
 function Invoke-A11Campaign {
@@ -1461,11 +1569,11 @@ function Invoke-A11Campaign {
             $Identity.current_stage = 'protected-git'
             Confirm-A11ProtectedGit $SourceCommit $SpecCommit $PlanCommit $Branch | Out-Null
             $Identity.current_stage = 'initialize'
-            Initialize-A11Phase $Identity $Peer
+            Initialize-A11Phase $Identity $Peer | Out-Null
             $Identity.current_stage = 'build'
-            Invoke-A11Build $Identity
+            Invoke-A11Build $Identity | Out-Null
             $Identity.current_stage = 'cache-preflight'
-            Invoke-A11CachePreflight $Identity
+            Invoke-A11CachePreflight $Identity | Out-Null
             if ($Identity.phase -ceq 'validation') {
                 $Identity.current_stage = 'calibration-precheck'
                 Confirm-A11CalibrationReceipt $Calibration $AuthorizationId | Out-Null
@@ -1478,11 +1586,11 @@ function Invoke-A11Campaign {
             $Identity.current_stage = 'lease-acquire'
             New-A11Lease $Identity 'GPU-7639cc81-2a55-164e-e5be-c5cd71752a63' $Identity.lease_lock_path | Out-Null
             $Identity.current_stage = 'foundation'
-            Invoke-A11Foundation $Identity
+            Invoke-A11Foundation $Identity | Out-Null
             for ($Index = 0; $Index -lt 12; $Index++) {
                 $ReplicaId = '{0}-{1:d2}' -f $Identity.phase, $Index
                 $Identity.current_stage = "replica:$ReplicaId"
-                Invoke-A11Replica $Identity $ReplicaId
+                Invoke-A11Replica $Identity $ReplicaId | Out-Null
             }
             $Identity.current_stage = 'protected-git-post-replicas'
             Confirm-A11ProtectedGit $SourceCommit $SpecCommit $PlanCommit $Branch | Out-Null
@@ -1497,6 +1605,7 @@ function Invoke-A11Campaign {
                     $Identity.current_stage = 'lease-release'
                     Release-A11Lease $Identity | Out-Null
                 }
+                $Identity.current_stage = 'closure'
                 Close-A11Phase $Identity 'WAVE0_A11_NORMATIVE_FAIL / WAVE1_FORBIDDEN' 'calibration terminal mismatch' | Out-Null
                 return [pscustomobject]@{ terminal = 'WAVE0_A11_NORMATIVE_FAIL / WAVE1_FORBIDDEN' }
             }
@@ -1521,7 +1630,22 @@ function Invoke-A11Campaign {
                     try { Release-A11Lease $Identity | Out-Null } catch { $Failure += "; lease release failed: $($_.Exception.Message)" }
                 }
             }
-            try { Close-A11Phase $Identity 'WAVE0_A11_NORMATIVE_FAIL / WAVE1_FORBIDDEN' $Failure | Out-Null } catch { }
+            if ($Identity.current_stage -ceq 'closure') {
+                return [pscustomobject]@{
+                    terminal = 'WAVE0_A11_NORMATIVE_FAIL / WAVE1_FORBIDDEN'
+                    error = 'A11 phase closure publication failed'
+                    closure_error = $Failure
+                }
+            }
+            try {
+                Close-A11Phase $Identity 'WAVE0_A11_NORMATIVE_FAIL / WAVE1_FORBIDDEN' $Failure | Out-Null
+            } catch {
+                return [pscustomobject]@{
+                    terminal = 'WAVE0_A11_NORMATIVE_FAIL / WAVE1_FORBIDDEN'
+                    error = $Failure
+                    closure_error = $_.Exception.Message
+                }
+            }
             return [pscustomobject]@{ terminal = 'WAVE0_A11_NORMATIVE_FAIL / WAVE1_FORBIDDEN'; error = $Failure }
         }
     }
@@ -1529,9 +1653,19 @@ function Invoke-A11Campaign {
 }
 
 try {
-    $A11Result = Invoke-A11Campaign $ExpectedSourceCommit $ExpectedSpecCommit `
-        $ExpectedPlanCommit $ExpectedBranch $OwnerAuthorizationId
+    $A11Values = @(Invoke-A11Campaign $ExpectedSourceCommit $ExpectedSpecCommit `
+        $ExpectedPlanCommit $ExpectedBranch $OwnerAuthorizationId)
+    $A11Result = Get-A11SingleCampaignResult -Values $A11Values
     $A11Result | ConvertTo-Json -Depth 8 -Compress
+    $ClosureErrorProperty = $A11Result.PSObject.Properties['closure_error']
+    if (
+        $null -ne $ClosureErrorProperty -and
+        -not [string]::IsNullOrWhiteSpace([string]$A11Result.closure_error)
+    ) {
+        [Console]::Error.WriteLine(
+            "A11 closure publication failed: $($A11Result.closure_error)"
+        )
+    }
     if ([string]$A11Result.terminal -ceq 'WAVE0_A11_PASS / WAVE1_NOT_STARTED / OWNER_WAVE1_REVIEW_REQUIRED') {
         exit 0
     }

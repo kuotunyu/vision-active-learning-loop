@@ -65,6 +65,217 @@ foreach ($FunctionName in @({requested})) {{
     )
 
 
+def _file_record(path: Path) -> dict[str, object]:
+    content = path.read_bytes()
+    return {
+        "path": path.resolve().as_posix(),
+        "size": len(content),
+        "sha256": hashlib.sha256(content).hexdigest(),
+    }
+
+
+def _stage_receipt(
+    run_id: str, *, status: str = "PASS", errors: list[str] | None = None
+) -> dict[str, object]:
+    return {
+        "schema_version": 1,
+        "metadata": {"run_id": run_id},
+        "normative": {
+            "status": status,
+            "errors": [] if errors is None else errors,
+        },
+    }
+
+
+def _run_foundation_stage(
+    tmp_path: Path,
+    *,
+    name: str,
+    stdout: str,
+    expected_stdout: str,
+    receipt_name: str,
+    receipt: dict[str, object] | None,
+) -> subprocess.CompletedProcess[str]:
+    campaign = tmp_path / "campaign"
+    audit = campaign / "audit"
+    receipts = campaign / "wave0" / "receipts"
+    audit.mkdir(parents=True)
+    receipts.mkdir(parents=True)
+    receipt_path = receipts / receipt_name
+    if receipt is not None:
+        receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
+    body = f"""
+$Identity = [pscustomobject]@{{
+    phase='calibration'; campaign_root={_ps(str(campaign))}
+    run_id='wave0-a11-calibration-test'; image_id='sha256:' + ('a' * 64)
+    audit_records=[ordered]@{{}}
+}}
+function Invoke-A11Native {{
+    return [pscustomobject]@{{ ExitCode=0; Stdout={_ps(stdout)}; Stderr='' }}
+}}
+Invoke-A11DockerStage -Identity $Identity -Name {_ps(name)} `
+    -Command @('probe') -ExpectedStdout {_ps(expected_stdout)} `
+    -ReceiptPath {_ps(str(receipt_path))} | ConvertTo-Json -Depth 8 -Compress
+"""
+    return _invoke_functions(
+        (
+            "Write-A11NewText",
+            "Get-A11FileRecord",
+            "Write-A11ProcessAudit",
+            "Get-A11VerifiedStageReceipt",
+            "Invoke-A11DockerStage",
+        ),
+        body,
+    )
+
+
+def _run_untrusted_receipt_case(
+    tmp_path: Path,
+    *,
+    defect: str,
+    receipt: dict[str, object] | None,
+) -> subprocess.CompletedProcess[str]:
+    campaign = tmp_path / "campaign"
+    audit = campaign / "audit"
+    receipt_root = campaign / "wave0" / "receipts"
+    outside = tmp_path / "outside"
+    audit.mkdir(parents=True)
+    receipt_root.mkdir(parents=True)
+    outside.mkdir()
+    junction_setup = ""
+    if defect == "outside":
+        receipt_path = outside / "environment.json"
+        write_path = receipt_path
+    elif defect == "junction":
+        target = outside / "linked"
+        target.mkdir()
+        receipt_path = campaign / "wave0" / "linked" / "environment.json"
+        write_path = target / "environment.json"
+        junction_setup = (
+            f"New-Item -ItemType Junction -Path {_ps(str(receipt_path.parent))} "
+            f"-Target {_ps(str(target))} | Out-Null"
+        )
+    else:
+        receipt_path = receipt_root / "environment.json"
+        write_path = receipt_path
+    if receipt is not None:
+        write_path.write_text(json.dumps(receipt), encoding="utf-8")
+    body = f"""
+{junction_setup}
+$Identity = [pscustomobject]@{{
+    phase='calibration'; campaign_root={_ps(str(campaign))}
+    run_id='wave0-a11-calibration-test'; image_id='sha256:' + ('a' * 64)
+    audit_records=[ordered]@{{}}
+}}
+function Invoke-A11Native {{
+    return [pscustomobject]@{{ ExitCode=0; Stdout=''; Stderr='' }}
+}}
+Invoke-A11DockerStage -Identity $Identity -Name '30-environment' `
+    -Command @('environment','check') -ExpectedStdout '' `
+    -ReceiptPath {_ps(str(receipt_path))} | Out-Null
+"""
+    return _invoke_functions(
+        (
+            "Write-A11NewText",
+            "Get-A11FileRecord",
+            "Write-A11ProcessAudit",
+            "Get-A11VerifiedStageReceipt",
+            "Invoke-A11DockerStage",
+        ),
+        body,
+    )
+
+
+def _run_cache_stream_contract(
+    tmp_path: Path, stdout: str
+) -> subprocess.CompletedProcess[str]:
+    campaign = tmp_path / "campaign"
+    audit = campaign / "audit"
+    cache = campaign / "wave0" / "model_cache"
+    audit.mkdir(parents=True)
+    cache.mkdir(parents=True)
+    (cache / "config.json").write_text("cache", encoding="utf-8")
+    body = f"""
+$Identity = [pscustomobject]@{{
+    phase='calibration'; campaign_root={_ps(str(campaign))}
+    cache_root={_ps(str(cache))}; run_id='wave0-a11-calibration-test'
+    image_id='sha256:' + ('a' * 64); audit_records=[ordered]@{{}}
+    cache_inventory_sha256=$null
+}}
+function Invoke-A11Native {{
+    return [pscustomobject]@{{ ExitCode=0; Stdout={_ps(stdout)}; Stderr='' }}
+}}
+Invoke-A11CachePreflight -Identity $Identity -Worktree 'D:/repo' |
+    ConvertTo-Json -Depth 8 -Compress
+"""
+    return _invoke_functions(
+        (
+            "Write-A11NewText",
+            "Get-A11FileRecord",
+            "Get-A11JsonSha256",
+            "New-A11CachePreflightArguments",
+            "Get-A11CacheInventorySha256",
+            "Invoke-A11CachePreflight",
+        ),
+        body,
+    )
+
+
+def _run_replica_stream_contract(
+    tmp_path: Path, stdout: str
+) -> subprocess.CompletedProcess[str]:
+    campaign = tmp_path / "campaign"
+    audit = campaign / "audit"
+    receipts = campaign / "wave0" / "receipts"
+    cache = campaign / "wave0" / "model_cache"
+    audit.mkdir(parents=True)
+    receipts.mkdir(parents=True)
+    cache.mkdir(parents=True)
+    model_contract = receipts / "model-contract.json"
+    model_contract.write_text(
+        json.dumps(_stage_receipt("wave0-a11-calibration-test")),
+        encoding="utf-8",
+    )
+    model_record = _file_record(model_contract)
+    replica_receipt = receipts / "calibration-00.json"
+    checkpoint = campaign / "wave0" / "checkpoints" / "calibration-00" / "step.pt"
+    cid = audit / "calibration-00.cid"
+    body = f"""
+$Identity = [pscustomobject]@{{
+    phase='calibration'; campaign_root={_ps(str(campaign))}
+    cache_root={_ps(str(cache))}; run_id='wave0-a11-calibration-test'
+    image_id='sha256:' + ('a' * 64)
+    replica_records=[Collections.Generic.List[object]]::new()
+    foundation_receipts=[ordered]@{{
+        model_contract=({_ps(json.dumps(model_record))} | ConvertFrom-Json)
+    }}
+}}
+function Invoke-A11Native {{
+    [IO.Directory]::CreateDirectory({_ps(str(checkpoint.parent))}) | Out-Null
+    [IO.File]::WriteAllText({_ps(str(checkpoint))}, 'checkpoint')
+    [IO.File]::WriteAllText(
+        {_ps(str(replica_receipt))},
+        '{{"metadata":{{"timestamp":"2026-08-28T00:00:00Z"}}}}'
+    )
+    [IO.File]::WriteAllText({_ps(str(cid))}, ('a' * 64))
+    return [pscustomobject]@{{ ExitCode=0; Stdout={_ps(stdout)}; Stderr='' }}
+}}
+Invoke-A11Replica -Identity $Identity -ReplicaId 'calibration-00'
+"""
+    return _invoke_functions(
+        (
+            "Write-A11NewText",
+            "Get-A11FileRecord",
+            "Get-A11VerifiedStageReceipt",
+            "Assert-A11FileRecordUnchanged",
+            "New-A11ReplicaValArguments",
+            "New-A11ReplicaArguments",
+            "Invoke-A11Replica",
+        ),
+        body,
+    )
+
+
 def _preflight() -> dict[str, object]:
     return {
         "worktree_path": "D:/repo/.worktrees/a11",
@@ -133,6 +344,8 @@ def test_launcher_has_exact_parameters_and_required_functions() -> None:
         "New-A11PhaseIdentity",
         "New-A11BuildArguments",
         "Invoke-A11CachePreflight",
+        "Get-A11VerifiedStageReceipt",
+        "Assert-A11FileRecordUnchanged",
         "New-A11ReplicaValArguments",
         "New-A11Lease",
         "Invoke-A11Replica",
@@ -143,6 +356,7 @@ def test_launcher_has_exact_parameters_and_required_functions() -> None:
         "Confirm-A11Release",
         "Close-A11Phase",
         "Test-A11CrossPhaseIdentity",
+        "Get-A11SingleCampaignResult",
         "Invoke-A11Campaign",
     ):
         assert source.count(f"function {name}") == 1
@@ -173,6 +387,279 @@ try {{
     assert completed.returncode == 0, completed.stderr
     assert completed.stdout.strip() == "0"
     assert output.read_bytes() == b""
+
+
+@pytest.mark.parametrize(
+    ("name", "stdout", "receipt_name"),
+    [
+        ("30-environment", "", "environment.json"),
+        ("31-model-assets", "PASS\n", "model-assets.json"),
+        ("32-model-contract", "PASS\n", "model-contract.json"),
+    ],
+)
+def test_foundation_stages_enforce_registered_stream_and_receipt_contracts(
+    tmp_path: Path, name: str, stdout: str, receipt_name: str
+) -> None:
+    completed = _run_foundation_stage(
+        tmp_path,
+        name=name,
+        stdout=stdout,
+        expected_stdout=stdout,
+        receipt_name=receipt_name,
+        receipt=_stage_receipt("wave0-a11-calibration-test"),
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    receipt_path = tmp_path / "campaign" / "wave0" / "receipts" / receipt_name
+    expected_record = _file_record(receipt_path)
+    assert json.loads(completed.stdout) == expected_record
+    audit_path = tmp_path / "campaign" / "audit" / f"{name}.json"
+    audit = json.loads(audit_path.read_text(encoding="utf-8"))
+    assert audit["receipt"] == expected_record
+
+
+def test_process_audit_omits_receipt_when_no_receipt_is_bound(
+    tmp_path: Path,
+) -> None:
+    audit = tmp_path / "audit"
+    audit.mkdir()
+    body = f"""
+$Identity = [pscustomobject]@{{
+    phase='calibration'; campaign_root={_ps(str(tmp_path))}
+}}
+$Result = [pscustomobject]@{{ ExitCode=0; Stdout=''; Stderr='' }}
+Write-A11ProcessAudit -Identity $Identity -Name '10-build' `
+    -Argv @('docker','build') -Result $Result | Out-Null
+Get-Content -Raw -LiteralPath {_ps(str(audit / '10-build.json'))}
+"""
+    completed = _invoke_functions(
+        ("Write-A11NewText", "Get-A11FileRecord", "Write-A11ProcessAudit"),
+        body,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    document = json.loads(completed.stdout)
+    assert "receipt" not in document
+
+
+def test_environment_rejects_noncanonical_pass_stdout(tmp_path: Path) -> None:
+    completed = _run_foundation_stage(
+        tmp_path,
+        name="30-environment",
+        stdout="PASS\n",
+        expected_stdout="",
+        receipt_name="environment.json",
+        receipt=_stage_receipt("wave0-a11-calibration-test"),
+    )
+
+    assert completed.returncode != 0
+    assert "A11 stage failed: 30-environment" in completed.stderr
+
+
+@pytest.mark.parametrize(
+    "defect", ["missing", "junction", "outside", "wrong-run", "fail", "errors"]
+)
+def test_foundation_stage_rejects_untrusted_receipt(
+    tmp_path: Path, defect: str
+) -> None:
+    receipt = {
+        "missing": None,
+        "wrong-run": _stage_receipt("wrong-run"),
+        "fail": _stage_receipt("wave0-a11-calibration-test", status="FAIL"),
+        "errors": _stage_receipt("wave0-a11-calibration-test", errors=["injected"]),
+    }.get(defect, _stage_receipt("wave0-a11-calibration-test"))
+
+    completed = _run_untrusted_receipt_case(tmp_path, defect=defect, receipt=receipt)
+
+    assert completed.returncode != 0
+    assert completed.stderr
+
+
+def test_foundation_rehashes_environment_and_assets_before_model_contract(
+    tmp_path: Path,
+) -> None:
+    campaign = tmp_path / "campaign"
+    audit = campaign / "audit"
+    receipts = campaign / "wave0" / "receipts"
+    audit.mkdir(parents=True)
+    receipts.mkdir(parents=True)
+    environment = receipts / "environment.json"
+    assets = receipts / "model-assets.json"
+    model_contract = receipts / "model-contract.json"
+    for path in (environment, assets, model_contract):
+        path.write_text(
+            json.dumps(_stage_receipt("wave0-a11-calibration-test")),
+            encoding="utf-8",
+        )
+    body = f"""
+$script:Calls = 0
+$Identity = [pscustomobject]@{{
+    phase='calibration'; campaign_root={_ps(str(campaign))}
+    run_id='wave0-a11-calibration-test'; image_id='sha256:' + ('a' * 64)
+    audit_records=[ordered]@{{}}; foundation_receipts=[ordered]@{{}}
+}}
+function Invoke-A11Native {{
+    $script:Calls++
+    if ($script:Calls -eq 2) {{
+        [IO.File]::AppendAllText({_ps(str(environment))}, ' ')
+    }}
+    $Stdout = if ($script:Calls -eq 1) {{ '' }} else {{ "PASS`n" }}
+    return [pscustomobject]@{{ ExitCode=0; Stdout=$Stdout; Stderr='' }}
+}}
+try {{
+    Invoke-A11Foundation -Identity $Identity
+    throw 'foundation unexpectedly succeeded'
+}} catch {{
+    [ordered]@{{ calls=$script:Calls; error=$_.Exception.Message }} |
+        ConvertTo-Json -Compress
+}}
+"""
+    completed = _invoke_functions(
+        (
+            "Write-A11NewText",
+            "Get-A11FileRecord",
+            "Get-A11VerifiedStageReceipt",
+            "Assert-A11FileRecordUnchanged",
+            "Write-A11ProcessAudit",
+            "Invoke-A11DockerStage",
+            "Invoke-A11Foundation",
+        ),
+        body,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    result = json.loads(completed.stdout)
+    assert result["calls"] == 2
+    assert "changed" in result["error"]
+
+
+def test_replica_rehashes_model_contract_before_native_launch(
+    tmp_path: Path,
+) -> None:
+    campaign = tmp_path / "campaign"
+    audit = campaign / "audit"
+    receipts = campaign / "wave0" / "receipts"
+    audit.mkdir(parents=True)
+    receipts.mkdir(parents=True)
+    model_contract = receipts / "model-contract.json"
+    original = _stage_receipt("wave0-a11-calibration-test")
+    model_contract.write_text(json.dumps(original), encoding="utf-8")
+    expected = _file_record(model_contract)
+    model_contract.write_text(
+        json.dumps({**original, "mutated": True}), encoding="utf-8"
+    )
+    body = f"""
+$script:Calls = 0
+$Identity = [pscustomobject]@{{
+    phase='calibration'; campaign_root={_ps(str(campaign))}
+    cache_root={_ps(str(campaign / 'wave0' / 'model_cache'))}
+    run_id='wave0-a11-calibration-test'; image_id='sha256:' + ('a' * 64)
+    replica_records=[Collections.Generic.List[object]]::new()
+    foundation_receipts=[ordered]@{{
+        model_contract=({_ps(json.dumps(expected))} | ConvertFrom-Json)
+    }}
+}}
+function Invoke-A11Native {{
+    $script:Calls++
+    return [pscustomobject]@{{ ExitCode=0; Stdout="PASS`n"; Stderr='' }}
+}}
+try {{
+    Invoke-A11Replica -Identity $Identity -ReplicaId 'calibration-00'
+    throw 'replica unexpectedly succeeded'
+}} catch {{
+    [ordered]@{{ calls=$script:Calls; error=$_.Exception.Message }} |
+        ConvertTo-Json -Compress
+}}
+"""
+    completed = _invoke_functions(
+        (
+            "Get-A11FileRecord",
+            "Get-A11VerifiedStageReceipt",
+            "Assert-A11FileRecordUnchanged",
+            "New-A11ReplicaValArguments",
+            "New-A11ReplicaArguments",
+            "Invoke-A11Replica",
+        ),
+        body,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    result = json.loads(completed.stdout)
+    assert result == {
+        "calls": 0,
+        "error": f"A11 verified receipt changed before use: {model_contract}",
+    }
+
+
+def test_dependent_use_rejects_identical_receipt_through_new_junction(
+    tmp_path: Path,
+) -> None:
+    campaign = tmp_path / "campaign"
+    receipts = campaign / "wave0" / "receipts"
+    outside = tmp_path / "outside"
+    receipts.mkdir(parents=True)
+    outside.mkdir()
+    receipt = receipts / "model-contract.json"
+    content = json.dumps(_stage_receipt("wave0-a11-calibration-test"))
+    receipt.write_text(content, encoding="utf-8")
+    expected = _file_record(receipt)
+    receipt.unlink()
+    receipts.rmdir()
+    (outside / "model-contract.json").write_text(content, encoding="utf-8")
+    body = f"""
+New-Item -ItemType Junction -Path {_ps(str(receipts))} `
+    -Target {_ps(str(outside))} | Out-Null
+$Identity = [pscustomobject]@{{
+    campaign_root={_ps(str(campaign))}; run_id='wave0-a11-calibration-test'
+}}
+$Expected = {_ps(json.dumps(expected))} | ConvertFrom-Json
+try {{
+    Assert-A11FileRecordUnchanged -Identity $Identity `
+        -Expected $Expected -Path {_ps(str(receipt))} | Out-Null
+    throw 'junction unexpectedly accepted'
+}} catch {{
+    $_.Exception.Message
+}}
+"""
+    completed = _invoke_functions(
+        (
+            "Get-A11FileRecord",
+            "Get-A11VerifiedStageReceipt",
+            "Assert-A11FileRecordUnchanged",
+        ),
+        body,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert "link" in completed.stdout.lower()
+
+
+@pytest.mark.parametrize("component", ["cache", "replica"])
+@pytest.mark.parametrize(
+    ("stdout", "accepted"),
+    [
+        ("PASS\n", True),
+        ("", False),
+        ("PASS", False),
+        ("PASS\r\n", False),
+        ("PASS\nextra\n", False),
+    ],
+)
+def test_cache_preflight_and_replica_keep_exact_pass_stream_contracts(
+    tmp_path: Path, component: str, stdout: str, accepted: bool
+) -> None:
+    run = (
+        _run_cache_stream_contract
+        if component == "cache"
+        else _run_replica_stream_contract
+    )
+    completed = run(tmp_path, stdout)
+
+    if accepted:
+        assert completed.returncode == 0, completed.stderr
+    else:
+        assert completed.returncode != 0
+        assert completed.stderr
 
 
 def test_read_only_preflight_accepts_exact_closed_evidence() -> None:
@@ -704,6 +1191,81 @@ Confirm-A11CalibrationReceipt -Identity $Identity `
     assert "changed" in tampered.stderr
 
 
+def test_close_a11_phase_publishes_complete_bound_failure_chain(
+    tmp_path: Path,
+) -> None:
+    campaign = tmp_path / "campaign"
+    audit = campaign / "audit"
+    audit.mkdir(parents=True)
+    body = f"""
+$Identity = [pscustomobject]@{{
+    phase='calibration'; run_id='wave0-a11-calibration-test'
+    campaign_root={_ps(str(campaign))}; source_commit={_ps(_SOURCE)}
+    specification_commit={_ps(_SPEC)}; plan_commit={_ps(_PLAN)}
+    image_tag='vision-active-learning-loop:wave0-a11-calibration-test'
+    image_id='sha256:' + ('a' * 64); owner_authorization_id={_ps(_OWNER)}
+    lease_acquired=$false; current_stage='foundation'; terminal=$null
+}}
+function Get-A11HistoricalArtifactInventory {{
+    return [pscustomobject]@{{
+        records=[object[]]::new(64306)
+        sha256={_ps(_HISTORICAL_FILES_SHA256)}
+    }}
+}}
+function Get-A11HistoricalImageInventory {{
+    return [pscustomobject]@{{
+        records=[object[]]::new(21)
+        sha256={_ps(_HISTORICAL_IMAGES_SHA256)}
+    }}
+}}
+$script:Writes = [Collections.Generic.List[string]]::new()
+$script:ProductionWrite = (Get-Command Write-A11NewText).ScriptBlock
+function Write-A11NewText {{
+    param([string]$Path, [AllowEmptyString()][string]$Text)
+    [void]$script:Writes.Add([IO.Path]::GetFileName($Path))
+    & $script:ProductionWrite -Path $Path -Text $Text
+}}
+$Closure = Close-A11Phase -Identity $Identity `
+    -Terminal 'WAVE0_A11_NORMATIVE_FAIL / WAVE1_FORBIDDEN' `
+    -Failure 'injected:foundation'
+[ordered]@{{ writes=$script:Writes; closure=$Closure }} |
+    ConvertTo-Json -Depth 8 -Compress
+"""
+    completed = _invoke_functions(
+        ("Write-A11NewText", "Get-A11FileRecord", "Close-A11Phase"), body
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    output = json.loads(completed.stdout)
+    names = [
+        "78-failure-diagnostic.json",
+        "79-historical-preservation-final.json",
+        "80-campaign-result.json",
+        "81-campaign-file-manifest.json",
+        "82-campaign-closure.json",
+    ]
+    assert output["writes"] == names
+    assert sorted(path.name for path in audit.glob("*.json")) == names
+    diagnostic = json.loads((audit / names[0]).read_text(encoding="utf-8"))
+    result = json.loads((audit / names[2]).read_text(encoding="utf-8"))
+    manifest = json.loads((audit / names[3]).read_text(encoding="utf-8"))
+    closure = json.loads((audit / names[4]).read_text(encoding="utf-8"))
+    assert diagnostic["failed_stage"] == "foundation"
+    assert diagnostic["errors"] == ["injected:foundation"]
+    assert result["failure_diagnostic"] == _file_record(audit / names[0])
+    assert result["historical_preservation"] == _file_record(audit / names[1])
+    assert closure == output["closure"]
+    assert closure["result"] == _file_record(audit / names[2])
+    assert closure["manifest"] == _file_record(audit / names[3])
+    manifest_paths = {record["path"] for record in manifest["files"]}
+    expected_manifest_paths = {
+        (audit / name).resolve().as_posix() for name in names[:3]
+    }
+    assert manifest_paths == expected_manifest_paths
+    for record in manifest["files"]:
+        assert record == _file_record(Path(record["path"]))
+
+
 @pytest.mark.parametrize(
     "reuse", ["static", "run_id", "container_ids", "receipt_hashes"]
 )
@@ -809,6 +1371,170 @@ $script:Events | ConvertTo-Json -Compress
     )
     assert events.count("gate:calibration") == events.count("gate:validation") == 1
     assert events[-1] == "close:validation"
+
+
+def test_campaign_surfaces_closure_write_failure_without_retry(
+    tmp_path: Path,
+) -> None:
+    calibration = tmp_path / "calibration"
+    validation = tmp_path / "validation"
+    diagnostic = calibration / "audit" / "78-failure-diagnostic.json"
+    body = f"""
+$script:ArtifactInventoryCalls = 0
+$script:ImageInventoryCalls = 0
+function Resolve-A11Worktree {{ return @{{}} }}
+function Test-A11ReadOnlyPreflight {{}}
+function Confirm-A11ProtectedGit {{ return $true }}
+function New-A11PhaseIdentity {{
+    param($Phase)
+    $Root = if ($Phase -ceq 'calibration') {{
+        {_ps(str(calibration))}
+    }} else {{
+        {_ps(str(validation))}
+    }}
+    return [pscustomobject]@{{
+        phase=$Phase; run_id="run-$Phase"; campaign_root=$Root
+        source_commit={_ps(_SOURCE)}; specification_commit={_ps(_SPEC)}
+        plan_commit={_ps(_PLAN)}; image_tag="tag-$Phase"
+        image_id='sha256:' + ('a' * 64); owner_authorization_id={_ps(_OWNER)}
+        cache_root="$Root/cache"; cache_inventory_sha256=$null; gpu_driver=$null
+        lease_id="lease-$Phase"; lease_path="$Root/lease"
+        lease_lock_path="$Root/lease-lock"; lease_acquired=$false; release=$null
+        replica_records=[Collections.Generic.List[object]]::new()
+        audit_records=[ordered]@{{}}; current_stage='preregistered'; terminal=$null
+    }}
+}}
+function Initialize-A11Phase {{
+    param($Identity)
+    [IO.Directory]::CreateDirectory(
+        [IO.Path]::Combine($Identity.campaign_root, 'audit')
+    ) | Out-Null
+    [IO.File]::WriteAllBytes(
+        [IO.Path]::Combine(
+            $Identity.campaign_root, 'audit', '78-failure-diagnostic.json'
+        ),
+        [Text.Encoding]::UTF8.GetBytes('sentinel')
+    )
+    throw 'injected:initialize'
+}}
+function Get-A11HistoricalArtifactInventory {{
+    $script:ArtifactInventoryCalls++
+    return [pscustomobject]@{{
+        records=[object[]]::new(64306)
+        sha256={_ps(_HISTORICAL_FILES_SHA256)}
+    }}
+}}
+function Get-A11HistoricalImageInventory {{
+    $script:ImageInventoryCalls++
+    return [pscustomobject]@{{
+        records=[object[]]::new(21)
+        sha256={_ps(_HISTORICAL_IMAGES_SHA256)}
+    }}
+}}
+$Values = @(Invoke-A11Campaign `
+    {_ps(_SOURCE)} {_ps(_SPEC)} {_ps(_PLAN)} {_ps(_BRANCH)} {_ps(_OWNER)})
+[ordered]@{{
+    count=$Values.Count
+    result=$Values[0]
+    artifact_inventory_calls=$script:ArtifactInventoryCalls
+    image_inventory_calls=$script:ImageInventoryCalls
+}} | ConvertTo-Json -Depth 8 -Compress
+"""
+    completed = _invoke_functions(
+        (
+            "Write-A11NewText",
+            "Get-A11FileRecord",
+            "Close-A11Phase",
+            "Invoke-A11Campaign",
+        ),
+        body,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    output = json.loads(completed.stdout)
+    assert output["count"] == 1
+    result = output["result"]
+    assert result["terminal"] == "WAVE0_A11_NORMATIVE_FAIL / WAVE1_FORBIDDEN"
+    assert result["error"] == "injected:initialize"
+    assert "exists" in result["closure_error"].lower()
+    assert output["artifact_inventory_calls"] == 1
+    assert output["image_inventory_calls"] == 1
+    assert diagnostic.read_bytes() == b"sentinel"
+
+
+def test_campaign_suppresses_cache_evidence_and_emits_one_result() -> None:
+    body = f"""
+function Resolve-A11Worktree {{ return @{{}} }}
+function Test-A11ReadOnlyPreflight {{}}
+function Confirm-A11ProtectedGit {{ return $true }}
+function New-A11PhaseIdentity {{
+    param($Phase)
+    return [pscustomobject]@{{
+        phase=$Phase; run_id="run-$Phase"; source_commit={_ps(_SOURCE)}
+        specification_commit={_ps(_SPEC)}; plan_commit={_ps(_PLAN)}
+        image_tag="tag-$Phase"; image_id='sha256:' + ('a' * 64)
+        campaign_root="root-$Phase"; cache_root="cache-$Phase"
+        cache_inventory_sha256=$null; gpu_driver=$null
+        lease_id="lease-$Phase"; lease_path="lease-path-$Phase"
+        lease_lock_path='global-lock'; lease_acquired=$false; release=$null
+        replica_records=[Collections.Generic.List[object]]::new()
+        audit_records=[ordered]@{{}}; current_stage='preregistered'; terminal=$null
+    }}
+}}
+function Initialize-A11Phase {{}}
+function Invoke-A11Build {{}}
+function Invoke-A11CachePreflight {{
+    return [pscustomobject]@{{ cache='evidence' }}
+}}
+function New-A11Lease {{ param($Identity); $Identity.lease_acquired=$true }}
+function Invoke-A11Foundation {{ throw 'injected:foundation' }}
+function Release-A11Lease {{
+    param($Identity)
+    $Identity.lease_acquired=$false
+    $Identity.release=[pscustomobject]@{{ released=$true }}
+}}
+function Close-A11Phase {{}}
+$Values = @(Invoke-A11Campaign `
+    {_ps(_SOURCE)} {_ps(_SPEC)} {_ps(_PLAN)} {_ps(_BRANCH)} {_ps(_OWNER)})
+[ordered]@{{ count=$Values.Count; result=$Values[-1] }} |
+    ConvertTo-Json -Depth 8 -Compress
+"""
+    completed = _invoke_functions(("Invoke-A11Campaign",), body)
+
+    assert completed.returncode == 0, completed.stderr
+    output = json.loads(completed.stdout)
+    assert output["count"] == 1
+    assert output["result"]["terminal"] == (
+        "WAVE0_A11_NORMATIVE_FAIL / WAVE1_FORBIDDEN"
+    )
+    assert output["result"]["error"] == "injected:foundation"
+
+
+@pytest.mark.parametrize(
+    ("values", "observed"),
+    [
+        ("$Values = @()", 0),
+        (
+            "$Values = @([pscustomobject]@{terminal='one'}, "
+            + "[pscustomobject]@{terminal='two'})",
+            2,
+        ),
+    ],
+)
+def test_single_campaign_result_rejects_zero_or_multiple_values(
+    values: str, observed: int
+) -> None:
+    body = f"""
+{values}
+Get-A11SingleCampaignResult -Values $Values | Out-Null
+"""
+    completed = _invoke_functions(("Get-A11SingleCampaignResult",), body)
+
+    assert completed.returncode != 0
+    assert (
+        f"A11 campaign result cardinality mismatch: expected 1, observed {observed}"
+        in completed.stderr
+    )
 
 
 def test_calibration_failure_prohibits_validation_and_second_invocation() -> None:
@@ -938,3 +1664,9 @@ def test_launcher_source_has_no_cleanup_retry_or_wave1_capability() -> None:
     assert "--retry" not in source.lower()
     assert "OwnerAuthorizationId =" not in source
     assert source.count("for ($Index = 0; $Index -lt 12; $Index++)") == 1
+    values_index = source.index("$A11Values = @(")
+    guard_index = source.index("Get-A11SingleCampaignResult -Values $A11Values")
+    terminal_index = source.index("$A11Result.terminal", guard_index)
+    assert values_index < guard_index < terminal_index
+    assert "$A11Result.closure_error" in source
+    assert "[Console]::Error.WriteLine" in source
