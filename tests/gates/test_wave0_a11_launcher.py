@@ -81,6 +81,155 @@ _TIMEOUT_FILES = [
         "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
     },
 ]
+_STREAM_RUN_ID = "wave0-a11-calibration-20260828T172921151Z-a0f55fa1"
+_STREAM_VALIDATION_ID = "wave0-a11-validation-20260828T172921161Z-70928997"
+_STREAM_OWNER = "steven002"
+_STREAM_SOURCE = "ff5cfac5820415662e608886f1a10d7892f3ee00"
+_STREAM_RUN_SHA256 = "628a33f5e57da99647d2f19baf6a2f1fc0556999c704be3c71087fa2b2b8c7e2"
+_STREAM_IMAGE_TAG = (
+    "vision-active-learning-loop:wave0-a11-calibration-"
+    "ff5cfac58204-20260828T172921151Z-a0f55fa1"
+)
+_STREAM_VALIDATION_TAG = (
+    "vision-active-learning-loop:wave0-a11-validation-"
+    "ff5cfac58204-20260828T172921161Z-70928997"
+)
+_STREAM_IMAGE_ID = (
+    "sha256:0a92de665d56dc4c4dc859cc3723444c" "b4b6c06e04308ee574f93befd4da7efd"
+)
+_STREAM_RELEASE_SHA256 = (
+    "72e83702c440007a91a01c06e7b0231f6fcc565cc500ff4662735b904c823f93"
+)
+_STREAM_RELEASED_SHA256 = (
+    "a9c1cbf68c88c0b3e6fa7d1f9815d5cb31bc6da40876546d6d2b08793334301f"
+)
+_STREAM_DIRECTORIES = [
+    "audit",
+    "wave0",
+    "wave0/checkpoints",
+    "wave0/model_cache",
+    "wave0/model_cache/snapshots",
+    "wave0/model_cache/snapshots/facebook--dinov2-small",
+    (
+        "wave0/model_cache/snapshots/facebook--dinov2-small/"
+        "ed25f3a31f01632728cabb09d1542f84ab7b0056"
+    ),
+    (
+        "wave0/model_cache/snapshots/facebook--dinov2-small/"
+        "ed25f3a31f01632728cabb09d1542f84ab7b0056/.cache"
+    ),
+    (
+        "wave0/model_cache/snapshots/facebook--dinov2-small/"
+        "ed25f3a31f01632728cabb09d1542f84ab7b0056/.cache/huggingface"
+    ),
+    (
+        "wave0/model_cache/snapshots/facebook--dinov2-small/"
+        "ed25f3a31f01632728cabb09d1542f84ab7b0056/.cache/huggingface/download"
+    ),
+    (
+        "wave0/model_cache/snapshots/facebook--dinov2-small/"
+        "ed25f3a31f01632728cabb09d1542f84ab7b0056/.cache/huggingface/trees"
+    ),
+    "wave0/model_cache/snapshots/PekingU--rtdetr_r18vd",
+    (
+        "wave0/model_cache/snapshots/PekingU--rtdetr_r18vd/"
+        "cc5b50f32f0100caaa3bd275343e2fb17762c73d"
+    ),
+    (
+        "wave0/model_cache/snapshots/PekingU--rtdetr_r18vd/"
+        "cc5b50f32f0100caaa3bd275343e2fb17762c73d/.cache"
+    ),
+    (
+        "wave0/model_cache/snapshots/PekingU--rtdetr_r18vd/"
+        "cc5b50f32f0100caaa3bd275343e2fb17762c73d/.cache/huggingface"
+    ),
+    (
+        "wave0/model_cache/snapshots/PekingU--rtdetr_r18vd/"
+        "cc5b50f32f0100caaa3bd275343e2fb17762c73d/.cache/huggingface/download"
+    ),
+    (
+        "wave0/model_cache/snapshots/PekingU--rtdetr_r18vd/"
+        "cc5b50f32f0100caaa3bd275343e2fb17762c73d/.cache/huggingface/trees"
+    ),
+    "wave0/receipts",
+]
+_STREAM_KEY_FILES = [
+    {
+        "path": "audit/00-identity.json",
+        "size": 2873,
+        "sha256": "e9c0743ef1b2311aac15b51e4208ff204ad7766581d1a440206bc2903d989461",
+    },
+    {
+        "path": "audit/10-build.json",
+        "size": 1234,
+        "sha256": "2ea371296b5eedf28074a8fb966b1fe58a985629f966c89a348c8bc4ab00b4ab",
+    },
+    {
+        "path": "audit/11-image-inspect.json",
+        "size": 682,
+        "sha256": "98e6a4b0f547c95ebd00d21caeec620283543906d839a24eabb67adc6945fffc",
+    },
+    {
+        "path": "audit/20-cache-preflight.json",
+        "size": 1900,
+        "sha256": "9827ccd8ea4d9f3625e26db1caecda276ac1a452f0cb4dad409eed2d9eeb7236",
+    },
+    {
+        "path": "audit/30-environment.json",
+        "size": 1995,
+        "sha256": "5523fce88357798387b5934baf32f311150f148ed95871f396539ab1682ef656",
+    },
+    {
+        "path": "audit/31-model-assets.json",
+        "size": 2051,
+        "sha256": "9e9e0e88a94b217d26e96741dfc34db499b72f579460a1465a5a988f2cf7ba66",
+    },
+    {
+        "path": "audit/32-model-contract.json",
+        "size": 1910,
+        "sha256": "4f2e6992aa40d9df1a0322565a6bdc2484f45fe6163eb5203e8efe911d3a85f8",
+    },
+    {
+        "path": "audit/32-model-contract.stderr.log",
+        "size": 1362,
+        "sha256": "05a5801f0f54bdc7d8a5d6494f46b5b5d08df990d6137fdae012f753d96d79ce",
+    },
+    {
+        "path": "audit/32-model-contract.stdout.log",
+        "size": 5,
+        "sha256": "c26de83abdc9496cd1301470918ec39ecca1cf389ef0ae1c6504da1800d1c431",
+    },
+    {
+        "path": "audit/78-failure-diagnostic.json",
+        "size": 853,
+        "sha256": "f50f883e74594752d9c4e6e4b857814c9072f0bfc0d75d0dcd229d2081b12676",
+    },
+    {
+        "path": "audit/79-historical-preservation-final.json",
+        "size": 301,
+        "sha256": "927c57d5390bf2267b22b6af2718035530f48071ea48cc926329a696397b319d",
+    },
+    {
+        "path": "audit/80-campaign-result.json",
+        "size": 764,
+        "sha256": "1787120f4635a02ba14e6b08d390b896ca03e855efc22cdf710983bf94dd8bab",
+    },
+    {
+        "path": "audit/81-campaign-file-manifest.json",
+        "size": 16740,
+        "sha256": "ab28d20479a0b44a82bcb9c555f867c0c879a2da0cc0c117d2c4c8667749adf3",
+    },
+    {
+        "path": "audit/82-campaign-closure.json",
+        "size": 660,
+        "sha256": "75267ce8cc36bc25a6c7e985c4b836038241706477656211fe1328dd102bf76a",
+    },
+    {
+        "path": "wave0/receipts/model-contract.json",
+        "size": 9623,
+        "sha256": "307c95414578af6c6a90dc742fe359a5b985d2d6bd2e76e9228caf1475de4eaa",
+    },
+]
 
 
 def _registered_paths(artifact_root: str, run_ids: list[str]) -> list[str]:
@@ -107,12 +256,15 @@ def _prior_attempts() -> dict[str, object]:
     artifact_root = "D:/vision-active-learning-loop-artifacts/wave0"
     failed_run_ids = [_FAILED_RUN_ID, _FAILED_VALIDATION_ID]
     timeout_run_ids = [_TIMEOUT_RUN_ID, _TIMEOUT_VALIDATION_ID]
+    stream_run_ids = [_STREAM_RUN_ID, _STREAM_VALIDATION_ID]
     return {
-        "run_names": [_FAILED_RUN_ID, _TIMEOUT_RUN_ID],
-        "image_tags": [_FAILED_IMAGE_TAG],
+        "run_names": [_FAILED_RUN_ID, _TIMEOUT_RUN_ID, _STREAM_RUN_ID],
+        "image_tags": [_FAILED_IMAGE_TAG, _STREAM_IMAGE_TAG],
         "lease_names": [
             f"{_FAILED_RUN_ID}.release.json",
             f"{_FAILED_RUN_ID}.released",
+            f"{_STREAM_RUN_ID}.release.json",
+            f"{_STREAM_RUN_ID}.released",
         ],
         "authorization_evidence": [
             {
@@ -124,6 +276,11 @@ def _prior_attempts() -> dict[str, object]:
                 "run_id": _TIMEOUT_RUN_ID,
                 "path": "audit/00-identity.json",
                 "owner_authorization_id": _TIMEOUT_OWNER,
+            },
+            {
+                "run_id": _STREAM_RUN_ID,
+                "path": "audit/00-identity.json",
+                "owner_authorization_id": _STREAM_OWNER,
             },
         ],
         "attempts": [
@@ -175,6 +332,40 @@ def _prior_attempts() -> dict[str, object]:
                 "payload_file_paths_present": [],
                 "closure_paths_present": [],
                 "latest_write_utc": "2026-08-28T12:17:12.8122776Z",
+                "links_absent": True,
+            },
+            {
+                "state": "foundation-stream-contract-failure",
+                "run_id": _STREAM_RUN_ID,
+                "source_commit": _STREAM_SOURCE,
+                "specification_commit": _SPEC,
+                "plan_commit": "7dbd3a7576ea76beccfc64f748c4e495259ea89b",
+                "registered_run_ids": stream_run_ids,
+                "registered_image_tags": [
+                    _STREAM_IMAGE_TAG,
+                    _STREAM_VALIDATION_TAG,
+                ],
+                "registered_paths": _registered_paths(artifact_root, stream_run_ids),
+                "owner_authorization_id": _STREAM_OWNER,
+                "run_file_count": 60,
+                "run_inventory_sha256": _STREAM_RUN_SHA256,
+                "directory_names": _STREAM_DIRECTORIES,
+                "key_file_records": _STREAM_KEY_FILES,
+                "image_tag": _STREAM_IMAGE_TAG,
+                "image_id": _STREAM_IMAGE_ID,
+                "release_record_sha256": _STREAM_RELEASE_SHA256,
+                "released_lease_sha256": _STREAM_RELEASED_SHA256,
+                "validation_present": False,
+                "replica_directory_names_present": [],
+                "checkpoint_file_paths_present": [],
+                "closure_paths_present": [
+                    "78-failure-diagnostic.json",
+                    "79-historical-preservation-final.json",
+                    "80-campaign-result.json",
+                    "81-campaign-file-manifest.json",
+                    "82-campaign-closure.json",
+                ],
+                "latest_write_utc": "2026-08-28T18:10:34.6753199Z",
                 "links_absent": True,
             },
         ],
@@ -244,6 +435,14 @@ def _stage_receipt(
     }
 
 
+def _model_load_function_names(*names: str) -> tuple[str, ...]:
+    source = _SCRIPT.read_text(encoding="utf-8")
+    helper = "New-A11ModelLoadPresentationArguments"
+    if f"function {helper}" in source:
+        return (helper, *names)
+    return names
+
+
 def _run_foundation_stage(
     tmp_path: Path,
     *,
@@ -252,6 +451,7 @@ def _run_foundation_stage(
     expected_stdout: str,
     receipt_name: str,
     receipt: dict[str, object] | None,
+    stderr: str = "",
 ) -> subprocess.CompletedProcess[str]:
     campaign = tmp_path / "campaign"
     audit = campaign / "audit"
@@ -269,7 +469,9 @@ $Identity = [pscustomobject]@{{
     audit_records=[ordered]@{{}}
 }}
 function Invoke-A11Native {{
-    return [pscustomobject]@{{ ExitCode=0; Stdout={_ps(stdout)}; Stderr='' }}
+    return [pscustomobject]@{{
+        ExitCode=0; Stdout={_ps(stdout)}; Stderr={_ps(stderr)}
+    }}
 }}
 Invoke-A11DockerStage -Identity $Identity -Name {_ps(name)} `
     -Command @('probe') -ExpectedStdout {_ps(expected_stdout)} `
@@ -282,6 +484,78 @@ Invoke-A11DockerStage -Identity $Identity -Name {_ps(name)} `
             "Write-A11ProcessAudit",
             "Get-A11VerifiedStageReceipt",
             "Invoke-A11DockerStage",
+        ),
+        body,
+    )
+
+
+def _run_foundation_model_load_presentation(
+    tmp_path: Path, *, residual_stderr: str = ""
+) -> subprocess.CompletedProcess[str]:
+    campaign = tmp_path / "campaign"
+    audit = campaign / "audit"
+    receipts = campaign / "wave0" / "receipts"
+    cache = campaign / "wave0" / "model_cache"
+    audit.mkdir(parents=True)
+    receipts.mkdir(parents=True)
+    cache.mkdir(parents=True)
+    for name in ("environment.json", "model-assets.json", "model-contract.json"):
+        (receipts / name).write_text(
+            json.dumps(_stage_receipt("wave0-a11-calibration-test")),
+            encoding="utf-8",
+        )
+    presentation_stderr = (
+        "`rLoading weights: 100%`n"
+        "[transformers] RTDetrForObjectDetection LOAD REPORT`n"
+    )
+    body = f"""
+$script:ObservedArguments = [Collections.Generic.List[object]]::new()
+$Identity = [pscustomobject]@{{
+    phase='calibration'; campaign_root={_ps(str(campaign))}
+    cache_root={_ps(str(cache))}; run_id='wave0-a11-calibration-test'
+    image_id='sha256:' + ('a' * 64); audit_records=[ordered]@{{}}
+    foundation_receipts=[ordered]@{{}}
+}}
+function Invoke-A11Native {{
+    param($FilePath, $ArgumentList)
+    $FlatArguments = @($ArgumentList)
+    [void]$script:ObservedArguments.Add($FlatArguments)
+    $IsEnvironment = $FlatArguments -ccontains 'environment'
+    $IsModelContract = $FlatArguments -ccontains 'model-contract'
+    $HasProgress = ($FlatArguments -join "`n").Contains(
+        'HF_HUB_DISABLE_PROGRESS_BARS=1'
+    )
+    $HasVerbosity = ($FlatArguments -join "`n").Contains(
+        'TRANSFORMERS_VERBOSITY=error'
+    )
+    $ObservedStderr = if ($IsModelContract) {{
+        if (-not [string]::IsNullOrEmpty({_ps(residual_stderr)})) {{
+            {_ps(residual_stderr)}
+        }} elseif ($HasProgress -and $HasVerbosity) {{
+            ''
+        }} else {{
+            "{presentation_stderr}"
+        }}
+    }} else {{
+        ''
+    }}
+    $ObservedStdout = if ($IsEnvironment) {{ '' }} else {{ "PASS`n" }}
+    return [pscustomobject]@{{
+        ExitCode=0; Stdout=$ObservedStdout; Stderr=$ObservedStderr
+    }}
+}}
+Invoke-A11Foundation -Identity $Identity
+$script:ObservedArguments | ConvertTo-Json -Depth 8 -Compress
+"""
+    return _invoke_functions(
+        _model_load_function_names(
+            "Write-A11NewText",
+            "Get-A11FileRecord",
+            "Get-A11VerifiedStageReceipt",
+            "Assert-A11FileRecordUnchanged",
+            "Write-A11ProcessAudit",
+            "Invoke-A11DockerStage",
+            "Invoke-A11Foundation",
         ),
         body,
     )
@@ -381,7 +655,12 @@ Invoke-A11CachePreflight -Identity $Identity -Worktree 'D:/repo' |
 
 
 def _run_replica_stream_contract(
-    tmp_path: Path, stdout: str
+    tmp_path: Path,
+    stdout: str,
+    *,
+    stderr: str = "",
+    presentation_aware: bool = False,
+    emit_arguments: bool = False,
 ) -> subprocess.CompletedProcess[str]:
     campaign = tmp_path / "campaign"
     audit = campaign / "audit"
@@ -399,6 +678,31 @@ def _run_replica_stream_contract(
     replica_receipt = receipts / "calibration-00.json"
     checkpoint = campaign / "wave0" / "checkpoints" / "calibration-00" / "step.pt"
     cid = audit / "calibration-00.cid"
+    presentation_stderr = (
+        "`rLoading weights: 100%`n"
+        "[transformers] RTDetrForObjectDetection LOAD REPORT`n"
+    )
+    stderr_logic = (
+        f"""
+    $FlatArguments = @($ArgumentList)
+    $HasProgress = ($FlatArguments -join "`n").Contains(
+        'HF_HUB_DISABLE_PROGRESS_BARS=1'
+    )
+    $HasVerbosity = ($FlatArguments -join "`n").Contains(
+        'TRANSFORMERS_VERBOSITY=error'
+    )
+    $ObservedStderr = if ($HasProgress -and $HasVerbosity) {{
+        {_ps(stderr)}
+    }} else {{
+        "{presentation_stderr}"
+    }}
+"""
+        if presentation_aware
+        else f"$ObservedStderr = {_ps(stderr)}"
+    )
+    output_arguments = (
+        "$script:ObservedArguments | ConvertTo-Json -Compress" if emit_arguments else ""
+    )
     body = f"""
 $Identity = [pscustomobject]@{{
     phase='calibration'; campaign_root={_ps(str(campaign))}
@@ -410,6 +714,9 @@ $Identity = [pscustomobject]@{{
     }}
 }}
 function Invoke-A11Native {{
+    param($FilePath, $ArgumentList)
+    $script:ObservedArguments = @($ArgumentList)
+    {stderr_logic}
     [IO.Directory]::CreateDirectory({_ps(str(checkpoint.parent))}) | Out-Null
     [IO.File]::WriteAllText({_ps(str(checkpoint))}, 'checkpoint')
     [IO.File]::WriteAllText(
@@ -417,12 +724,15 @@ function Invoke-A11Native {{
         '{{"metadata":{{"timestamp":"2026-08-28T00:00:00Z"}}}}'
     )
     [IO.File]::WriteAllText({_ps(str(cid))}, ('a' * 64))
-    return [pscustomobject]@{{ ExitCode=0; Stdout={_ps(stdout)}; Stderr='' }}
+    return [pscustomobject]@{{
+        ExitCode=0; Stdout={_ps(stdout)}; Stderr=$ObservedStderr
+    }}
 }}
 Invoke-A11Replica -Identity $Identity -ReplicaId 'calibration-00'
+{output_arguments}
 """
     return _invoke_functions(
-        (
+        _model_load_function_names(
             "Write-A11NewText",
             "Get-A11FileRecord",
             "Get-A11VerifiedStageReceipt",
@@ -485,22 +795,29 @@ $Result | ConvertTo-Json -Depth 8 -Compress
 
 def _run_prior_attempt_inventory(
     tmp_path: Path, defect: str = ""
-) -> tuple[subprocess.CompletedProcess[str], Path, Path, Path]:
-    artifact = tmp_path / "artifacts"
+) -> tuple[subprocess.CompletedProcess[str], Path, Path, Path, Path]:
+    extended_tmp = Path("\\\\?\\" + str(tmp_path.resolve()))
+    artifact = extended_tmp / "artifacts"
     a11_root = artifact / "a11-runs"
     expected_run1 = a11_root / _FAILED_RUN_ID
     expected_run2 = a11_root / _TIMEOUT_RUN_ID
-    outside_run1 = tmp_path / "outside-run1"
-    outside_run2 = tmp_path / "outside-run2"
+    expected_run3 = a11_root / _STREAM_RUN_ID
+    outside_run1 = extended_tmp / "outside-run1"
+    outside_run2 = extended_tmp / "outside-run2"
+    outside_run3 = extended_tmp / "outside-run3"
     run1_root = outside_run1 if defect == "run1-link" else expected_run1
     run2_root = outside_run2 if defect == "run2-link" else expected_run2
+    run3_root = outside_run3 if defect == "run3-link" else expected_run3
     expected_leases = artifact / "leases"
-    outside_leases = tmp_path / "outside-leases"
+    outside_leases = extended_tmp / "outside-leases"
     lease_root = outside_leases if defect == "lease-link" else expected_leases
     (run1_root / "audit").mkdir(parents=True)
     (run2_root / "audit").mkdir(parents=True)
+    (run3_root / "audit").mkdir(parents=True)
     for relative in ("wave0/checkpoints", "wave0/model_cache", "wave0/receipts"):
         (run2_root / relative).mkdir(parents=True)
+    for relative in _STREAM_DIRECTORIES:
+        (run3_root / relative).mkdir(parents=True, exist_ok=True)
     lease_root.mkdir(parents=True)
     lease_lock = artifact / "leases" / f"{_GPU}.json"
 
@@ -524,6 +841,8 @@ def _run_prior_attempt_inventory(
                 "lease_lock_path": str(lease_lock),
                 "lease_path": str(campaign / "audit" / "active-lease.json"),
                 "source_commit": source,
+                "specification_commit": _SPEC,
+                "plan_commit": "7dbd3a7576ea76beccfc64f748c4e495259ea89b",
                 "owner_authorization_id": owner,
             }
 
@@ -570,9 +889,37 @@ def _run_prior_attempt_inventory(
         ("10-build.stdout.log", ""),
     ):
         (run2_root / "audit" / name).write_text(content, encoding="utf-8")
+    (run3_root / "audit" / "00-identity.json").write_text(
+        json.dumps(
+            identity(
+                _STREAM_RUN_ID,
+                _STREAM_IMAGE_TAG,
+                _STREAM_VALIDATION_ID,
+                _STREAM_VALIDATION_TAG,
+                _STREAM_SOURCE,
+                _STREAM_OWNER,
+            )
+        ),
+        encoding="utf-8",
+    )
+    for record in _STREAM_KEY_FILES[1:]:
+        path = run3_root / str(record["path"])
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(str(record["path"]), encoding="utf-8")
+    filler_root = run3_root / _STREAM_DIRECTORIES[-2]
+    for index in range(45):
+        (filler_root / f"filler-{index:02d}.bin").write_bytes(
+            f"filler-{index:02d}".encode()
+        )
     (lease_root / f"{_FAILED_RUN_ID}.released").write_text("released", encoding="utf-8")
     (lease_root / f"{_FAILED_RUN_ID}.release.json").write_text(
         "release", encoding="utf-8"
+    )
+    (lease_root / f"{_STREAM_RUN_ID}.released").write_text(
+        "stream-released", encoding="utf-8"
+    )
+    (lease_root / f"{_STREAM_RUN_ID}.release.json").write_text(
+        "stream-release", encoding="utf-8"
     )
     junctions = []
     if defect == "run1-link":
@@ -586,6 +933,12 @@ def _run_prior_attempt_inventory(
         junctions.append(
             f"New-Item -ItemType Junction -Path {_ps(str(expected_run2))} "
             f"-Target {_ps(str(outside_run2))} | Out-Null"
+        )
+    if defect == "run3-link":
+        a11_root.mkdir(parents=True, exist_ok=True)
+        junctions.append(
+            f"New-Item -ItemType Junction -Path {_ps(str(expected_run3))} "
+            f"-Target {_ps(str(outside_run3))} | Out-Null"
         )
     if defect == "lease-link":
         artifact.mkdir(exist_ok=True)
@@ -605,18 +958,50 @@ def _run_prior_attempt_inventory(
         (lease_root / f"{_TIMEOUT_RUN_ID}.released").write_text(
             "released", encoding="utf-8"
         )
+    if defect == "stream-missing-closure":
+        (run3_root / "audit" / "82-campaign-closure.json").unlink()
+    if defect == "stream-extra-directory":
+        (run3_root / "unexpected").mkdir()
+    if defect == "stream-validation":
+        (a11_root / _STREAM_VALIDATION_ID).mkdir()
+    if defect == "stream-replica":
+        (run3_root / "wave0" / "replica-00").mkdir()
+    if defect == "stream-checkpoint":
+        (run3_root / "wave0" / "checkpoints" / "unexpected.bin").write_bytes(b"x")
+    if defect == "stream-release-missing":
+        (lease_root / f"{_STREAM_RUN_ID}.released").unlink()
     native = (
         "return [pscustomobject]@{ExitCode=125;Stdout='';Stderr='daemon unavailable'}"
         if defect == "docker-failure"
         else f"""
 if ($ArgumentList[1] -ceq 'ls') {{
     return [pscustomobject]@{{
-        ExitCode=0;Stdout={_ps(_FAILED_IMAGE_TAG + chr(10) + (_TIMEOUT_IMAGE_TAG + chr(10) if defect == 'unexpected-image' else ''))};Stderr=''
+        ExitCode=0;Stdout={_ps(_FAILED_IMAGE_TAG + chr(10) + _STREAM_IMAGE_TAG + chr(10) + (_TIMEOUT_IMAGE_TAG + chr(10) if defect == 'unexpected-image' else ''))};Stderr=''
     }}
+}}
+$RequestedTag = [string]$ArgumentList[-1]
+$ImageId = if ($RequestedTag -ceq {_ps(_FAILED_IMAGE_TAG)}) {{
+    {_ps(_FAILED_IMAGE_ID)}
+}} elseif ($RequestedTag -ceq {_ps(_STREAM_IMAGE_TAG)}) {{
+    {_ps(_STREAM_IMAGE_ID)}
+}} else {{
+    throw "unexpected image inspect tag: $RequestedTag"
+}}
+$Labels = if ($RequestedTag -ceq {_ps(_STREAM_IMAGE_TAG)}) {{
+    [ordered]@{{
+        'org.opencontainers.image.revision' = {_ps(_STREAM_SOURCE)}
+        'org.opencontainers.image.val.run_id' = {_ps(_STREAM_RUN_ID)}
+        'org.opencontainers.image.val.spec_commit' = {_ps(_SPEC)}
+        'org.opencontainers.image.val.plan_commit' = '7dbd3a7576ea76beccfc64f748c4e495259ea89b'
+        'org.opencontainers.image.base.digest' = {_ps(_BASE)}
+    }}
+}} else {{
+    [ordered]@{{}}
 }}
 return [pscustomobject]@{{
     ExitCode=0
-    Stdout={_ps(json.dumps([{'Id': _FAILED_IMAGE_ID}]))}
+    Stdout=(@(@{{Id=$ImageId;Config=@{{Labels=$Labels}}}}) |
+        ConvertTo-Json -Depth 6 -Compress)
     Stderr=''
 }}
 """
@@ -637,7 +1022,7 @@ Get-A11PriorAttemptInventory -ArtifactRoot {_ps(str(artifact))} |
         ),
         body,
     )
-    return completed, run1_root, run2_root, lease_root
+    return completed, run1_root, run2_root, run3_root, lease_root
 
 
 def _run_project_container_inventory(
@@ -883,6 +1268,7 @@ def test_launcher_has_exact_parameters_and_required_functions() -> None:
         "Test-A11PathEntryPresent",
         "Test-A11PhaseDestinationsAbsent",
         "New-A11BuildArguments",
+        "New-A11ModelLoadPresentationArguments",
         "Invoke-A11CachePreflight",
         "Get-A11VerifiedStageReceipt",
         "Assert-A11FileRecordUnchanged",
@@ -956,6 +1342,98 @@ def test_foundation_stages_enforce_registered_stream_and_receipt_contracts(
     audit_path = tmp_path / "campaign" / "audit" / f"{name}.json"
     audit = json.loads(audit_path.read_text(encoding="utf-8"))
     assert audit["receipt"] == expected_record
+
+
+def _assert_model_load_presentation_arguments(arguments: list[str]) -> None:
+    expected_pairs = [
+        ("-e", "HF_HUB_DISABLE_PROGRESS_BARS=1"),
+        ("-e", "TRANSFORMERS_VERBOSITY=error"),
+    ]
+    pair_indexes: list[int] = []
+    for pair in expected_pairs:
+        indexes = [
+            index
+            for index in range(len(arguments) - 1)
+            if tuple(arguments[index : index + 2]) == pair
+        ]
+        assert len(indexes) == 1
+        pair_indexes.append(indexes[0])
+    image_index = next(
+        index for index, value in enumerate(arguments) if value == "sha256:" + "a" * 64
+    )
+    assert pair_indexes == sorted(pair_indexes)
+    assert pair_indexes[-1] < image_index
+
+
+def test_model_load_presentation_is_scoped_to_foundation_model_contract(
+    tmp_path: Path,
+) -> None:
+    completed = _run_foundation_model_load_presentation(tmp_path)
+
+    assert completed.returncode == 0, completed.stderr
+    calls = json.loads(completed.stdout)
+    assert len(calls) == 3
+    environment = next(call for call in calls if "environment" in call)
+    assets = next(call for call in calls if "assets" in call)
+    model_contract = next(call for call in calls if "model-contract" in call)
+    for call in (environment, assets):
+        assert "HF_HUB_DISABLE_PROGRESS_BARS=1" not in call
+        assert "TRANSFORMERS_VERBOSITY=error" not in call
+    _assert_model_load_presentation_arguments(model_contract)
+
+
+def test_replica_model_load_presentation_is_exact_and_before_image(
+    tmp_path: Path,
+) -> None:
+    completed = _run_replica_stream_contract(
+        tmp_path,
+        "PASS\n",
+        presentation_aware=True,
+        emit_arguments=True,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    _assert_model_load_presentation_arguments(json.loads(completed.stdout))
+
+
+@pytest.mark.parametrize("component", ["foundation_model_contract", "replica"])
+def test_model_load_residual_stderr_remains_fatal(
+    tmp_path: Path, component: str
+) -> None:
+    if component == "foundation_model_contract":
+        completed = _run_foundation_model_load_presentation(
+            tmp_path, residual_stderr="unexpected diagnostic"
+        )
+    else:
+        completed = _run_replica_stream_contract(
+            tmp_path,
+            "PASS\n",
+            stderr="unexpected diagnostic",
+            presentation_aware=True,
+        )
+
+    assert completed.returncode != 0
+    assert completed.stderr
+
+
+def test_model_load_presentation_control_surface_is_closed() -> None:
+    source = _SCRIPT.read_text(encoding="utf-8")
+    helper_name = "New-A11ModelLoadPresentationArguments"
+    helper_start = source.index(f"function {helper_name}")
+    helper_end = source.index("\nfunction ", helper_start + 1)
+    helper = source[helper_start:helper_end]
+    assert helper.count("HF_HUB_DISABLE_PROGRESS_BARS=1") == 1
+    assert helper.count("TRANSFORMERS_VERBOSITY=error") == 1
+    assert source.count(helper_name) == 3
+    for forbidden in (
+        "HF_HUB_VERBOSITY",
+        "TRANSFORMERS_NO_ADVISORY_WARNINGS",
+        "--env-file",
+        "stderr allowlist",
+    ):
+        assert forbidden not in helper
+    assert "$Result.Stderr -ceq ''" in source
+    assert "-not [string]::IsNullOrEmpty($Result.Stderr)" in source
 
 
 def test_process_audit_omits_receipt_when_no_receipt_is_bound(
@@ -1203,7 +1681,7 @@ def test_cache_preflight_and_replica_keep_exact_pass_stream_contracts(
         assert completed.stderr
 
 
-def test_read_only_preflight_accepts_exact_two_attempt_evidence() -> None:
+def test_read_only_preflight_accepts_exact_three_attempt_evidence() -> None:
     completed = _invoke_functions(
         ("Test-A11ReadOnlyPreflight",), _preflight_body(_preflight())
     )
@@ -1212,11 +1690,12 @@ def test_read_only_preflight_accepts_exact_two_attempt_evidence() -> None:
     assert json.loads(completed.stdout)["head"] == _SOURCE
 
 
-def test_two_prior_attempts_keep_distinct_closed_state_schemas() -> None:
+def test_three_prior_attempts_keep_distinct_closed_state_schemas() -> None:
     attempts = _prior_attempts()["attempts"]
     assert [attempt["state"] for attempt in attempts] == [
         "launcher-stage-failure",
         "image-build-timeout",
+        "foundation-stream-contract-failure",
     ]
     assert set(attempts[0]) == {
         "state",
@@ -1256,9 +1735,34 @@ def test_two_prior_attempts_keep_distinct_closed_state_schemas() -> None:
         "latest_write_utc",
         "links_absent",
     }
+    assert set(attempts[2]) == {
+        "state",
+        "run_id",
+        "source_commit",
+        "specification_commit",
+        "plan_commit",
+        "registered_run_ids",
+        "registered_image_tags",
+        "registered_paths",
+        "owner_authorization_id",
+        "run_file_count",
+        "run_inventory_sha256",
+        "directory_names",
+        "key_file_records",
+        "image_tag",
+        "image_id",
+        "release_record_sha256",
+        "released_lease_sha256",
+        "validation_present",
+        "replica_directory_names_present",
+        "checkpoint_file_paths_present",
+        "closure_paths_present",
+        "latest_write_utc",
+        "links_absent",
+    }
 
 
-@pytest.mark.parametrize("owner", [_FAILED_OWNER, _TIMEOUT_OWNER])
+@pytest.mark.parametrize("owner", [_FAILED_OWNER, _TIMEOUT_OWNER, _STREAM_OWNER])
 def test_read_only_preflight_rejects_each_consumed_authorization(owner: str) -> None:
     completed = _invoke_functions(
         ("Test-A11ReadOnlyPreflight",),
@@ -1274,6 +1778,7 @@ _PRIOR_MUTATIONS = [
     (("image_tags",), []),
     (("lease_names",), []),
     (("authorization_evidence", 1, "owner_authorization_id"), _FAILED_OWNER),
+    (("authorization_evidence", 2, "owner_authorization_id"), _TIMEOUT_OWNER),
     (("links_absent",), False),
     (("attempts", 0, "state"), "image-build-timeout"),
     (("attempts", 0, "source_commit"), "0" * 40),
@@ -1300,6 +1805,30 @@ _PRIOR_MUTATIONS = [
     (("attempts", 1, "payload_file_paths_present"), ["wave0/receipts/x.json"]),
     (("attempts", 1, "closure_paths_present"), ["78-failure-diagnostic.json"]),
     (("attempts", 1, "links_absent"), False),
+    (("attempts", 2, "state"), "image-build-timeout"),
+    (("attempts", 2, "run_id"), _STREAM_VALIDATION_ID),
+    (("attempts", 2, "source_commit"), "0" * 40),
+    (("attempts", 2, "specification_commit"), "0" * 40),
+    (("attempts", 2, "plan_commit"), "0" * 40),
+    (("attempts", 2, "registered_run_ids"), [_STREAM_RUN_ID]),
+    (("attempts", 2, "registered_image_tags"), [_STREAM_IMAGE_TAG]),
+    (("attempts", 2, "registered_paths"), []),
+    (("attempts", 2, "owner_authorization_id"), _TIMEOUT_OWNER),
+    (("attempts", 2, "run_file_count"), 59),
+    (("attempts", 2, "run_inventory_sha256"), "0" * 64),
+    (("attempts", 2, "directory_names"), ["audit"]),
+    (("attempts", 2, "key_file_records", 8, "size"), 4),
+    (("attempts", 2, "key_file_records", 8, "sha256"), "0" * 64),
+    (("attempts", 2, "image_tag"), _STREAM_VALIDATION_TAG),
+    (("attempts", 2, "image_id"), "sha256:" + "0" * 64),
+    (("attempts", 2, "release_record_sha256"), "0" * 64),
+    (("attempts", 2, "released_lease_sha256"), "0" * 64),
+    (("attempts", 2, "validation_present"), True),
+    (("attempts", 2, "replica_directory_names_present"), ["replica-00"]),
+    (("attempts", 2, "checkpoint_file_paths_present"), ["unexpected.bin"]),
+    (("attempts", 2, "closure_paths_present"), []),
+    (("attempts", 2, "latest_write_utc"), "not-a-time"),
+    (("attempts", 2, "links_absent"), False),
 ]
 
 
@@ -1332,8 +1861,11 @@ def test_read_only_preflight_rejects_prior_a11_drift(
         "second-image",
         "third-lease",
         "move-timeout-owner",
+        "move-stream-owner",
         "delete-timeout-record",
+        "delete-stream-key-record",
         "substitute-attempt-record",
+        "substitute-stream-record",
     ],
 )
 def test_read_only_preflight_rejects_prior_a11_structural_drift(
@@ -1352,10 +1884,17 @@ def test_read_only_preflight_rejects_prior_a11_structural_drift(
     elif mutation == "move-timeout-owner":
         prior["authorization_evidence"][0]["owner_authorization_id"] = _TIMEOUT_OWNER
         prior["authorization_evidence"][1]["owner_authorization_id"] = _FAILED_OWNER
+    elif mutation == "move-stream-owner":
+        prior["authorization_evidence"][1]["owner_authorization_id"] = _STREAM_OWNER
+        prior["authorization_evidence"][2]["owner_authorization_id"] = _TIMEOUT_OWNER
     elif mutation == "delete-timeout-record":
         del prior["attempts"][1]["file_records"][2]
-    else:
+    elif mutation == "delete-stream-key-record":
+        del prior["attempts"][2]["key_file_records"][8]
+    elif mutation == "substitute-attempt-record":
         prior["attempts"][1] = copy.deepcopy(prior["attempts"][0])
+    else:
+        prior["attempts"][2] = copy.deepcopy(prior["attempts"][1])
 
     completed = _invoke_functions(
         ("Test-A11ReadOnlyPreflight",), _preflight_body(evidence)
@@ -1421,12 +1960,18 @@ Get-A11ActiveLeasePaths -LeaseRoot {_ps(str(tmp_path))} |
 def test_prior_attempt_inventory_returns_closed_sorted_evidence(
     tmp_path: Path,
 ) -> None:
-    completed, run1_root, run2_root, lease_root = _run_prior_attempt_inventory(tmp_path)
+    (
+        completed,
+        run1_root,
+        run2_root,
+        run3_root,
+        lease_root,
+    ) = _run_prior_attempt_inventory(tmp_path)
 
     assert completed.returncode == 0, completed.stderr
     evidence = json.loads(completed.stdout)
     records_by_root = []
-    for root in (run1_root, run2_root):
+    for root in (run1_root, run2_root, run3_root):
         records = []
         for path in sorted(root.rglob("*")):
             if path.is_file():
@@ -1448,8 +1993,12 @@ def test_prior_attempt_inventory_returns_closed_sorted_evidence(
         "attempts",
         "links_absent",
     }
-    assert evidence["run_names"] == [_FAILED_RUN_ID, _TIMEOUT_RUN_ID]
-    assert evidence["image_tags"] == [_FAILED_IMAGE_TAG]
+    assert evidence["run_names"] == [
+        _FAILED_RUN_ID,
+        _TIMEOUT_RUN_ID,
+        _STREAM_RUN_ID,
+    ]
+    assert evidence["image_tags"] == [_FAILED_IMAGE_TAG, _STREAM_IMAGE_TAG]
     assert evidence["lease_names"] == sorted(path.name for path in lease_root.iterdir())
     assert evidence["authorization_evidence"] == [
         {
@@ -1462,10 +2011,16 @@ def test_prior_attempt_inventory_returns_closed_sorted_evidence(
             "path": "audit/00-identity.json",
             "owner_authorization_id": _TIMEOUT_OWNER,
         },
+        {
+            "run_id": _STREAM_RUN_ID,
+            "path": "audit/00-identity.json",
+            "owner_authorization_id": _STREAM_OWNER,
+        },
     ]
     assert [attempt["state"] for attempt in attempts] == [
         "launcher-stage-failure",
         "image-build-timeout",
+        "foundation-stream-contract-failure",
     ]
     for attempt, records in zip(attempts, records_by_root, strict=True):
         assert attempt["run_file_count"] == len(records)
@@ -1529,6 +2084,48 @@ def test_prior_attempt_inventory_returns_closed_sorted_evidence(
         .total_seconds()
         == 0
     )
+    assert attempts[2]["registered_run_ids"] == [
+        _STREAM_RUN_ID,
+        _STREAM_VALIDATION_ID,
+    ]
+    assert attempts[2]["registered_image_tags"] == [
+        _STREAM_IMAGE_TAG,
+        _STREAM_VALIDATION_TAG,
+    ]
+    assert attempts[2]["registered_paths"] == _registered_paths(
+        str(run3_root.parents[1]), [_STREAM_RUN_ID, _STREAM_VALIDATION_ID]
+    )
+    stream_records = {record["path"]: record for record in records_by_root[2]}
+    assert attempts[2]["key_file_records"] == [
+        stream_records[record["path"]] for record in _STREAM_KEY_FILES
+    ]
+    assert attempts[2]["directory_names"] == _STREAM_DIRECTORIES
+    assert attempts[2]["image_tag"] == _STREAM_IMAGE_TAG
+    assert attempts[2]["image_id"] == _STREAM_IMAGE_ID
+    assert (
+        attempts[2]["release_record_sha256"]
+        == hashlib.sha256(b"stream-release").hexdigest()
+    )
+    assert (
+        attempts[2]["released_lease_sha256"]
+        == hashlib.sha256(b"stream-released").hexdigest()
+    )
+    assert attempts[2]["validation_present"] is False
+    assert attempts[2]["replica_directory_names_present"] == []
+    assert attempts[2]["checkpoint_file_paths_present"] == []
+    assert attempts[2]["closure_paths_present"] == [
+        "78-failure-diagnostic.json",
+        "79-historical-preservation-final.json",
+        "80-campaign-result.json",
+        "81-campaign-file-manifest.json",
+        "82-campaign-closure.json",
+    ]
+    assert (
+        datetime.fromisoformat(attempts[2]["latest_write_utc"])
+        .utcoffset()
+        .total_seconds()
+        == 0
+    )
     assert evidence["links_absent"] is True
 
 
@@ -1537,19 +2134,26 @@ def test_prior_attempt_inventory_returns_closed_sorted_evidence(
     [
         "run1-link",
         "run2-link",
+        "run3-link",
         "lease-link",
         "extra-run",
         "timeout-payload",
         "timeout-validation",
         "timeout-release",
         "unexpected-image",
+        "stream-missing-closure",
+        "stream-extra-directory",
+        "stream-validation",
+        "stream-replica",
+        "stream-checkpoint",
+        "stream-release-missing",
         "docker-failure",
     ],
 )
 def test_prior_attempt_inventory_rejects_links_or_docker_failure(
     tmp_path: Path, defect: str
 ) -> None:
-    completed, _, _, _ = _run_prior_attempt_inventory(tmp_path, defect)
+    completed, _, _, _, _ = _run_prior_attempt_inventory(tmp_path, defect)
 
     assert completed.returncode != 0
     assert completed.stderr
@@ -1768,8 +2372,12 @@ def test_phase_destination_gate_accepts_two_fresh_identities(
         (1, "run_id", _FAILED_VALIDATION_ID),
         (0, "run_id", _TIMEOUT_RUN_ID),
         (1, "run_id", _TIMEOUT_VALIDATION_ID),
+        (0, "run_id", _STREAM_RUN_ID),
+        (1, "run_id", _STREAM_VALIDATION_ID),
         (0, "image_tag", _FAILED_IMAGE_TAG),
         (1, "image_tag", _TIMEOUT_VALIDATION_TAG),
+        (0, "image_tag", _STREAM_IMAGE_TAG),
+        (1, "image_tag", _STREAM_VALIDATION_TAG),
     ],
 )
 def test_phase_destination_gate_rejects_any_preserved_runtime_identity(
@@ -1786,12 +2394,14 @@ def test_phase_destination_gate_rejects_any_preserved_runtime_identity(
     assert counters["docker_calls"] == 0
 
 
+@pytest.mark.parametrize("attempt_index", [1, 2])
 @pytest.mark.parametrize("path_index", range(8))
 def test_phase_destination_gate_rejects_each_preserved_path_even_when_absent(
-    tmp_path: Path, path_index: int
+    tmp_path: Path, path_index: int, attempt_index: int
 ) -> None:
     identities = _phase_destination_identities(tmp_path)
-    preserved = _prior_attempts()["attempts"][1]["registered_paths"][8:]
+    attempt = _prior_attempts()["attempts"][attempt_index]
+    preserved = attempt["registered_paths"][8:]
     target = Path(preserved[path_index])
     if path_index == 0:
         identities[1]["campaign_root"] = str(target)
@@ -1800,7 +2410,7 @@ def test_phase_destination_gate_rejects_each_preserved_path_even_when_absent(
     elif path_index == 2:
         identities[1]["lease_path"] = str(target)
     else:
-        identities[1]["run_id"] = _TIMEOUT_VALIDATION_ID
+        identities[1]["run_id"] = attempt["registered_run_ids"][1]
     completed = _run_phase_destination_gate(identities, capture_counts=True)
 
     assert completed.returncode != 0
@@ -1815,6 +2425,7 @@ def test_phase_destination_gate_rejects_each_preserved_path_even_when_absent(
     [
         (_FAILED_OWNER, _FAILED_OWNER),
         (_TIMEOUT_OWNER, _TIMEOUT_OWNER),
+        (_STREAM_OWNER, _STREAM_OWNER),
         (_OWNER, "OWNER-A11-DIFFERENT"),
     ],
 )
@@ -2229,7 +2840,10 @@ New-A11ReplicaArguments -Identity $Identity -Worktree 'D:/repo' `
     ConvertTo-Json -Compress
 """
     completed = _invoke_functions(
-        ("New-A11ReplicaValArguments", "New-A11ReplicaArguments"), body
+        _model_load_function_names(
+            "New-A11ReplicaValArguments", "New-A11ReplicaArguments"
+        ),
+        body,
     )
 
     assert completed.returncode == 0, completed.stderr
