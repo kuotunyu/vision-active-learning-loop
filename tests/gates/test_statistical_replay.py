@@ -683,6 +683,22 @@ def test_model_cache_inventory_normalizes_only_download_metadata_timestamp(
     assert statistical_replay._model_cache_inventory_sha256(tmp_path) == first
 
 
+def test_model_cache_inventory_uses_relative_posix_ordinal_order(
+    tmp_path: Path,
+) -> None:
+    cache = tmp_path / "model_cache"
+    detector = cache / "snapshots" / "PekingU--rtdetr_r18vd" / "weights.bin"
+    backbone = cache / "snapshots" / "facebook--dinov2-small" / "weights.bin"
+    detector.parent.mkdir(parents=True)
+    backbone.parent.mkdir(parents=True)
+    detector.write_bytes(b"detector")
+    backbone.write_bytes(b"backbone")
+
+    assert statistical_replay._model_cache_inventory_sha256(cache) == (
+        "bf72c2d3c4de7500613b01012963fb01c3da616fedca272d68971b46c1660228"
+    )
+
+
 def _retarget_model_contract(
     document: dict[str, object],
     *,

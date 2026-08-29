@@ -11,6 +11,8 @@ from pathlib import Path
 
 import pytest
 
+from vision_active_learning_loop.gates import statistical_replay
+
 _ROOT = Path(__file__).resolve().parents[2]
 _SCRIPT = _ROOT / "scripts" / "run_wave0_a11.ps1"
 _DOCKERFILE = _ROOT / "docker" / "wave0.Dockerfile"
@@ -103,6 +105,174 @@ _STREAM_RELEASE_SHA256 = (
 _STREAM_RELEASED_SHA256 = (
     "a9c1cbf68c88c0b3e6fa7d1f9815d5cb31bc6da40876546d6d2b08793334301f"
 )
+_AGGREGATE_RUN_ID = "wave0-a11-calibration-20260829T050706309Z-f5a0129e"
+_AGGREGATE_VALIDATION_ID = "wave0-a11-validation-20260829T050706319Z-c6652f48"
+_AGGREGATE_OWNER = "steven003"
+_AGGREGATE_SOURCE = "77f8eecb3b8c0f471a4e980269187ac02a3b9ebc"
+_AGGREGATE_RUN_SHA256 = (
+    "f426e5ffd6f0d872539d581d5d3f01167e017606fb86c8f2afe999175df5c717"
+)
+_AGGREGATE_IMAGE_TAG = (
+    "vision-active-learning-loop:wave0-a11-calibration-"
+    "77f8eecb3b8c-20260829T050706309Z-f5a0129e"
+)
+_AGGREGATE_VALIDATION_TAG = (
+    "vision-active-learning-loop:wave0-a11-validation-"
+    "77f8eecb3b8c-20260829T050706319Z-c6652f48"
+)
+_AGGREGATE_IMAGE_ID = (
+    "sha256:94c7d9fd58debdb3cf39ee3e593b8b20dc3b2603da85cbacbf88f8492e1fdf7e"
+)
+_AGGREGATE_RELEASE_SHA256 = (
+    "aefe15f2369bc1f186d090658f249e720319d982b2e11efb693a14c264ef84d1"
+)
+_AGGREGATE_RELEASED_SHA256 = (
+    "b7f51ddc665be97ce9b972daa3c0018289168d30788646ea40d836b6c3e4243c"
+)
+_AGGREGATE_REPLICA_DIRECTORIES = [
+    f"wave0/checkpoints/calibration-{index:02d}" for index in range(12)
+]
+_AGGREGATE_CHECKPOINT_FILES = [
+    f"wave0/checkpoints/calibration-{index:02d}/step-000001.pt" for index in range(12)
+]
+_AGGREGATE_DIRECTORIES = [
+    "audit",
+    "wave0",
+    "wave0/checkpoints",
+    *_AGGREGATE_REPLICA_DIRECTORIES,
+    "wave0/model_cache",
+    "wave0/model_cache/snapshots",
+    "wave0/model_cache/snapshots/facebook--dinov2-small",
+    (
+        "wave0/model_cache/snapshots/facebook--dinov2-small/"
+        "ed25f3a31f01632728cabb09d1542f84ab7b0056"
+    ),
+    (
+        "wave0/model_cache/snapshots/facebook--dinov2-small/"
+        "ed25f3a31f01632728cabb09d1542f84ab7b0056/.cache"
+    ),
+    (
+        "wave0/model_cache/snapshots/facebook--dinov2-small/"
+        "ed25f3a31f01632728cabb09d1542f84ab7b0056/.cache/huggingface"
+    ),
+    (
+        "wave0/model_cache/snapshots/facebook--dinov2-small/"
+        "ed25f3a31f01632728cabb09d1542f84ab7b0056/.cache/huggingface/download"
+    ),
+    (
+        "wave0/model_cache/snapshots/facebook--dinov2-small/"
+        "ed25f3a31f01632728cabb09d1542f84ab7b0056/.cache/huggingface/trees"
+    ),
+    "wave0/model_cache/snapshots/PekingU--rtdetr_r18vd",
+    (
+        "wave0/model_cache/snapshots/PekingU--rtdetr_r18vd/"
+        "cc5b50f32f0100caaa3bd275343e2fb17762c73d"
+    ),
+    (
+        "wave0/model_cache/snapshots/PekingU--rtdetr_r18vd/"
+        "cc5b50f32f0100caaa3bd275343e2fb17762c73d/.cache"
+    ),
+    (
+        "wave0/model_cache/snapshots/PekingU--rtdetr_r18vd/"
+        "cc5b50f32f0100caaa3bd275343e2fb17762c73d/.cache/huggingface"
+    ),
+    (
+        "wave0/model_cache/snapshots/PekingU--rtdetr_r18vd/"
+        "cc5b50f32f0100caaa3bd275343e2fb17762c73d/.cache/huggingface/download"
+    ),
+    (
+        "wave0/model_cache/snapshots/PekingU--rtdetr_r18vd/"
+        "cc5b50f32f0100caaa3bd275343e2fb17762c73d/.cache/huggingface/trees"
+    ),
+    "wave0/receipts",
+]
+_AGGREGATE_KEY_FILES = [
+    {
+        "path": "audit/00-identity.json",
+        "size": 2873,
+        "sha256": "dce0706a572cdb5e72a8b28aad61750ee799e0eae7164ae1b5c6a0c22f1ffe4c",
+    },
+    {
+        "path": "audit/10-build.json",
+        "size": 1234,
+        "sha256": "c173d63a7428792c503a90ef095e1e8055c7ba8d7d112b54ea5a318fa1675eab",
+    },
+    {
+        "path": "audit/11-image-inspect.json",
+        "size": 682,
+        "sha256": "c355d995173db7b7600ad1dc25774f28e76f620300252f165288797c931b8b81",
+    },
+    {
+        "path": "audit/20-cache-preflight.json",
+        "size": 1900,
+        "sha256": "0c67229f0731b1e573f84a1ca3b97fb8aa2e51e4157e66c644133e2037c00273",
+    },
+    {
+        "path": "audit/30-environment.json",
+        "size": 1995,
+        "sha256": "343602c0ad150e9b6642a31d3f2304e816ae8819b706d7774371625ed7fe753c",
+    },
+    {
+        "path": "audit/31-model-assets.json",
+        "size": 2051,
+        "sha256": "e734f83f4f9149ea002982c6a48997445d71ba24b2c9424519f025dd63bbe851",
+    },
+    {
+        "path": "audit/32-model-contract.json",
+        "size": 2232,
+        "sha256": "db0bb5710a3c6cd37a68f8142d43d2e2633254eca936be00c0faceefee6cd50c",
+    },
+    {
+        "path": "audit/60-historical-preservation.json",
+        "size": 301,
+        "sha256": "927c57d5390bf2267b22b6af2718035530f48071ea48cc926329a696397b319d",
+    },
+    {
+        "path": "audit/70-phase-manifest.json",
+        "size": 9990,
+        "sha256": "82122edec3b647c39946bdba6ebfa3c74d36065a084632e8d45c38b31eaaf97a",
+    },
+    {
+        "path": "audit/71-aggregate-gate.json",
+        "size": 1287,
+        "sha256": "5772642484357bdfa4b7132bdbea974092c823e1207c57b60f7aec31ce7f22f3",
+    },
+    {
+        "path": "audit/71-aggregate-gate.stderr.log",
+        "size": 31,
+        "sha256": "a336516b29c7b7fd395d6b2008409a5d8018b5d9c5616831d369cbd15078a812",
+    },
+    {
+        "path": "audit/78-failure-diagnostic.json",
+        "size": 855,
+        "sha256": "40f1163d031fc68555363980b57821f87b103fdffd0e33880f0941361ae42338",
+    },
+    {
+        "path": "audit/79-historical-preservation-final.json",
+        "size": 301,
+        "sha256": "927c57d5390bf2267b22b6af2718035530f48071ea48cc926329a696397b319d",
+    },
+    {
+        "path": "audit/80-campaign-result.json",
+        "size": 762,
+        "sha256": "b4f2c8fa42384ae4791071b828f2cf0fccc9e50f9e2e69e928a8b9a583b2047e",
+    },
+    {
+        "path": "audit/81-campaign-file-manifest.json",
+        "size": 35243,
+        "sha256": "02f7a06d64969ed4ebe2bb1a575ba7308279cee5b3f3ae51663fceb676cc4eec",
+    },
+    {
+        "path": "audit/82-campaign-closure.json",
+        "size": 660,
+        "sha256": "1f65ea6261fabb007be1f15a457e2c9ff71925251c5b3af568e061890556e219",
+    },
+    {
+        "path": "wave0/receipts/model-contract.json",
+        "size": 9623,
+        "sha256": "5589eb3e64fe9727212e3467f9e3ca6979e008b31e69e5a8ace0e0919607de9d",
+    },
+]
 _STREAM_DIRECTORIES = [
     "audit",
     "wave0",
@@ -257,14 +427,26 @@ def _prior_attempts() -> dict[str, object]:
     failed_run_ids = [_FAILED_RUN_ID, _FAILED_VALIDATION_ID]
     timeout_run_ids = [_TIMEOUT_RUN_ID, _TIMEOUT_VALIDATION_ID]
     stream_run_ids = [_STREAM_RUN_ID, _STREAM_VALIDATION_ID]
+    aggregate_run_ids = [_AGGREGATE_RUN_ID, _AGGREGATE_VALIDATION_ID]
     return {
-        "run_names": [_FAILED_RUN_ID, _TIMEOUT_RUN_ID, _STREAM_RUN_ID],
-        "image_tags": [_FAILED_IMAGE_TAG, _STREAM_IMAGE_TAG],
+        "run_names": [
+            _FAILED_RUN_ID,
+            _TIMEOUT_RUN_ID,
+            _STREAM_RUN_ID,
+            _AGGREGATE_RUN_ID,
+        ],
+        "image_tags": [
+            _FAILED_IMAGE_TAG,
+            _AGGREGATE_IMAGE_TAG,
+            _STREAM_IMAGE_TAG,
+        ],
         "lease_names": [
             f"{_FAILED_RUN_ID}.release.json",
             f"{_FAILED_RUN_ID}.released",
             f"{_STREAM_RUN_ID}.release.json",
             f"{_STREAM_RUN_ID}.released",
+            f"{_AGGREGATE_RUN_ID}.release.json",
+            f"{_AGGREGATE_RUN_ID}.released",
         ],
         "authorization_evidence": [
             {
@@ -281,6 +463,11 @@ def _prior_attempts() -> dict[str, object]:
                 "run_id": _STREAM_RUN_ID,
                 "path": "audit/00-identity.json",
                 "owner_authorization_id": _STREAM_OWNER,
+            },
+            {
+                "run_id": _AGGREGATE_RUN_ID,
+                "path": "audit/00-identity.json",
+                "owner_authorization_id": _AGGREGATE_OWNER,
             },
         ],
         "attempts": [
@@ -366,6 +553,41 @@ def _prior_attempts() -> dict[str, object]:
                     "82-campaign-closure.json",
                 ],
                 "latest_write_utc": "2026-08-28T18:10:34.6753199Z",
+                "links_absent": True,
+            },
+            {
+                "state": "aggregate-cache-inventory-contract-failure",
+                "run_id": _AGGREGATE_RUN_ID,
+                "source_commit": _AGGREGATE_SOURCE,
+                "specification_commit": _SPEC,
+                "plan_commit": "7dbd3a7576ea76beccfc64f748c4e495259ea89b",
+                "registered_run_ids": aggregate_run_ids,
+                "registered_image_tags": [
+                    _AGGREGATE_IMAGE_TAG,
+                    _AGGREGATE_VALIDATION_TAG,
+                ],
+                "registered_paths": _registered_paths(artifact_root, aggregate_run_ids),
+                "owner_authorization_id": _AGGREGATE_OWNER,
+                "run_file_count": 137,
+                "run_inventory_sha256": _AGGREGATE_RUN_SHA256,
+                "directory_names": _AGGREGATE_DIRECTORIES,
+                "key_file_records": _AGGREGATE_KEY_FILES,
+                "image_tag": _AGGREGATE_IMAGE_TAG,
+                "image_id": _AGGREGATE_IMAGE_ID,
+                "release_record_sha256": _AGGREGATE_RELEASE_SHA256,
+                "released_lease_sha256": _AGGREGATE_RELEASED_SHA256,
+                "validation_present": False,
+                "replica_directory_names_present": _AGGREGATE_REPLICA_DIRECTORIES,
+                "checkpoint_file_paths_present": _AGGREGATE_CHECKPOINT_FILES,
+                "success_receipt_present": False,
+                "closure_paths_present": [
+                    "78-failure-diagnostic.json",
+                    "79-historical-preservation-final.json",
+                    "80-campaign-result.json",
+                    "81-campaign-file-manifest.json",
+                    "82-campaign-closure.json",
+                ],
+                "latest_write_utc": "2026-08-29T06:13:25.1659510Z",
                 "links_absent": True,
             },
         ],
@@ -795,29 +1017,35 @@ $Result | ConvertTo-Json -Depth 8 -Compress
 
 def _run_prior_attempt_inventory(
     tmp_path: Path, defect: str = ""
-) -> tuple[subprocess.CompletedProcess[str], Path, Path, Path, Path]:
+) -> tuple[subprocess.CompletedProcess[str], Path, Path, Path, Path, Path]:
     extended_tmp = Path("\\\\?\\" + str(tmp_path.resolve()))
     artifact = extended_tmp / "artifacts"
     a11_root = artifact / "a11-runs"
     expected_run1 = a11_root / _FAILED_RUN_ID
     expected_run2 = a11_root / _TIMEOUT_RUN_ID
     expected_run3 = a11_root / _STREAM_RUN_ID
+    expected_run4 = a11_root / _AGGREGATE_RUN_ID
     outside_run1 = extended_tmp / "outside-run1"
     outside_run2 = extended_tmp / "outside-run2"
     outside_run3 = extended_tmp / "outside-run3"
+    outside_run4 = extended_tmp / "outside-run4"
     run1_root = outside_run1 if defect == "run1-link" else expected_run1
     run2_root = outside_run2 if defect == "run2-link" else expected_run2
     run3_root = outside_run3 if defect == "run3-link" else expected_run3
+    run4_root = outside_run4 if defect == "run4-link" else expected_run4
     expected_leases = artifact / "leases"
     outside_leases = extended_tmp / "outside-leases"
     lease_root = outside_leases if defect == "lease-link" else expected_leases
     (run1_root / "audit").mkdir(parents=True)
     (run2_root / "audit").mkdir(parents=True)
     (run3_root / "audit").mkdir(parents=True)
+    (run4_root / "audit").mkdir(parents=True)
     for relative in ("wave0/checkpoints", "wave0/model_cache", "wave0/receipts"):
         (run2_root / relative).mkdir(parents=True)
     for relative in _STREAM_DIRECTORIES:
         (run3_root / relative).mkdir(parents=True, exist_ok=True)
+    for relative in _AGGREGATE_DIRECTORIES:
+        (run4_root / relative).mkdir(parents=True, exist_ok=True)
     lease_root.mkdir(parents=True)
     lease_lock = artifact / "leases" / f"{_GPU}.json"
 
@@ -902,6 +1130,19 @@ def _run_prior_attempt_inventory(
         ),
         encoding="utf-8",
     )
+    (run4_root / "audit" / "00-identity.json").write_text(
+        json.dumps(
+            identity(
+                _AGGREGATE_RUN_ID,
+                _AGGREGATE_IMAGE_TAG,
+                _AGGREGATE_VALIDATION_ID,
+                _AGGREGATE_VALIDATION_TAG,
+                _AGGREGATE_SOURCE,
+                _AGGREGATE_OWNER,
+            )
+        ),
+        encoding="utf-8",
+    )
     for record in _STREAM_KEY_FILES[1:]:
         path = run3_root / str(record["path"])
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -910,6 +1151,23 @@ def _run_prior_attempt_inventory(
     for index in range(45):
         (filler_root / f"filler-{index:02d}.bin").write_bytes(
             f"filler-{index:02d}".encode()
+        )
+    for record in _AGGREGATE_KEY_FILES[1:]:
+        path = run4_root / str(record["path"])
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(str(record["path"]), encoding="utf-8")
+    for relative in _AGGREGATE_CHECKPOINT_FILES:
+        (run4_root / relative).write_bytes(relative.encode())
+    for index in range(12):
+        receipt = run4_root / "wave0" / "receipts" / f"calibration-{index:02d}.json"
+        receipt.write_text(f"calibration-{index:02d}", encoding="utf-8")
+    aggregate_filler_root = (
+        run4_root / "wave0/model_cache/snapshots/facebook--dinov2-small/"
+        "ed25f3a31f01632728cabb09d1542f84ab7b0056/.cache/huggingface/trees"
+    )
+    for index in range(96):
+        (aggregate_filler_root / f"filler-{index:02d}.bin").write_bytes(
+            f"aggregate-filler-{index:02d}".encode()
         )
     (lease_root / f"{_FAILED_RUN_ID}.released").write_text("released", encoding="utf-8")
     (lease_root / f"{_FAILED_RUN_ID}.release.json").write_text(
@@ -920,6 +1178,12 @@ def _run_prior_attempt_inventory(
     )
     (lease_root / f"{_STREAM_RUN_ID}.release.json").write_text(
         "stream-release", encoding="utf-8"
+    )
+    (lease_root / f"{_AGGREGATE_RUN_ID}.released").write_text(
+        "aggregate-released", encoding="utf-8"
+    )
+    (lease_root / f"{_AGGREGATE_RUN_ID}.release.json").write_text(
+        "aggregate-release", encoding="utf-8"
     )
     junctions = []
     if defect == "run1-link":
@@ -939,6 +1203,12 @@ def _run_prior_attempt_inventory(
         junctions.append(
             f"New-Item -ItemType Junction -Path {_ps(str(expected_run3))} "
             f"-Target {_ps(str(outside_run3))} | Out-Null"
+        )
+    if defect == "run4-link":
+        a11_root.mkdir(parents=True, exist_ok=True)
+        junctions.append(
+            f"New-Item -ItemType Junction -Path {_ps(str(expected_run4))} "
+            f"-Target {_ps(str(outside_run4))} | Out-Null"
         )
     if defect == "lease-link":
         artifact.mkdir(exist_ok=True)
@@ -970,13 +1240,37 @@ def _run_prior_attempt_inventory(
         (run3_root / "wave0" / "checkpoints" / "unexpected.bin").write_bytes(b"x")
     if defect == "stream-release-missing":
         (lease_root / f"{_STREAM_RUN_ID}.released").unlink()
+    if defect == "aggregate-missing-closure":
+        (run4_root / "audit" / "82-campaign-closure.json").unlink()
+    if defect == "aggregate-extra-directory":
+        (run4_root / "unexpected").mkdir()
+    if defect == "aggregate-validation":
+        (a11_root / _AGGREGATE_VALIDATION_ID).mkdir()
+    if defect == "aggregate-missing-replica":
+        checkpoint = run4_root / _AGGREGATE_CHECKPOINT_FILES[-1]
+        checkpoint.unlink()
+        checkpoint.parent.rmdir()
+    if defect == "aggregate-missing-checkpoint":
+        (run4_root / _AGGREGATE_CHECKPOINT_FILES[-1]).unlink()
+    if defect == "aggregate-extra-replica":
+        (run4_root / "wave0/replica-99").mkdir()
+    if defect == "aggregate-extra-checkpoint":
+        (run4_root / "wave0/checkpoints/calibration-00/unexpected.bin").write_bytes(
+            b"x"
+        )
+    if defect == "aggregate-success-receipt":
+        (run4_root / "wave0/receipts/statistical-replay-calibration.json").write_text(
+            "unexpected", encoding="utf-8"
+        )
+    if defect == "aggregate-release-missing":
+        (lease_root / f"{_AGGREGATE_RUN_ID}.released").unlink()
     native = (
         "return [pscustomobject]@{ExitCode=125;Stdout='';Stderr='daemon unavailable'}"
         if defect == "docker-failure"
         else f"""
 if ($ArgumentList[1] -ceq 'ls') {{
     return [pscustomobject]@{{
-        ExitCode=0;Stdout={_ps(_FAILED_IMAGE_TAG + chr(10) + _STREAM_IMAGE_TAG + chr(10) + (_TIMEOUT_IMAGE_TAG + chr(10) if defect == 'unexpected-image' else ''))};Stderr=''
+        ExitCode=0;Stdout={_ps(_FAILED_IMAGE_TAG + chr(10) + _AGGREGATE_IMAGE_TAG + chr(10) + _STREAM_IMAGE_TAG + chr(10) + (_TIMEOUT_IMAGE_TAG + chr(10) if defect == 'unexpected-image' else ''))};Stderr=''
     }}
 }}
 $RequestedTag = [string]$ArgumentList[-1]
@@ -984,13 +1278,25 @@ $ImageId = if ($RequestedTag -ceq {_ps(_FAILED_IMAGE_TAG)}) {{
     {_ps(_FAILED_IMAGE_ID)}
 }} elseif ($RequestedTag -ceq {_ps(_STREAM_IMAGE_TAG)}) {{
     {_ps(_STREAM_IMAGE_ID)}
+}} elseif ($RequestedTag -ceq {_ps(_AGGREGATE_IMAGE_TAG)}) {{
+    {_ps(_AGGREGATE_IMAGE_ID)}
 }} else {{
     throw "unexpected image inspect tag: $RequestedTag"
 }}
-$Labels = if ($RequestedTag -ceq {_ps(_STREAM_IMAGE_TAG)}) {{
+$Labels = if ($RequestedTag -cin @({_ps(_STREAM_IMAGE_TAG)}, {_ps(_AGGREGATE_IMAGE_TAG)})) {{
+    $LabelSource = if ($RequestedTag -ceq {_ps(_STREAM_IMAGE_TAG)}) {{
+        {_ps(_STREAM_SOURCE)}
+    }} else {{
+        {_ps('0' * 40 if defect == 'aggregate-image-label-drift' else _AGGREGATE_SOURCE)}
+    }}
+    $LabelRunId = if ($RequestedTag -ceq {_ps(_STREAM_IMAGE_TAG)}) {{
+        {_ps(_STREAM_RUN_ID)}
+    }} else {{
+        {_ps(_AGGREGATE_RUN_ID)}
+    }}
     [ordered]@{{
-        'org.opencontainers.image.revision' = {_ps(_STREAM_SOURCE)}
-        'org.opencontainers.image.val.run_id' = {_ps(_STREAM_RUN_ID)}
+        'org.opencontainers.image.revision' = $LabelSource
+        'org.opencontainers.image.val.run_id' = $LabelRunId
         'org.opencontainers.image.val.spec_commit' = {_ps(_SPEC)}
         'org.opencontainers.image.val.plan_commit' = '7dbd3a7576ea76beccfc64f748c4e495259ea89b'
         'org.opencontainers.image.base.digest' = {_ps(_BASE)}
@@ -1022,7 +1328,7 @@ Get-A11PriorAttemptInventory -ArtifactRoot {_ps(str(artifact))} |
         ),
         body,
     )
-    return completed, run1_root, run2_root, run3_root, lease_root
+    return completed, run1_root, run2_root, run3_root, run4_root, lease_root
 
 
 def _run_project_container_inventory(
@@ -1681,7 +1987,7 @@ def test_cache_preflight_and_replica_keep_exact_pass_stream_contracts(
         assert completed.stderr
 
 
-def test_read_only_preflight_accepts_exact_three_attempt_evidence() -> None:
+def test_read_only_preflight_accepts_exact_four_attempt_evidence() -> None:
     completed = _invoke_functions(
         ("Test-A11ReadOnlyPreflight",), _preflight_body(_preflight())
     )
@@ -1690,12 +1996,13 @@ def test_read_only_preflight_accepts_exact_three_attempt_evidence() -> None:
     assert json.loads(completed.stdout)["head"] == _SOURCE
 
 
-def test_three_prior_attempts_keep_distinct_closed_state_schemas() -> None:
+def test_four_prior_attempts_keep_distinct_closed_state_schemas() -> None:
     attempts = _prior_attempts()["attempts"]
     assert [attempt["state"] for attempt in attempts] == [
         "launcher-stage-failure",
         "image-build-timeout",
         "foundation-stream-contract-failure",
+        "aggregate-cache-inventory-contract-failure",
     ]
     assert set(attempts[0]) == {
         "state",
@@ -1760,9 +2067,37 @@ def test_three_prior_attempts_keep_distinct_closed_state_schemas() -> None:
         "latest_write_utc",
         "links_absent",
     }
+    assert set(attempts[3]) == {
+        "state",
+        "run_id",
+        "source_commit",
+        "specification_commit",
+        "plan_commit",
+        "registered_run_ids",
+        "registered_image_tags",
+        "registered_paths",
+        "owner_authorization_id",
+        "run_file_count",
+        "run_inventory_sha256",
+        "directory_names",
+        "key_file_records",
+        "image_tag",
+        "image_id",
+        "release_record_sha256",
+        "released_lease_sha256",
+        "validation_present",
+        "replica_directory_names_present",
+        "checkpoint_file_paths_present",
+        "success_receipt_present",
+        "closure_paths_present",
+        "latest_write_utc",
+        "links_absent",
+    }
 
 
-@pytest.mark.parametrize("owner", [_FAILED_OWNER, _TIMEOUT_OWNER, _STREAM_OWNER])
+@pytest.mark.parametrize(
+    "owner", [_FAILED_OWNER, _TIMEOUT_OWNER, _STREAM_OWNER, _AGGREGATE_OWNER]
+)
 def test_read_only_preflight_rejects_each_consumed_authorization(owner: str) -> None:
     completed = _invoke_functions(
         ("Test-A11ReadOnlyPreflight",),
@@ -1779,6 +2114,7 @@ _PRIOR_MUTATIONS = [
     (("lease_names",), []),
     (("authorization_evidence", 1, "owner_authorization_id"), _FAILED_OWNER),
     (("authorization_evidence", 2, "owner_authorization_id"), _TIMEOUT_OWNER),
+    (("authorization_evidence", 3, "owner_authorization_id"), _STREAM_OWNER),
     (("links_absent",), False),
     (("attempts", 0, "state"), "image-build-timeout"),
     (("attempts", 0, "source_commit"), "0" * 40),
@@ -1829,6 +2165,30 @@ _PRIOR_MUTATIONS = [
     (("attempts", 2, "closure_paths_present"), []),
     (("attempts", 2, "latest_write_utc"), "not-a-time"),
     (("attempts", 2, "links_absent"), False),
+    (("attempts", 3, "state"), "foundation-stream-contract-failure"),
+    (("attempts", 3, "run_id"), _AGGREGATE_VALIDATION_ID),
+    (("attempts", 3, "source_commit"), "0" * 40),
+    (("attempts", 3, "specification_commit"), "0" * 40),
+    (("attempts", 3, "plan_commit"), "0" * 40),
+    (("attempts", 3, "registered_run_ids"), [_AGGREGATE_RUN_ID]),
+    (("attempts", 3, "registered_image_tags"), [_AGGREGATE_IMAGE_TAG]),
+    (("attempts", 3, "registered_paths"), []),
+    (("attempts", 3, "owner_authorization_id"), _STREAM_OWNER),
+    (("attempts", 3, "run_file_count"), 136),
+    (("attempts", 3, "run_inventory_sha256"), "0" * 64),
+    (("attempts", 3, "directory_names"), ["audit"]),
+    (("attempts", 3, "key_file_records", 10, "sha256"), "0" * 64),
+    (("attempts", 3, "image_tag"), _AGGREGATE_VALIDATION_TAG),
+    (("attempts", 3, "image_id"), "sha256:" + "0" * 64),
+    (("attempts", 3, "release_record_sha256"), "0" * 64),
+    (("attempts", 3, "released_lease_sha256"), "0" * 64),
+    (("attempts", 3, "validation_present"), True),
+    (("attempts", 3, "replica_directory_names_present"), []),
+    (("attempts", 3, "checkpoint_file_paths_present"), []),
+    (("attempts", 3, "success_receipt_present"), True),
+    (("attempts", 3, "closure_paths_present"), []),
+    (("attempts", 3, "latest_write_utc"), "not-a-time"),
+    (("attempts", 3, "links_absent"), False),
 ]
 
 
@@ -1965,13 +2325,14 @@ def test_prior_attempt_inventory_returns_closed_sorted_evidence(
         run1_root,
         run2_root,
         run3_root,
+        run4_root,
         lease_root,
     ) = _run_prior_attempt_inventory(tmp_path)
 
     assert completed.returncode == 0, completed.stderr
     evidence = json.loads(completed.stdout)
     records_by_root = []
-    for root in (run1_root, run2_root, run3_root):
+    for root in (run1_root, run2_root, run3_root, run4_root):
         records = []
         for path in sorted(root.rglob("*")):
             if path.is_file():
@@ -1997,8 +2358,13 @@ def test_prior_attempt_inventory_returns_closed_sorted_evidence(
         _FAILED_RUN_ID,
         _TIMEOUT_RUN_ID,
         _STREAM_RUN_ID,
+        _AGGREGATE_RUN_ID,
     ]
-    assert evidence["image_tags"] == [_FAILED_IMAGE_TAG, _STREAM_IMAGE_TAG]
+    assert evidence["image_tags"] == [
+        _FAILED_IMAGE_TAG,
+        _AGGREGATE_IMAGE_TAG,
+        _STREAM_IMAGE_TAG,
+    ]
     assert evidence["lease_names"] == sorted(path.name for path in lease_root.iterdir())
     assert evidence["authorization_evidence"] == [
         {
@@ -2016,11 +2382,17 @@ def test_prior_attempt_inventory_returns_closed_sorted_evidence(
             "path": "audit/00-identity.json",
             "owner_authorization_id": _STREAM_OWNER,
         },
+        {
+            "run_id": _AGGREGATE_RUN_ID,
+            "path": "audit/00-identity.json",
+            "owner_authorization_id": _AGGREGATE_OWNER,
+        },
     ]
     assert [attempt["state"] for attempt in attempts] == [
         "launcher-stage-failure",
         "image-build-timeout",
         "foundation-stream-contract-failure",
+        "aggregate-cache-inventory-contract-failure",
     ]
     for attempt, records in zip(attempts, records_by_root, strict=True):
         assert attempt["run_file_count"] == len(records)
@@ -2126,6 +2498,51 @@ def test_prior_attempt_inventory_returns_closed_sorted_evidence(
         .total_seconds()
         == 0
     )
+    assert attempts[3]["registered_run_ids"] == [
+        _AGGREGATE_RUN_ID,
+        _AGGREGATE_VALIDATION_ID,
+    ]
+    assert attempts[3]["registered_image_tags"] == [
+        _AGGREGATE_IMAGE_TAG,
+        _AGGREGATE_VALIDATION_TAG,
+    ]
+    assert attempts[3]["registered_paths"] == _registered_paths(
+        str(run4_root.parents[1]), [_AGGREGATE_RUN_ID, _AGGREGATE_VALIDATION_ID]
+    )
+    aggregate_records = {record["path"]: record for record in records_by_root[3]}
+    assert attempts[3]["key_file_records"] == [
+        aggregate_records[record["path"]] for record in _AGGREGATE_KEY_FILES
+    ]
+    assert attempts[3]["directory_names"] == _AGGREGATE_DIRECTORIES
+    assert attempts[3]["image_tag"] == _AGGREGATE_IMAGE_TAG
+    assert attempts[3]["image_id"] == _AGGREGATE_IMAGE_ID
+    assert (
+        attempts[3]["release_record_sha256"]
+        == hashlib.sha256(b"aggregate-release").hexdigest()
+    )
+    assert (
+        attempts[3]["released_lease_sha256"]
+        == hashlib.sha256(b"aggregate-released").hexdigest()
+    )
+    assert attempts[3]["validation_present"] is False
+    assert (
+        attempts[3]["replica_directory_names_present"] == _AGGREGATE_REPLICA_DIRECTORIES
+    )
+    assert attempts[3]["checkpoint_file_paths_present"] == _AGGREGATE_CHECKPOINT_FILES
+    assert attempts[3]["success_receipt_present"] is False
+    assert attempts[3]["closure_paths_present"] == [
+        "78-failure-diagnostic.json",
+        "79-historical-preservation-final.json",
+        "80-campaign-result.json",
+        "81-campaign-file-manifest.json",
+        "82-campaign-closure.json",
+    ]
+    assert (
+        datetime.fromisoformat(attempts[3]["latest_write_utc"])
+        .utcoffset()
+        .total_seconds()
+        == 0
+    )
     assert evidence["links_absent"] is True
 
 
@@ -2135,6 +2552,7 @@ def test_prior_attempt_inventory_returns_closed_sorted_evidence(
         "run1-link",
         "run2-link",
         "run3-link",
+        "run4-link",
         "lease-link",
         "extra-run",
         "timeout-payload",
@@ -2147,13 +2565,23 @@ def test_prior_attempt_inventory_returns_closed_sorted_evidence(
         "stream-replica",
         "stream-checkpoint",
         "stream-release-missing",
+        "aggregate-missing-closure",
+        "aggregate-extra-directory",
+        "aggregate-validation",
+        "aggregate-missing-replica",
+        "aggregate-missing-checkpoint",
+        "aggregate-extra-replica",
+        "aggregate-extra-checkpoint",
+        "aggregate-image-label-drift",
+        "aggregate-success-receipt",
+        "aggregate-release-missing",
         "docker-failure",
     ],
 )
 def test_prior_attempt_inventory_rejects_links_or_docker_failure(
     tmp_path: Path, defect: str
 ) -> None:
-    completed, _, _, _, _ = _run_prior_attempt_inventory(tmp_path, defect)
+    completed, _, _, _, _, _ = _run_prior_attempt_inventory(tmp_path, defect)
 
     assert completed.returncode != 0
     assert completed.stderr
@@ -2374,10 +2802,14 @@ def test_phase_destination_gate_accepts_two_fresh_identities(
         (1, "run_id", _TIMEOUT_VALIDATION_ID),
         (0, "run_id", _STREAM_RUN_ID),
         (1, "run_id", _STREAM_VALIDATION_ID),
+        (0, "run_id", _AGGREGATE_RUN_ID),
+        (1, "run_id", _AGGREGATE_VALIDATION_ID),
         (0, "image_tag", _FAILED_IMAGE_TAG),
         (1, "image_tag", _TIMEOUT_VALIDATION_TAG),
         (0, "image_tag", _STREAM_IMAGE_TAG),
         (1, "image_tag", _STREAM_VALIDATION_TAG),
+        (0, "image_tag", _AGGREGATE_IMAGE_TAG),
+        (1, "image_tag", _AGGREGATE_VALIDATION_TAG),
     ],
 )
 def test_phase_destination_gate_rejects_any_preserved_runtime_identity(
@@ -2394,7 +2826,7 @@ def test_phase_destination_gate_rejects_any_preserved_runtime_identity(
     assert counters["docker_calls"] == 0
 
 
-@pytest.mark.parametrize("attempt_index", [1, 2])
+@pytest.mark.parametrize("attempt_index", [1, 2, 3])
 @pytest.mark.parametrize("path_index", range(8))
 def test_phase_destination_gate_rejects_each_preserved_path_even_when_absent(
     tmp_path: Path, path_index: int, attempt_index: int
@@ -2426,6 +2858,7 @@ def test_phase_destination_gate_rejects_each_preserved_path_even_when_absent(
         (_FAILED_OWNER, _FAILED_OWNER),
         (_TIMEOUT_OWNER, _TIMEOUT_OWNER),
         (_STREAM_OWNER, _STREAM_OWNER),
+        (_AGGREGATE_OWNER, _AGGREGATE_OWNER),
         (_OWNER, "OWNER-A11-DIFFERENT"),
     ],
 )
@@ -2775,40 +3208,19 @@ New-A11CachePreflightArguments -Identity $Identity -Worktree 'D:/repo' |
 
 def test_cache_inventory_digest_matches_python_canonical_json(tmp_path: Path) -> None:
     cache = tmp_path / "model_cache"
-    (cache / "nested").mkdir(parents=True)
+    detector = cache / "snapshots" / "PekingU--rtdetr_r18vd" / "weights.bin"
+    backbone = cache / "snapshots" / "facebook--dinov2-small" / "weights.bin"
+    detector.parent.mkdir(parents=True)
+    backbone.parent.mkdir(parents=True)
     metadata_parent = cache / "snapshot" / ".cache" / "huggingface" / "download"
     metadata_parent.mkdir(parents=True)
-    (cache / "a.bin").write_bytes(b"alpha")
-    (cache / "nested" / "b.bin").write_bytes(b"beta")
+    detector.write_bytes(b"detector")
+    backbone.write_bytes(b"backbone")
     (metadata_parent / "config.json.metadata").write_text(
         "a" * 40 + "\n" + "b" * 64 + "\n123.5\n", encoding="utf-8"
     )
-    records = []
-    for path in sorted(cache.rglob("*")):
-        if path.is_file():
-            relative = path.relative_to(cache).as_posix()
-            if (
-                relative.endswith(".metadata")
-                and "/.cache/huggingface/download/" in f"/{relative}"
-            ):
-                lines = path.read_text(encoding="utf-8").splitlines()
-                content = f"{lines[0]}\n{lines[1]}\n".encode()
-            else:
-                content = path.read_bytes()
-            records.append(
-                {
-                    "path": relative,
-                    "size": len(content),
-                    "sha256": hashlib.sha256(content).hexdigest(),
-                }
-            )
-    expected = hashlib.sha256(
-        json.dumps(
-            {"files": records},
-            sort_keys=True,
-            separators=(",", ":"),
-        ).encode("utf-8")
-    ).hexdigest()
+    expected = "bfa3752e03d3df309b2fb38d7317739e4f996cddfdb27c6dc198e3beec072c5d"
+    assert statistical_replay._model_cache_inventory_sha256(cache) == expected
     body = f"""
 Get-A11CacheInventorySha256 -CacheRoot {_ps(str(cache))}
 """
@@ -2823,6 +3235,47 @@ Get-A11CacheInventorySha256 -CacheRoot {_ps(str(cache))}
     changed_timestamp = _invoke_functions(("Get-A11CacheInventorySha256",), body)
     assert changed_timestamp.returncode == 0, changed_timestamp.stderr
     assert changed_timestamp.stdout.strip() == expected
+
+
+def test_cache_inventory_digest_uses_unicode_scalar_order_in_both_languages(
+    tmp_path: Path,
+) -> None:
+    cache = tmp_path / "model_cache"
+    cache.mkdir()
+    (cache / "\ue000.bin").write_bytes(b"bmp")
+    (cache / "\U00010000.bin").write_bytes(b"supplementary")
+    expected = "f1f51de651cc5680c2662dbf1f86a9c8879ee6af36b85d3655e71e6bdc6d4542"
+
+    assert statistical_replay._model_cache_inventory_sha256(cache) == expected
+    completed = _invoke_functions(
+        ("Get-A11CacheInventorySha256",),
+        f"Get-A11CacheInventorySha256 -CacheRoot {_ps(str(cache))}",
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert completed.stdout.strip() == expected
+
+
+def test_cache_inventory_digest_normalizes_equivalent_root_spellings(
+    tmp_path: Path,
+) -> None:
+    cache = tmp_path / "model_cache"
+    cache.mkdir()
+    (cache / "weights.bin").write_bytes(b"weights")
+    expected = statistical_replay._model_cache_inventory_sha256(cache)
+    body = f"""
+@(
+    Get-A11CacheInventorySha256 -CacheRoot {_ps(str(cache))}
+    Get-A11CacheInventorySha256 -CacheRoot {_ps(str(cache) + chr(92))}
+    Push-Location {_ps(str(cache.parent))}
+    try {{ Get-A11CacheInventorySha256 -CacheRoot 'model_cache' }}
+    finally {{ Pop-Location }}
+) | ConvertTo-Json -Compress
+"""
+    completed = _invoke_functions(("Get-A11CacheInventorySha256",), body)
+
+    assert completed.returncode == 0, completed.stderr
+    assert json.loads(completed.stdout) == [expected, expected, expected]
 
 
 def test_replica_arguments_are_fresh_offline_gpu_processes() -> None:

@@ -696,9 +696,10 @@ def _validated_file_record(
 def _model_cache_inventory_sha256(root: Path) -> str:
     entries: list[dict[str, object]] = []
     try:
-        paths = sorted(root.rglob("*"))
+        paths = list(root.rglob("*"))
     except OSError as error:
         raise StatisticalReplayError("model cache inventory is unavailable") from error
+    inventory_files: list[tuple[str, Path]] = []
     for path in paths:
         if _is_link_or_junction(path):
             raise StatisticalReplayError("model cache contains a link or junction")
@@ -707,6 +708,8 @@ def _model_cache_inventory_sha256(root: Path) -> str:
         if not path.is_file():
             raise StatisticalReplayError("model cache contains a non-regular file")
         relative = path.relative_to(root).as_posix()
+        inventory_files.append((relative, path))
+    for relative, path in sorted(inventory_files, key=lambda item: item[0]):
         if relative.endswith(".metadata") and "/.cache/huggingface/download/" in (
             f"/{relative}"
         ):
