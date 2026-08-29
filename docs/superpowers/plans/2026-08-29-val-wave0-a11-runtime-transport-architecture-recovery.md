@@ -11,8 +11,10 @@
 ## Global Constraints
 
 - The approved design is `docs/superpowers/specs/2026-08-29-val-wave0-a11-runtime-transport-architecture-recovery-design.md` at commit `db047dcb8ad602fc4ac316a743ab4ddec3168cd5`.
-- This plan commit must be the direct child of that design commit and must change only this plan file.
-- The implementation must be one append-only commit, the direct child of the plan commit, changing exactly the seven paths in the file map below.
+- The original plan commit is `e31fc0c10fe34b480f7b2ee3d12a2e55530c6350`; it is the direct child of the design commit and changes only this plan file.
+- Erratum authority (2026-08-29): after a read-only entry review proved that placing diagnostic evidence below the artifact root would change the frozen 64,306-file historical baseline, the owner authorized proceeding under professional judgment with the proposed narrow correction. This append-only erratum moves only the diagnostic evidence root outside the artifact root; it does not relax or replace any other requirement.
+- This erratum commit must be the direct child of the original plan commit and must change only this plan file.
+- The implementation must be one append-only commit, the direct child of this erratum commit, changing exactly the seven paths in the file map below.
 - Author and committer must both be exactly `kuotunyu <61350295+kuotunyu@users.noreply.github.com>`.
 - Do not amend, reset, rebase, squash, stash, cherry-pick, clean historical evidence, push, merge, tag, release, or modify another repository.
 - Do not invoke `scripts/run_wave0_a11.ps1`, generate or guess an `OwnerAuthorizationId`, acquire a GPU lease, initialize a model, create a calibration or validation identity, access RDD, or start Wave 1.
@@ -87,18 +89,22 @@ Run from the linked worktree:
 ```powershell
 $Design = 'db047dcb8ad602fc4ac316a743ab4ddec3168cd5'
 $PlanPath = 'docs/superpowers/plans/2026-08-29-val-wave0-a11-runtime-transport-architecture-recovery.md'
-$Plan = (git rev-parse HEAD).Trim()
-if ((git rev-parse "$Plan^").Trim() -cne $Design) { throw 'plan parent mismatch' }
+$OriginalPlan = 'e31fc0c10fe34b480f7b2ee3d12a2e55530c6350'
+$Erratum = (git rev-parse HEAD).Trim()
+if ((git rev-parse "$Erratum^").Trim() -cne $OriginalPlan) { throw 'erratum parent mismatch' }
+if ((git rev-parse "$OriginalPlan^").Trim() -cne $Design) { throw 'original plan parent mismatch' }
 if ((git branch --show-current).Trim() -cne 'codex/wave0-model-contract') {
     throw 'branch mismatch'
 }
-$Paths = @(git diff-tree --no-commit-id --name-only -r $Plan)
-if ($Paths.Count -ne 1 -or $Paths[0] -cne $PlanPath) { throw 'plan scope mismatch' }
-$Identity = @(git show -s --format='%an <%ae>|%cn <%ce>' $Plan)
-if ($Identity.Count -ne 1 -or $Identity[0] -cne (
-    'kuotunyu <61350295+kuotunyu@users.noreply.github.com>|' +
-    'kuotunyu <61350295+kuotunyu@users.noreply.github.com>'
-)) { throw 'plan identity mismatch' }
+foreach ($Commit in @($OriginalPlan, $Erratum)) {
+    $Paths = @(git diff-tree --no-commit-id --name-only -r $Commit)
+    if ($Paths.Count -ne 1 -or $Paths[0] -cne $PlanPath) { throw 'plan/erratum scope mismatch' }
+    $Identity = @(git show -s --format='%an <%ae>|%cn <%ce>' $Commit)
+    if ($Identity.Count -ne 1 -or $Identity[0] -cne (
+        'kuotunyu <61350295+kuotunyu@users.noreply.github.com>|' +
+        'kuotunyu <61350295+kuotunyu@users.noreply.github.com>'
+    )) { throw 'plan/erratum identity mismatch' }
+}
 $Canonical = '<repo>'
 if (@(git status --porcelain=v1).Count -ne 0) { throw 'linked worktree dirty' }
 if (@(git -C $Canonical status --porcelain=v1).Count -ne 0) {
@@ -180,7 +186,7 @@ zero numeric CUDA compute processes
 21 historical images / 9a41d2c8e277f230400187874547b33ea0d9a3376707b46da4f267ee0cb3231f
 ```
 
-Allowed commands are `docker info`, `docker ps --all`, `docker inspect`, `docker image inspect`, `docker image ls`, `nvidia-smi`, `Get-ChildItem`, `Get-Item`, `Get-FileHash`, and Git reads. Do not call Docker build/run/prune or the launcher. Require that `D:\vision-active-learning-loop-artifacts\wave0\a11-dependency-diagnostics` contains no identity record whose `source_commit` equals the future implementation commit; at this stage the implementation commit does not exist.
+Allowed commands are `docker info`, `docker ps --all`, `docker inspect`, `docker image inspect`, `docker image ls`, `nvidia-smi`, `Get-ChildItem`, `Get-Item`, `Get-FileHash`, and Git reads. Do not call Docker build/run/prune or the launcher. Require that `D:\vision-active-learning-loop-diagnostics\wave0\a11-dependency-diagnostics` contains no identity record whose `source_commit` equals the future implementation commit; at this stage the implementation commit does not exist.
 
 ---
 
@@ -954,7 +960,7 @@ The Buildx `--check` call is a Dockerfile validation only. Require exit 0 and no
 
 **Interfaces:**
 - Consumes: the complete uncommitted implementation from Tasks 2–5
-- Produces: one reviewed implementation commit whose parent is this plan commit
+- Produces: one reviewed implementation commit whose parent is this erratum commit
 
 - [ ] **Step 1: Run focused and full CPU tests**
 
@@ -1038,7 +1044,7 @@ Repeat Task 1 Steps 2–3 and compare the captured entry report byte-for-byte ex
 
 - [ ] **Step 5: Perform a cold requirements and code review**
 
-Use `requesting-code-review` and review the complete diff against the approved design and this plan. The reviewer must report `Critical=0` and `Important=0` for:
+Use `requesting-code-review` and review the complete diff against the approved design, original plan, and this erratum. The reviewer must report `Critical=0` and `Important=0` for:
 
 - registry/schema property closure and state-specific absence rules;
 - path containment, links, duplicate identities, unordered ordinals, and extra external objects;
@@ -1084,7 +1090,7 @@ git commit -m 'fix: harden A11 dependency transport boundary'
 
 - [ ] **Step 7: Verify the committed candidate before diagnostic eligibility**
 
-Require the implementation parent to equal the plan commit, exact seven changed paths, exact author/committer, clean linked and canonical worktrees, empty staging, unchanged `uv.lock`, and unchanged preservation report. Re-run the wrapper suite, full launcher suite, both parser gates, schema validation, Dockerfile `--check`, and `git show --check HEAD` from the committed tree.
+Require the implementation parent to equal the erratum commit, whose parent is the original plan commit `e31fc0c10fe34b480f7b2ee3d12a2e55530c6350`, exact seven changed paths, exact author/committer, clean linked and canonical worktrees, empty staging, unchanged `uv.lock`, and unchanged preservation report. Re-run the wrapper suite, full launcher suite, both parser gates, schema validation, Dockerfile `--check`, and `git show --check HEAD` from the committed tree.
 
 Do not describe the formal A11 runtime as fixed or passing. At this point the only permitted claim is that the source candidate passed CPU/repository/preservation review and is eligible for the one dependency-only diagnostic.
 
@@ -1094,7 +1100,7 @@ Do not describe the formal A11 runtime as fixed or passing. At this point the on
 
 **Files:**
 - Modify in repository: none
-- Create outside repository: one append-only directory under `D:\vision-active-learning-loop-artifacts\wave0\a11-dependency-diagnostics`
+- Create outside repository and outside the artifact baseline: one append-only directory under `D:\vision-active-learning-loop-diagnostics\wave0\a11-dependency-diagnostics`
 - Docker effect: BuildKit cache data only; no image export
 
 **Interfaces:**
@@ -1107,9 +1113,11 @@ Repeat Task 6 Step 7. Additionally require:
 
 ```powershell
 $Source = (git rev-parse HEAD).Trim()
-$Plan = (git rev-parse 'HEAD^').Trim()
-if ((git rev-parse 'HEAD^^').Trim() -cne 'db047dcb8ad602fc4ac316a743ab4ddec3168cd5') {
-    throw 'design/plan/source lineage mismatch'
+$Erratum = (git rev-parse 'HEAD^').Trim()
+$OriginalPlan = (git rev-parse 'HEAD^^').Trim()
+if ($OriginalPlan -cne 'e31fc0c10fe34b480f7b2ee3d12a2e55530c6350' -or
+    (git rev-parse 'HEAD^^^').Trim() -cne 'db047dcb8ad602fc4ac316a743ab4ddec3168cd5') {
+    throw 'design/original-plan/erratum/source lineage mismatch'
 }
 if ((docker info --format '{{.OSType}}|{{.ServerVersion}}').Trim() -cnotmatch '^linux\|[^|]+$') {
     throw 'Docker Linux engine unavailable'
@@ -1122,14 +1130,14 @@ $Compute = @(& nvidia-smi --query-compute-apps=pid --format=csv,noheader,nounits
 if ($Compute.Count -ne 0) { throw 'CUDA compute process exists' }
 ```
 
-Require zero project containers using the same inspect-based inventory as Task 1. Snapshot `docker image ls --no-trunc --digests` and all preservation hashes. Scan every existing `a11-dependency-diagnostics/*/00-identity.json`; if any contains this exact `$Source`, stop because this source already consumed its diagnostic.
+Require zero project containers using the same inspect-based inventory as Task 1. Snapshot `docker image ls --no-trunc --digests` and all preservation hashes. Scan every existing `D:\vision-active-learning-loop-diagnostics\wave0\a11-dependency-diagnostics\*\00-identity.json`; if any contains this exact `$Source`, stop because this source already consumed its diagnostic.
 
 - [ ] **Step 2: Create one fresh append-only diagnostic identity**
 
 Freeze the naming rule:
 
 ```text
-parent: D:\vision-active-learning-loop-artifacts\wave0\a11-dependency-diagnostics
+parent: D:\vision-active-learning-loop-diagnostics\wave0\a11-dependency-diagnostics
 child:  a11-dependencies-<first 12 source hex>-<yyyyMMddTHHmmssfffZ>-<8 lowercase GUID hex>
 ```
 
@@ -1151,7 +1159,8 @@ schema_version = 1
 diagnostic_type = a11-dependency-transport
 diagnostic_id
 source_commit
-plan_commit
+recovery_plan_commit = e31fc0c10fe34b480f7b2ee3d12a2e55530c6350
+recovery_plan_erratum_commit
 design_commit = db047dcb8ad602fc4ac316a743ab4ddec3168cd5
 specification_commit = b59b0d4407b98b460f6166ea7288ba6021dc7a78
 original_plan_commit = 7dbd3a7576ea76beccfc64f748c4e495259ea89b
