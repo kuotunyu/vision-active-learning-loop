@@ -6,6 +6,7 @@ import copy
 import hashlib
 import json
 import subprocess
+import tempfile
 from datetime import datetime
 from pathlib import Path
 
@@ -273,6 +274,88 @@ _AGGREGATE_KEY_FILES = [
         "sha256": "5589eb3e64fe9727212e3467f9e3ca6979e008b31e69e5a8ace0e0919607de9d",
     },
 ]
+
+_PRESERVED_RUN_ID = "wave0-a11-calibration-20260829T123151657Z-bf516632"
+_PRESERVED_VALIDATION_ID = "wave0-a11-validation-20260829T123151664Z-7af53ca8"
+_PRESERVED_OWNER = "steven004"
+_PRESERVED_SOURCE = "ed6f157c7cbd545895b9d047f6e094968a1f9d94"
+_PRESERVED_RUN_SHA256 = (
+    "e6a0b5bb9e0781c11989962d117fd0015d3411223c46d457dc4d1e37eabc0e64"
+)
+_PRESERVED_IMAGE_TAG = (
+    "vision-active-learning-loop:wave0-a11-calibration-"
+    "ed6f157c7cbd-20260829T123151657Z-bf516632"
+)
+_PRESERVED_VALIDATION_TAG = (
+    "vision-active-learning-loop:wave0-a11-validation-"
+    "ed6f157c7cbd-20260829T123151664Z-7af53ca8"
+)
+_PRESERVED_DIRECTORIES = [
+    "audit",
+    "wave0",
+    "wave0/checkpoints",
+    "wave0/model_cache",
+    "wave0/receipts",
+]
+_PRESERVED_CLOSURES = [
+    "78-failure-diagnostic.json",
+    "79-historical-preservation-final.json",
+    "80-campaign-result.json",
+    "81-campaign-file-manifest.json",
+    "82-campaign-closure.json",
+]
+_PRESERVED_FILES = [
+    {
+        "path": "audit/00-identity.json",
+        "size": 2873,
+        "sha256": "9fb7f3572e8341af986f24473c2ee66933d17d736b632b95e0c3a64c91e9d67d",
+    },
+    {
+        "path": "audit/01-gpu-preflight.json",
+        "size": 125,
+        "sha256": "de80ae6951e9b941a2777c38d2872b093aa7a83bdd84aabfb99e248e555e2bb7",
+    },
+    {
+        "path": "audit/10-build.json",
+        "size": 1234,
+        "sha256": "3ef76de20f776e977f172d2ba9c3277185db693bd3a7fc9949bfe42b39af6f68",
+    },
+    {
+        "path": "audit/10-build.stderr.log",
+        "size": 865248,
+        "sha256": "e53b9598c39343785aea27be4381f1755accb5f91553630af64d1b71712e82c5",
+    },
+    {
+        "path": "audit/10-build.stdout.log",
+        "size": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    },
+    {
+        "path": "audit/78-failure-diagnostic.json",
+        "size": 766,
+        "sha256": "cc0e391fdb743dac2c2c80362d690703da08b9ae38c5a8294031ace8bef9c311",
+    },
+    {
+        "path": "audit/79-historical-preservation-final.json",
+        "size": 301,
+        "sha256": "927c57d5390bf2267b22b6af2718035530f48071ea48cc926329a696397b319d",
+    },
+    {
+        "path": "audit/80-campaign-result.json",
+        "size": 751,
+        "sha256": "346b4aa69f8e6c440262f463e4cbb756f39dd1dde0df51124f533093ffe8b651",
+    },
+    {
+        "path": "audit/81-campaign-file-manifest.json",
+        "size": 1885,
+        "sha256": "8be8ee5adadb296d269c5dda0c1827d8ef9ee56d024872aa3ee6e0cb74bbedd6",
+    },
+    {
+        "path": "audit/82-campaign-closure.json",
+        "size": 659,
+        "sha256": "a3ba8ef72165dde8443ac85ffcaaf27b307afd15af10c8a0d347ca7f30cfcaa1",
+    },
+]
 _STREAM_DIRECTORIES = [
     "audit",
     "wave0",
@@ -428,12 +511,14 @@ def _prior_attempts() -> dict[str, object]:
     timeout_run_ids = [_TIMEOUT_RUN_ID, _TIMEOUT_VALIDATION_ID]
     stream_run_ids = [_STREAM_RUN_ID, _STREAM_VALIDATION_ID]
     aggregate_run_ids = [_AGGREGATE_RUN_ID, _AGGREGATE_VALIDATION_ID]
+    preserved_run_ids = [_PRESERVED_RUN_ID, _PRESERVED_VALIDATION_ID]
     return {
         "run_names": [
             _FAILED_RUN_ID,
             _TIMEOUT_RUN_ID,
             _STREAM_RUN_ID,
             _AGGREGATE_RUN_ID,
+            _PRESERVED_RUN_ID,
         ],
         "image_tags": [
             _FAILED_IMAGE_TAG,
@@ -468,6 +553,11 @@ def _prior_attempts() -> dict[str, object]:
                 "run_id": _AGGREGATE_RUN_ID,
                 "path": "audit/00-identity.json",
                 "owner_authorization_id": _AGGREGATE_OWNER,
+            },
+            {
+                "run_id": _PRESERVED_RUN_ID,
+                "path": "audit/00-identity.json",
+                "owner_authorization_id": _PRESERVED_OWNER,
             },
         ],
         "attempts": [
@@ -590,6 +680,31 @@ def _prior_attempts() -> dict[str, object]:
                 "latest_write_utc": "2026-08-29T06:13:25.1659510Z",
                 "links_absent": True,
             },
+            {
+                "state": "image-build-failure",
+                "run_id": _PRESERVED_RUN_ID,
+                "source_commit": _PRESERVED_SOURCE,
+                "specification_commit": _SPEC,
+                "plan_commit": "7dbd3a7576ea76beccfc64f748c4e495259ea89b",
+                "registered_run_ids": preserved_run_ids,
+                "registered_image_tags": [
+                    _PRESERVED_IMAGE_TAG,
+                    _PRESERVED_VALIDATION_TAG,
+                ],
+                "registered_paths": _registered_paths(artifact_root, preserved_run_ids),
+                "owner_authorization_id": _PRESERVED_OWNER,
+                "run_file_count": 10,
+                "run_inventory_sha256": _PRESERVED_RUN_SHA256,
+                "file_records": _PRESERVED_FILES,
+                "directory_names": _PRESERVED_DIRECTORIES,
+                "image_tags_present": [],
+                "lease_paths_present": [],
+                "validation_present": False,
+                "payload_file_paths_present": [],
+                "closure_paths_present": _PRESERVED_CLOSURES,
+                "latest_write_utc": "2026-08-29T13:39:47.0148945Z",
+                "links_absent": True,
+            },
         ],
         "links_absent": True,
     }
@@ -625,14 +740,20 @@ foreach ($FunctionName in @({requested})) {{
 }}
 {body}
 """
-    return subprocess.run(
-        [shell, "-NoProfile", "-NonInteractive", "-Command", script],
-        cwd=_ROOT,
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        check=False,
-    )
+    with tempfile.NamedTemporaryFile(suffix=".ps1", delete=False) as handle:
+        handle.write(script.encode("utf-8-sig"))
+        script_path = Path(handle.name)
+    try:
+        return subprocess.run(
+            [shell, "-NoProfile", "-NonInteractive", "-File", str(script_path)],
+            cwd=_ROOT,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            check=False,
+        )
+    finally:
+        script_path.unlink(missing_ok=True)
 
 
 def _file_record(path: Path) -> dict[str, object]:
@@ -1003,9 +1124,10 @@ def _preflight() -> dict[str, object]:
 
 
 def _preflight_body(evidence: dict[str, object], *, owner: str = _OWNER) -> str:
+    evidence_json = json.dumps(evidence, separators=(",", ":"))
     return f"""
 $Result = Test-A11ReadOnlyPreflight `
-    -EvidenceJson {_ps(json.dumps(evidence))} `
+    -EvidenceJson {_ps(evidence_json)} `
     -ExpectedSourceCommit {_ps(_SOURCE)} `
     -ExpectedSpecCommit {_ps(_SPEC)} `
     -ExpectedPlanCommit {_ps(_PLAN)} `
@@ -1017,7 +1139,7 @@ $Result | ConvertTo-Json -Depth 8 -Compress
 
 def _run_prior_attempt_inventory(
     tmp_path: Path, defect: str = ""
-) -> tuple[subprocess.CompletedProcess[str], Path, Path, Path, Path, Path]:
+) -> tuple[subprocess.CompletedProcess[str], Path, Path, Path, Path, Path, Path]:
     extended_tmp = Path("\\\\?\\" + str(tmp_path.resolve()))
     artifact = extended_tmp / "artifacts"
     a11_root = artifact / "a11-runs"
@@ -1025,14 +1147,17 @@ def _run_prior_attempt_inventory(
     expected_run2 = a11_root / _TIMEOUT_RUN_ID
     expected_run3 = a11_root / _STREAM_RUN_ID
     expected_run4 = a11_root / _AGGREGATE_RUN_ID
+    expected_run5 = a11_root / _PRESERVED_RUN_ID
     outside_run1 = extended_tmp / "outside-run1"
     outside_run2 = extended_tmp / "outside-run2"
     outside_run3 = extended_tmp / "outside-run3"
     outside_run4 = extended_tmp / "outside-run4"
+    outside_run5 = extended_tmp / "outside-run5"
     run1_root = outside_run1 if defect == "run1-link" else expected_run1
     run2_root = outside_run2 if defect == "run2-link" else expected_run2
     run3_root = outside_run3 if defect == "run3-link" else expected_run3
     run4_root = outside_run4 if defect == "run4-link" else expected_run4
+    run5_root = outside_run5 if defect == "run5-link" else expected_run5
     expected_leases = artifact / "leases"
     outside_leases = extended_tmp / "outside-leases"
     lease_root = outside_leases if defect == "lease-link" else expected_leases
@@ -1040,12 +1165,15 @@ def _run_prior_attempt_inventory(
     (run2_root / "audit").mkdir(parents=True)
     (run3_root / "audit").mkdir(parents=True)
     (run4_root / "audit").mkdir(parents=True)
+    (run5_root / "audit").mkdir(parents=True)
     for relative in ("wave0/checkpoints", "wave0/model_cache", "wave0/receipts"):
         (run2_root / relative).mkdir(parents=True)
     for relative in _STREAM_DIRECTORIES:
         (run3_root / relative).mkdir(parents=True, exist_ok=True)
     for relative in _AGGREGATE_DIRECTORIES:
         (run4_root / relative).mkdir(parents=True, exist_ok=True)
+    for relative in _PRESERVED_DIRECTORIES:
+        (run5_root / relative).mkdir(parents=True, exist_ok=True)
     lease_root.mkdir(parents=True)
     lease_lock = artifact / "leases" / f"{_GPU}.json"
 
@@ -1143,6 +1271,23 @@ def _run_prior_attempt_inventory(
         ),
         encoding="utf-8",
     )
+    (run5_root / "audit" / "00-identity.json").write_text(
+        json.dumps(
+            identity(
+                _PRESERVED_RUN_ID,
+                _PRESERVED_IMAGE_TAG,
+                _PRESERVED_VALIDATION_ID,
+                _PRESERVED_VALIDATION_TAG,
+                _PRESERVED_SOURCE,
+                _PRESERVED_OWNER,
+            )
+        ),
+        encoding="utf-8",
+    )
+    for record in _PRESERVED_FILES[1:]:
+        path = run5_root / str(record["path"])
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(str(record["path"]), encoding="utf-8")
     for record in _STREAM_KEY_FILES[1:]:
         path = run3_root / str(record["path"])
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -1210,6 +1355,12 @@ def _run_prior_attempt_inventory(
             f"New-Item -ItemType Junction -Path {_ps(str(expected_run4))} "
             f"-Target {_ps(str(outside_run4))} | Out-Null"
         )
+    if defect == "run5-link":
+        a11_root.mkdir(parents=True, exist_ok=True)
+        junctions.append(
+            f"New-Item -ItemType Junction -Path {_ps(str(expected_run5))} "
+            f"-Target {_ps(str(outside_run5))} | Out-Null"
+        )
     if defect == "lease-link":
         artifact.mkdir(exist_ok=True)
         junctions.append(
@@ -1264,13 +1415,31 @@ def _run_prior_attempt_inventory(
         )
     if defect == "aggregate-release-missing":
         (lease_root / f"{_AGGREGATE_RUN_ID}.released").unlink()
+    if defect == "preserved-missing-closure":
+        (run5_root / "audit" / "82-campaign-closure.json").unlink()
+    if defect == "preserved-extra-directory":
+        (run5_root / "unexpected").mkdir()
+    if defect == "preserved-validation":
+        (a11_root / _PRESERVED_VALIDATION_ID).mkdir()
+    if defect == "preserved-payload":
+        (run5_root / "wave0" / "receipts" / "unexpected.json").write_text(
+            "unexpected", encoding="utf-8"
+        )
+    if defect == "preserved-lease":
+        (lease_root / f"{_PRESERVED_RUN_ID}.released").write_text(
+            "unexpected", encoding="utf-8"
+        )
+    if defect == "preserved-extra-file":
+        (run5_root / "audit" / "unexpected.json").write_text(
+            "unexpected", encoding="utf-8"
+        )
     native = (
         "return [pscustomobject]@{ExitCode=125;Stdout='';Stderr='daemon unavailable'}"
         if defect == "docker-failure"
         else f"""
 if ($ArgumentList[1] -ceq 'ls') {{
     return [pscustomobject]@{{
-        ExitCode=0;Stdout={_ps(_FAILED_IMAGE_TAG + chr(10) + _AGGREGATE_IMAGE_TAG + chr(10) + _STREAM_IMAGE_TAG + chr(10) + (_TIMEOUT_IMAGE_TAG + chr(10) if defect == 'unexpected-image' else ''))};Stderr=''
+        ExitCode=0;Stdout={_ps(_FAILED_IMAGE_TAG + chr(10) + _AGGREGATE_IMAGE_TAG + chr(10) + _STREAM_IMAGE_TAG + chr(10) + (_TIMEOUT_IMAGE_TAG + chr(10) if defect == 'unexpected-image' else '') + (_PRESERVED_IMAGE_TAG + chr(10) if defect == 'preserved-image' else ''))};Stderr=''
     }}
 }}
 $RequestedTag = [string]$ArgumentList[-1]
@@ -1328,7 +1497,15 @@ Get-A11PriorAttemptInventory -ArtifactRoot {_ps(str(artifact))} |
         ),
         body,
     )
-    return completed, run1_root, run2_root, run3_root, run4_root, lease_root
+    return (
+        completed,
+        run1_root,
+        run2_root,
+        run3_root,
+        run4_root,
+        run5_root,
+        lease_root,
+    )
 
 
 def _run_project_container_inventory(
@@ -1473,7 +1650,7 @@ function Invoke-A11Native {{
     }}
 }}
 $Identities = {_ps(json.dumps(identities))} | ConvertFrom-Json
-$PriorAttempts = {_ps(json.dumps(_prior_attempts()["attempts"]))} | ConvertFrom-Json
+$PriorAttempts = {_ps(json.dumps(_prior_attempts()["attempts"], separators=(",", ":")))} | ConvertFrom-Json
 $OwnerAuthorizationId = {_ps(owner)}
 {invoke}
 """
@@ -1987,7 +2164,7 @@ def test_cache_preflight_and_replica_keep_exact_pass_stream_contracts(
         assert completed.stderr
 
 
-def test_read_only_preflight_accepts_exact_four_attempt_evidence() -> None:
+def test_read_only_preflight_accepts_exact_five_attempt_evidence() -> None:
     completed = _invoke_functions(
         ("Test-A11ReadOnlyPreflight",), _preflight_body(_preflight())
     )
@@ -1996,13 +2173,14 @@ def test_read_only_preflight_accepts_exact_four_attempt_evidence() -> None:
     assert json.loads(completed.stdout)["head"] == _SOURCE
 
 
-def test_four_prior_attempts_keep_distinct_closed_state_schemas() -> None:
+def test_five_prior_attempts_keep_distinct_closed_state_schemas() -> None:
     attempts = _prior_attempts()["attempts"]
     assert [attempt["state"] for attempt in attempts] == [
         "launcher-stage-failure",
         "image-build-timeout",
         "foundation-stream-contract-failure",
         "aggregate-cache-inventory-contract-failure",
+        "image-build-failure",
     ]
     assert set(attempts[0]) == {
         "state",
@@ -2093,10 +2271,39 @@ def test_four_prior_attempts_keep_distinct_closed_state_schemas() -> None:
         "latest_write_utc",
         "links_absent",
     }
+    assert set(attempts[4]) == {
+        "state",
+        "run_id",
+        "source_commit",
+        "specification_commit",
+        "plan_commit",
+        "registered_run_ids",
+        "registered_image_tags",
+        "registered_paths",
+        "owner_authorization_id",
+        "run_file_count",
+        "run_inventory_sha256",
+        "file_records",
+        "directory_names",
+        "image_tags_present",
+        "lease_paths_present",
+        "validation_present",
+        "payload_file_paths_present",
+        "closure_paths_present",
+        "latest_write_utc",
+        "links_absent",
+    }
 
 
 @pytest.mark.parametrize(
-    "owner", [_FAILED_OWNER, _TIMEOUT_OWNER, _STREAM_OWNER, _AGGREGATE_OWNER]
+    "owner",
+    [
+        _FAILED_OWNER,
+        _TIMEOUT_OWNER,
+        _STREAM_OWNER,
+        _AGGREGATE_OWNER,
+        _PRESERVED_OWNER,
+    ],
 )
 def test_read_only_preflight_rejects_each_consumed_authorization(owner: str) -> None:
     completed = _invoke_functions(
@@ -2115,6 +2322,7 @@ _PRIOR_MUTATIONS = [
     (("authorization_evidence", 1, "owner_authorization_id"), _FAILED_OWNER),
     (("authorization_evidence", 2, "owner_authorization_id"), _TIMEOUT_OWNER),
     (("authorization_evidence", 3, "owner_authorization_id"), _STREAM_OWNER),
+    (("authorization_evidence", 4, "owner_authorization_id"), _AGGREGATE_OWNER),
     (("links_absent",), False),
     (("attempts", 0, "state"), "image-build-timeout"),
     (("attempts", 0, "source_commit"), "0" * 40),
@@ -2189,6 +2397,27 @@ _PRIOR_MUTATIONS = [
     (("attempts", 3, "closure_paths_present"), []),
     (("attempts", 3, "latest_write_utc"), "not-a-time"),
     (("attempts", 3, "links_absent"), False),
+    (("attempts", 4, "state"), "image-build-timeout"),
+    (("attempts", 4, "run_id"), _PRESERVED_VALIDATION_ID),
+    (("attempts", 4, "source_commit"), "0" * 40),
+    (("attempts", 4, "specification_commit"), "0" * 40),
+    (("attempts", 4, "plan_commit"), "0" * 40),
+    (("attempts", 4, "registered_run_ids"), [_PRESERVED_RUN_ID]),
+    (("attempts", 4, "registered_image_tags"), [_PRESERVED_IMAGE_TAG]),
+    (("attempts", 4, "registered_paths"), []),
+    (("attempts", 4, "owner_authorization_id"), _AGGREGATE_OWNER),
+    (("attempts", 4, "run_file_count"), 9),
+    (("attempts", 4, "run_inventory_sha256"), "0" * 64),
+    (("attempts", 4, "file_records", 3, "size"), 865247),
+    (("attempts", 4, "file_records", 9, "sha256"), "0" * 64),
+    (("attempts", 4, "directory_names"), ["audit"]),
+    (("attempts", 4, "image_tags_present"), [_PRESERVED_IMAGE_TAG]),
+    (("attempts", 4, "lease_paths_present"), ["active-lease.json"]),
+    (("attempts", 4, "validation_present"), True),
+    (("attempts", 4, "payload_file_paths_present"), ["wave0/payload.bin"]),
+    (("attempts", 4, "closure_paths_present"), []),
+    (("attempts", 4, "latest_write_utc"), "not-a-time"),
+    (("attempts", 4, "links_absent"), False),
 ]
 
 
@@ -2222,10 +2451,13 @@ def test_read_only_preflight_rejects_prior_a11_drift(
         "third-lease",
         "move-timeout-owner",
         "move-stream-owner",
+        "move-preserved-owner",
         "delete-timeout-record",
         "delete-stream-key-record",
+        "delete-preserved-record",
         "substitute-attempt-record",
         "substitute-stream-record",
+        "substitute-preserved-record",
     ],
 )
 def test_read_only_preflight_rejects_prior_a11_structural_drift(
@@ -2247,14 +2479,21 @@ def test_read_only_preflight_rejects_prior_a11_structural_drift(
     elif mutation == "move-stream-owner":
         prior["authorization_evidence"][1]["owner_authorization_id"] = _STREAM_OWNER
         prior["authorization_evidence"][2]["owner_authorization_id"] = _TIMEOUT_OWNER
+    elif mutation == "move-preserved-owner":
+        prior["authorization_evidence"][3]["owner_authorization_id"] = _PRESERVED_OWNER
+        prior["authorization_evidence"][4]["owner_authorization_id"] = _AGGREGATE_OWNER
     elif mutation == "delete-timeout-record":
         del prior["attempts"][1]["file_records"][2]
     elif mutation == "delete-stream-key-record":
         del prior["attempts"][2]["key_file_records"][8]
+    elif mutation == "delete-preserved-record":
+        del prior["attempts"][4]["file_records"][5]
     elif mutation == "substitute-attempt-record":
         prior["attempts"][1] = copy.deepcopy(prior["attempts"][0])
-    else:
+    elif mutation == "substitute-stream-record":
         prior["attempts"][2] = copy.deepcopy(prior["attempts"][1])
+    else:
+        prior["attempts"][4] = copy.deepcopy(prior["attempts"][1])
 
     completed = _invoke_functions(
         ("Test-A11ReadOnlyPreflight",), _preflight_body(evidence)
@@ -2326,13 +2565,14 @@ def test_prior_attempt_inventory_returns_closed_sorted_evidence(
         run2_root,
         run3_root,
         run4_root,
+        run5_root,
         lease_root,
     ) = _run_prior_attempt_inventory(tmp_path)
 
     assert completed.returncode == 0, completed.stderr
     evidence = json.loads(completed.stdout)
     records_by_root = []
-    for root in (run1_root, run2_root, run3_root, run4_root):
+    for root in (run1_root, run2_root, run3_root, run4_root, run5_root):
         records = []
         for path in sorted(root.rglob("*")):
             if path.is_file():
@@ -2359,6 +2599,7 @@ def test_prior_attempt_inventory_returns_closed_sorted_evidence(
         _TIMEOUT_RUN_ID,
         _STREAM_RUN_ID,
         _AGGREGATE_RUN_ID,
+        _PRESERVED_RUN_ID,
     ]
     assert evidence["image_tags"] == [
         _FAILED_IMAGE_TAG,
@@ -2387,12 +2628,18 @@ def test_prior_attempt_inventory_returns_closed_sorted_evidence(
             "path": "audit/00-identity.json",
             "owner_authorization_id": _AGGREGATE_OWNER,
         },
+        {
+            "run_id": _PRESERVED_RUN_ID,
+            "path": "audit/00-identity.json",
+            "owner_authorization_id": _PRESERVED_OWNER,
+        },
     ]
     assert [attempt["state"] for attempt in attempts] == [
         "launcher-stage-failure",
         "image-build-timeout",
         "foundation-stream-contract-failure",
         "aggregate-cache-inventory-contract-failure",
+        "image-build-failure",
     ]
     for attempt, records in zip(attempts, records_by_root, strict=True):
         assert attempt["run_file_count"] == len(records)
@@ -2543,6 +2790,30 @@ def test_prior_attempt_inventory_returns_closed_sorted_evidence(
         .total_seconds()
         == 0
     )
+    assert attempts[4]["registered_run_ids"] == [
+        _PRESERVED_RUN_ID,
+        _PRESERVED_VALIDATION_ID,
+    ]
+    assert attempts[4]["registered_image_tags"] == [
+        _PRESERVED_IMAGE_TAG,
+        _PRESERVED_VALIDATION_TAG,
+    ]
+    assert attempts[4]["registered_paths"] == _registered_paths(
+        str(run5_root.parents[1]), [_PRESERVED_RUN_ID, _PRESERVED_VALIDATION_ID]
+    )
+    assert attempts[4]["file_records"] == records_by_root[4]
+    assert attempts[4]["directory_names"] == _PRESERVED_DIRECTORIES
+    assert attempts[4]["image_tags_present"] == []
+    assert attempts[4]["lease_paths_present"] == []
+    assert attempts[4]["validation_present"] is False
+    assert attempts[4]["payload_file_paths_present"] == []
+    assert attempts[4]["closure_paths_present"] == _PRESERVED_CLOSURES
+    assert (
+        datetime.fromisoformat(attempts[4]["latest_write_utc"])
+        .utcoffset()
+        .total_seconds()
+        == 0
+    )
     assert evidence["links_absent"] is True
 
 
@@ -2553,6 +2824,7 @@ def test_prior_attempt_inventory_returns_closed_sorted_evidence(
         "run2-link",
         "run3-link",
         "run4-link",
+        "run5-link",
         "lease-link",
         "extra-run",
         "timeout-payload",
@@ -2575,13 +2847,20 @@ def test_prior_attempt_inventory_returns_closed_sorted_evidence(
         "aggregate-image-label-drift",
         "aggregate-success-receipt",
         "aggregate-release-missing",
+        "preserved-missing-closure",
+        "preserved-extra-directory",
+        "preserved-validation",
+        "preserved-payload",
+        "preserved-lease",
+        "preserved-image",
+        "preserved-extra-file",
         "docker-failure",
     ],
 )
 def test_prior_attempt_inventory_rejects_links_or_docker_failure(
     tmp_path: Path, defect: str
 ) -> None:
-    completed, _, _, _, _, _ = _run_prior_attempt_inventory(tmp_path, defect)
+    completed, _, _, _, _, _, _ = _run_prior_attempt_inventory(tmp_path, defect)
 
     assert completed.returncode != 0
     assert completed.stderr
@@ -2804,12 +3083,16 @@ def test_phase_destination_gate_accepts_two_fresh_identities(
         (1, "run_id", _STREAM_VALIDATION_ID),
         (0, "run_id", _AGGREGATE_RUN_ID),
         (1, "run_id", _AGGREGATE_VALIDATION_ID),
+        (0, "run_id", _PRESERVED_RUN_ID),
+        (1, "run_id", _PRESERVED_VALIDATION_ID),
         (0, "image_tag", _FAILED_IMAGE_TAG),
         (1, "image_tag", _TIMEOUT_VALIDATION_TAG),
         (0, "image_tag", _STREAM_IMAGE_TAG),
         (1, "image_tag", _STREAM_VALIDATION_TAG),
         (0, "image_tag", _AGGREGATE_IMAGE_TAG),
         (1, "image_tag", _AGGREGATE_VALIDATION_TAG),
+        (0, "image_tag", _PRESERVED_IMAGE_TAG),
+        (1, "image_tag", _PRESERVED_VALIDATION_TAG),
     ],
 )
 def test_phase_destination_gate_rejects_any_preserved_runtime_identity(
@@ -2826,7 +3109,7 @@ def test_phase_destination_gate_rejects_any_preserved_runtime_identity(
     assert counters["docker_calls"] == 0
 
 
-@pytest.mark.parametrize("attempt_index", [1, 2, 3])
+@pytest.mark.parametrize("attempt_index", [1, 2, 3, 4])
 @pytest.mark.parametrize("path_index", range(8))
 def test_phase_destination_gate_rejects_each_preserved_path_even_when_absent(
     tmp_path: Path, path_index: int, attempt_index: int
@@ -2859,6 +3142,7 @@ def test_phase_destination_gate_rejects_each_preserved_path_even_when_absent(
         (_TIMEOUT_OWNER, _TIMEOUT_OWNER),
         (_STREAM_OWNER, _STREAM_OWNER),
         (_AGGREGATE_OWNER, _AGGREGATE_OWNER),
+        (_PRESERVED_OWNER, _PRESERVED_OWNER),
         (_OWNER, "OWNER-A11-DIFFERENT"),
     ],
 )
@@ -2930,8 +3214,10 @@ def test_phase_destination_gate_rejects_exact_path_collision(
     target_specific = collision in {"calibration-cache-root", "validation-lease-path"}
     if not target_specific:
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.mkdir() if collision.endswith("root") else path.write_text(
-            "occupied", encoding="utf-8"
+        (
+            path.mkdir()
+            if collision.endswith("root")
+            else path.write_text("occupied", encoding="utf-8")
         )
 
     completed = _run_phase_destination_gate(
@@ -2973,7 +3259,7 @@ function Invoke-A11Native {{
     return [pscustomobject]@{{ ExitCode=0; Stdout=''; Stderr='' }}
 }}
 $Identities = {_ps(json.dumps(identities))} | ConvertFrom-Json
-$PriorAttempts = {_ps(json.dumps(_prior_attempts()["attempts"]))} | ConvertFrom-Json
+$PriorAttempts = {_ps(json.dumps(_prior_attempts()["attempts"], separators=(",", ":")))} | ConvertFrom-Json
 Test-A11PhaseDestinationsAbsent `
     -Identities $Identities -PriorAttempts $PriorAttempts `
     -OwnerAuthorizationId {_ps(_OWNER)} | Out-Null
@@ -3004,7 +3290,7 @@ function Invoke-A11Native {{
     return [pscustomobject]@{{ ExitCode=0; Stdout=$Stdout; Stderr='' }}
 }}
 $Identities = {_ps(json.dumps(identities))} | ConvertFrom-Json
-$PriorAttempts = {_ps(json.dumps(_prior_attempts()["attempts"]))} | ConvertFrom-Json
+$PriorAttempts = {_ps(json.dumps(_prior_attempts()["attempts"], separators=(",", ":")))} | ConvertFrom-Json
 Test-A11PhaseDestinationsAbsent `
     -Identities $Identities -PriorAttempts $PriorAttempts `
     -OwnerAuthorizationId {_ps(_OWNER)} | Out-Null
@@ -3792,7 +4078,7 @@ def test_campaign_destination_failure_precedes_initialization_and_writes_nothing
     campaign_root = tmp_path / "campaign"
     validation_root = tmp_path / "validation"
     body = f"""
-$Prior = {_ps(json.dumps(_prior_attempts()))} | ConvertFrom-Json
+$Prior = {_ps(json.dumps(_prior_attempts(), separators=(",", ":")))} | ConvertFrom-Json
 function Resolve-A11Worktree {{ return @{{ prior_a11_attempts=$Prior }} }}
 function Test-A11ReadOnlyPreflight {{ return @{{}} }}
 function New-A11PhaseIdentity {{

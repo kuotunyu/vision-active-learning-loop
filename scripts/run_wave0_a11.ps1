@@ -220,6 +220,7 @@ function Get-A11PriorAttemptInventory {
     $Run2Id = 'wave0-a11-calibration-20260828T114911289Z-fe8b7000'
     $Run3Id = 'wave0-a11-calibration-20260828T172921151Z-a0f55fa1'
     $Run4Id = 'wave0-a11-calibration-20260829T050706309Z-f5a0129e'
+    $Run5Id = 'wave0-a11-calibration-20260829T123151657Z-bf516632'
     $Attempt1ImageTag = 'vision-active-learning-loop:wave0-a11-calibration-2622e402e4f5-20260828T045848083Z-b9917463'
     $Attempt3ImageTag = 'vision-active-learning-loop:wave0-a11-calibration-ff5cfac58204-20260828T172921151Z-a0f55fa1'
     $Attempt4ImageTag = 'vision-active-learning-loop:wave0-a11-calibration-77f8eecb3b8c-20260829T050706309Z-f5a0129e'
@@ -228,6 +229,7 @@ function Get-A11PriorAttemptInventory {
     $Run2Root = [IO.Path]::Combine($A11Root, $Run2Id)
     $Run3Root = [IO.Path]::Combine($A11Root, $Run3Id)
     $Run4Root = [IO.Path]::Combine($A11Root, $Run4Id)
+    $Run5Root = [IO.Path]::Combine($A11Root, $Run5Id)
     $LeaseRoot = [IO.Path]::GetFullPath([IO.Path]::Combine($ArtifactRoot, 'leases'))
     $Run1ReleasedPath = [IO.Path]::Combine($LeaseRoot, "$Run1Id.released")
     $Run1ReleaseRecordPath = [IO.Path]::Combine($LeaseRoot, "$Run1Id.release.json")
@@ -236,7 +238,8 @@ function Get-A11PriorAttemptInventory {
     $Run4ReleasedPath = [IO.Path]::Combine($LeaseRoot, "$Run4Id.released")
     $Run4ReleaseRecordPath = [IO.Path]::Combine($LeaseRoot, "$Run4Id.release.json")
     foreach ($Path in @(
-        $A11Root, $Run1Root, $Run2Root, $Run3Root, $Run4Root, $LeaseRoot,
+        $A11Root, $Run1Root, $Run2Root, $Run3Root, $Run4Root, $Run5Root,
+        $LeaseRoot,
         $Run1ReleasedPath, $Run1ReleaseRecordPath,
         $Run3ReleasedPath, $Run3ReleaseRecordPath,
         $Run4ReleasedPath, $Run4ReleaseRecordPath
@@ -247,7 +250,7 @@ function Get-A11PriorAttemptInventory {
         }
     }
     $Linked = @(
-        Get-ChildItem -LiteralPath $Run1Root, $Run2Root, $Run3Root, $Run4Root, $LeaseRoot -Recurse -Force |
+        Get-ChildItem -LiteralPath $Run1Root, $Run2Root, $Run3Root, $Run4Root, $Run5Root, $LeaseRoot -Recurse -Force |
             Where-Object { $_.Attributes -band [IO.FileAttributes]::ReparsePoint }
     )
     if ($Linked.Count -ne 0) { throw 'A11 prior attempt tree contains a link' }
@@ -262,11 +265,12 @@ function Get-A11PriorAttemptInventory {
             Sort-Object Name -CaseSensitive | ForEach-Object Name
     )
     if (
-        $RunNames.Count -ne 4 -or
+        $RunNames.Count -ne 5 -or
         [string]$RunNames[0] -cne $Run1Id -or
         [string]$RunNames[1] -cne $Run2Id -or
         [string]$RunNames[2] -cne $Run3Id -or
         [string]$RunNames[3] -cne $Run4Id -or
+        [string]$RunNames[4] -cne $Run5Id -or
         $LeaseNames.Count -ne 6 -or
         [string]$LeaseNames[0] -cne "$Run1Id.release.json" -or
         [string]$LeaseNames[1] -cne "$Run1Id.released" -or
@@ -280,11 +284,13 @@ function Get-A11PriorAttemptInventory {
     $Identity2Path = [IO.Path]::Combine($Run2Root, 'audit', '00-identity.json')
     $Identity3Path = [IO.Path]::Combine($Run3Root, 'audit', '00-identity.json')
     $Identity4Path = [IO.Path]::Combine($Run4Root, 'audit', '00-identity.json')
+    $Identity5Path = [IO.Path]::Combine($Run5Root, 'audit', '00-identity.json')
     $Identity1 = Get-Content -Raw -LiteralPath $Identity1Path | ConvertFrom-Json
     $Identity2 = Get-Content -Raw -LiteralPath $Identity2Path | ConvertFrom-Json
     $Identity3 = Get-Content -Raw -LiteralPath $Identity3Path | ConvertFrom-Json
     $Identity4 = Get-Content -Raw -LiteralPath $Identity4Path | ConvertFrom-Json
-    foreach ($Identity in @($Identity1, $Identity2, $Identity3, $Identity4)) {
+    $Identity5 = Get-Content -Raw -LiteralPath $Identity5Path | ConvertFrom-Json
+    foreach ($Identity in @($Identity1, $Identity2, $Identity3, $Identity4, $Identity5)) {
         if (
             [string]::IsNullOrWhiteSpace([string]$Identity.current.owner_authorization_id) -or
             [string]$Identity.current.owner_authorization_id -cne
@@ -295,7 +301,8 @@ function Get-A11PriorAttemptInventory {
         [string]$Identity1.current.run_id -cne $Run1Id -or
         [string]$Identity2.current.run_id -cne $Run2Id -or
         [string]$Identity3.current.run_id -cne $Run3Id -or
-        [string]$Identity4.current.run_id -cne $Run4Id
+        [string]$Identity4.current.run_id -cne $Run4Id -or
+        [string]$Identity5.current.run_id -cne $Run5Id
     ) { throw 'A11 prior attempt current identity mismatch' }
 
     $Records1 = @(
@@ -342,6 +349,17 @@ function Get-A11PriorAttemptInventory {
                 }
             }
     )
+    $Records5 = @(
+        Get-ChildItem -LiteralPath $Run5Root -File -Recurse -Force |
+            Sort-Object FullName |
+            ForEach-Object {
+                [ordered]@{
+                    path = $_.FullName.Substring($Run5Root.Length + 1).Replace('\', '/')
+                    size = [long]$_.Length
+                    sha256 = (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+                }
+            }
+    )
     $Directories2 = @(
         Get-ChildItem -LiteralPath $Run2Root -Directory -Recurse -Force |
             Sort-Object FullName | ForEach-Object {
@@ -360,10 +378,22 @@ function Get-A11PriorAttemptInventory {
                 $_.FullName.Substring($Run4Root.Length + 1).Replace('\', '/')
             }
     )
+    $Directories5 = @(
+        Get-ChildItem -LiteralPath $Run5Root -Directory -Recurse -Force |
+            Sort-Object FullName | ForEach-Object {
+                $_.FullName.Substring($Run5Root.Length + 1).Replace('\', '/')
+            }
+    )
     $Payload2 = @(
         Get-ChildItem -LiteralPath ([IO.Path]::Combine($Run2Root, 'wave0')) `
             -File -Recurse -Force | Sort-Object FullName | ForEach-Object {
                 $_.FullName.Substring($Run2Root.Length + 1).Replace('\', '/')
+            }
+    )
+    $Payload5 = @(
+        Get-ChildItem -LiteralPath ([IO.Path]::Combine($Run5Root, 'wave0')) `
+            -File -Recurse -Force | Sort-Object FullName | ForEach-Object {
+                $_.FullName.Substring($Run5Root.Length + 1).Replace('\', '/')
             }
     )
     $Closure1Present = @(@(
@@ -392,6 +422,13 @@ function Get-A11PriorAttemptInventory {
         '82-campaign-closure.json'
     ) | Where-Object {
         Test-A11PathEntryPresent -Path ([IO.Path]::Combine($Run4Root, 'audit', $_))
+    })
+    $Closure5Present = @(@(
+        '78-failure-diagnostic.json', '79-historical-preservation-final.json',
+        '80-campaign-result.json', '81-campaign-file-manifest.json',
+        '82-campaign-closure.json'
+    ) | Where-Object {
+        Test-A11PathEntryPresent -Path ([IO.Path]::Combine($Run5Root, 'audit', $_))
     })
     $ExpectedDirectories3 = @(
         'audit',
@@ -551,6 +588,23 @@ function Get-A11PriorAttemptInventory {
         $SuccessReceipt4Present -or
         $Validation4Present
     ) { throw 'A11 prior attempt aggregate-cache-inventory state drifted' }
+    $ExpectedDirectories5 = @(
+        'audit',
+        'wave0',
+        'wave0/checkpoints',
+        'wave0/model_cache',
+        'wave0/receipts'
+    )
+    $Validation5Present = Test-A11PathEntryPresent `
+        -Path ([string]$Identity5.preregistered_peer.campaign_root)
+    if (
+        $Records5.Count -ne 10 -or
+        $Directories5.Count -ne 5 -or
+        @(Compare-Object $ExpectedDirectories5 $Directories5 -CaseSensitive).Count -ne 0 -or
+        $Payload5.Count -ne 0 -or
+        $Closure5Present.Count -ne 5 -or
+        $Validation5Present
+    ) { throw 'A11 prior attempt image-build-failure state drifted' }
 
     $List = Invoke-A11Native -FilePath 'docker' -ArgumentList @(
         'image', 'ls', '--filter',
@@ -620,6 +674,9 @@ function Get-A11PriorAttemptInventory {
     $Registered4 = @(Get-A11RegisteredAttemptPaths `
         -ArtifactRoot $ArtifactRoot `
         -Identities @($Identity4.current, $Identity4.preregistered_peer))
+    $Registered5 = @(Get-A11RegisteredAttemptPaths `
+        -ArtifactRoot $ArtifactRoot `
+        -Identities @($Identity5.current, $Identity5.preregistered_peer))
     $Attempt2LeasePaths = @(
         [string]$Identity2.current.lease_path,
         [string]$Identity2.preregistered_peer.lease_path,
@@ -649,6 +706,26 @@ function Get-A11PriorAttemptInventory {
         $Validation2Present -or
         $ImageTags2Present.Count -ne 0
     ) { throw 'A11 prior attempt partial-state inventory drifted' }
+    $Attempt5LeasePaths = @(
+        [string]$Identity5.current.lease_path,
+        [string]$Identity5.preregistered_peer.lease_path,
+        [IO.Path]::Combine($LeaseRoot, "$($Identity5.current.run_id).released"),
+        [IO.Path]::Combine($LeaseRoot, "$($Identity5.current.run_id).release.json"),
+        [IO.Path]::Combine($LeaseRoot, "$($Identity5.preregistered_peer.run_id).released"),
+        [IO.Path]::Combine($LeaseRoot, "$($Identity5.preregistered_peer.run_id).release.json")
+    )
+    $Attempt5LeasePresent = @($Attempt5LeasePaths | Where-Object {
+        Test-A11PathEntryPresent -Path $_
+    })
+    $ImageTags5Present = @($ImageTags | Where-Object {
+        $_ -cin @(
+            [string]$Identity5.current.image_tag,
+            [string]$Identity5.preregistered_peer.image_tag
+        )
+    })
+    if ($Attempt5LeasePresent.Count -ne 0 -or $ImageTags5Present.Count -ne 0) {
+        throw 'A11 prior attempt image-build-failure resource drifted'
+    }
     $Latest2 = Get-ChildItem -LiteralPath $Run2Root -File -Recurse -Force |
         Sort-Object LastWriteTimeUtc -Descending | Select-Object -First 1
     if ($null -eq $Latest2) { throw 'A11 prior attempt latest write is unavailable' }
@@ -658,6 +735,9 @@ function Get-A11PriorAttemptInventory {
     $Latest4 = Get-ChildItem -LiteralPath $Run4Root -File -Recurse -Force |
         Sort-Object LastWriteTimeUtc -Descending | Select-Object -First 1
     if ($null -eq $Latest4) { throw 'A11 prior attempt latest write is unavailable' }
+    $Latest5 = Get-ChildItem -LiteralPath $Run5Root -File -Recurse -Force |
+        Sort-Object LastWriteTimeUtc -Descending | Select-Object -First 1
+    if ($null -eq $Latest5) { throw 'A11 prior attempt latest write is unavailable' }
 
     $Attempt1 = [pscustomobject][ordered]@{
         state = 'launcher-stage-failure'
@@ -780,6 +860,34 @@ function Get-A11PriorAttemptInventory {
         latest_write_utc = $Latest4.LastWriteTimeUtc.ToString('o')
         links_absent = $true
     }
+    $Attempt5 = [pscustomobject][ordered]@{
+        state = 'image-build-failure'
+        run_id = $Run5Id
+        source_commit = [string]$Identity5.current.source_commit
+        specification_commit = [string]$Identity5.current.specification_commit
+        plan_commit = [string]$Identity5.current.plan_commit
+        registered_run_ids = @(
+            [string]$Identity5.current.run_id,
+            [string]$Identity5.preregistered_peer.run_id
+        )
+        registered_image_tags = @(
+            [string]$Identity5.current.image_tag,
+            [string]$Identity5.preregistered_peer.image_tag
+        )
+        registered_paths = $Registered5
+        owner_authorization_id = [string]$Identity5.current.owner_authorization_id
+        run_file_count = $Records5.Count
+        run_inventory_sha256 = Get-A11JsonSha256 -Value $Records5 -Depth 6
+        file_records = $Records5
+        directory_names = $Directories5
+        image_tags_present = $ImageTags5Present
+        lease_paths_present = $Attempt5LeasePresent
+        validation_present = $Validation5Present
+        payload_file_paths_present = $Payload5
+        closure_paths_present = $Closure5Present
+        latest_write_utc = $Latest5.LastWriteTimeUtc.ToString('o')
+        links_absent = $true
+    }
     return [pscustomobject][ordered]@{
         run_names = $RunNames
         image_tags = $ImageTags
@@ -804,9 +912,14 @@ function Get-A11PriorAttemptInventory {
                 run_id = $Run4Id
                 path = 'audit/00-identity.json'
                 owner_authorization_id = [string]$Identity4.current.owner_authorization_id
+            },
+            [pscustomobject][ordered]@{
+                run_id = $Run5Id
+                path = 'audit/00-identity.json'
+                owner_authorization_id = [string]$Identity5.current.owner_authorization_id
             }
         )
-        attempts = @($Attempt1, $Attempt2, $Attempt3, $Attempt4)
+        attempts = @($Attempt1, $Attempt2, $Attempt3, $Attempt4, $Attempt5)
         links_absent = $true
     }
 }
@@ -1174,6 +1287,8 @@ function Test-A11ReadOnlyPreflight {
     $ExpectedPeer3Id = 'wave0-a11-validation-20260828T172921161Z-70928997'
     $ExpectedRun4Id = 'wave0-a11-calibration-20260829T050706309Z-f5a0129e'
     $ExpectedPeer4Id = 'wave0-a11-validation-20260829T050706319Z-c6652f48'
+    $ExpectedRun5Id = 'wave0-a11-calibration-20260829T123151657Z-bf516632'
+    $ExpectedPeer5Id = 'wave0-a11-validation-20260829T123151664Z-7af53ca8'
     $ExpectedImage1Tag = 'vision-active-learning-loop:wave0-a11-calibration-2622e402e4f5-20260828T045848083Z-b9917463'
     $ExpectedPeer1Tag = 'vision-active-learning-loop:wave0-a11-validation-2622e402e4f5-20260828T045848091Z-084431a4'
     $ExpectedImage2Tag = 'vision-active-learning-loop:wave0-a11-calibration-1445a90b799b-20260828T114911289Z-fe8b7000'
@@ -1182,17 +1297,20 @@ function Test-A11ReadOnlyPreflight {
     $ExpectedPeer3Tag = 'vision-active-learning-loop:wave0-a11-validation-ff5cfac58204-20260828T172921161Z-70928997'
     $ExpectedImage4Tag = 'vision-active-learning-loop:wave0-a11-calibration-77f8eecb3b8c-20260829T050706309Z-f5a0129e'
     $ExpectedPeer4Tag = 'vision-active-learning-loop:wave0-a11-validation-77f8eecb3b8c-20260829T050706319Z-c6652f48'
+    $ExpectedImage5Tag = 'vision-active-learning-loop:wave0-a11-calibration-ed6f157c7cbd-20260829T123151657Z-bf516632'
+    $ExpectedPeer5Tag = 'vision-active-learning-loop:wave0-a11-validation-ed6f157c7cbd-20260829T123151664Z-7af53ca8'
     $RunNames = @($Prior.run_names)
     $ImageTags = @($Prior.image_tags)
     $LeaseNames = @($Prior.lease_names)
     $AuthorizationEvidence = @($Prior.authorization_evidence)
     $Attempts = @($Prior.attempts)
     if (
-        $RunNames.Count -ne 4 -or
+        $RunNames.Count -ne 5 -or
         [string]$RunNames[0] -cne $ExpectedRun1Id -or
         [string]$RunNames[1] -cne $ExpectedRun2Id -or
         [string]$RunNames[2] -cne $ExpectedRun3Id -or
         [string]$RunNames[3] -cne $ExpectedRun4Id -or
+        [string]$RunNames[4] -cne $ExpectedRun5Id -or
         $ImageTags.Count -ne 3 -or
         [string]$ImageTags[0] -cne $ExpectedImage1Tag -or
         [string]$ImageTags[1] -cne $ExpectedImage4Tag -or
@@ -1204,12 +1322,12 @@ function Test-A11ReadOnlyPreflight {
         [string]$LeaseNames[3] -cne "$ExpectedRun3Id.released" -or
         [string]$LeaseNames[4] -cne "$ExpectedRun4Id.release.json" -or
         [string]$LeaseNames[5] -cne "$ExpectedRun4Id.released" -or
-        $AuthorizationEvidence.Count -ne 4 -or
-        $Attempts.Count -ne 4 -or
+        $AuthorizationEvidence.Count -ne 5 -or
+        $Attempts.Count -ne 5 -or
         $Prior.links_absent -cne $true
     ) { throw 'A11 prior A11 envelope drifted' }
     $ExpectedAuthorizationKeys = @('run_id', 'path', 'owner_authorization_id')
-    foreach ($Index in 0..3) {
+    foreach ($Index in 0..4) {
         if (Compare-Object `
             ($ExpectedAuthorizationKeys | Sort-Object) `
             @($AuthorizationEvidence[$Index].PSObject.Properties.Name | Sort-Object)
@@ -1227,7 +1345,10 @@ function Test-A11ReadOnlyPreflight {
         [string]$AuthorizationEvidence[2].owner_authorization_id -cne 'steven002' -or
         [string]$AuthorizationEvidence[3].run_id -cne $ExpectedRun4Id -or
         [string]$AuthorizationEvidence[3].path -cne 'audit/00-identity.json' -or
-        [string]$AuthorizationEvidence[3].owner_authorization_id -cne 'steven003'
+        [string]$AuthorizationEvidence[3].owner_authorization_id -cne 'steven003' -or
+        [string]$AuthorizationEvidence[4].run_id -cne $ExpectedRun5Id -or
+        [string]$AuthorizationEvidence[4].path -cne 'audit/00-identity.json' -or
+        [string]$AuthorizationEvidence[4].owner_authorization_id -cne 'steven004'
     ) { throw 'A11 prior A11 authorization evidence drifted' }
 
     $ExpectedAttempt1Keys = @(
@@ -1267,6 +1388,15 @@ function Test-A11ReadOnlyPreflight {
         'success_receipt_present', 'closure_paths_present', 'latest_write_utc',
         'links_absent'
     )
+    $ExpectedAttempt5Keys = @(
+        'state', 'run_id', 'source_commit', 'specification_commit',
+        'plan_commit', 'registered_run_ids', 'registered_image_tags',
+        'registered_paths', 'owner_authorization_id', 'run_file_count',
+        'run_inventory_sha256', 'file_records', 'directory_names',
+        'image_tags_present', 'lease_paths_present', 'validation_present',
+        'payload_file_paths_present', 'closure_paths_present',
+        'latest_write_utc', 'links_absent'
+    )
     $Attempt1KeyDifference = @(Compare-Object `
         ($ExpectedAttempt1Keys | Sort-Object) `
         @($Attempts[0].PSObject.Properties.Name | Sort-Object))
@@ -1279,11 +1409,15 @@ function Test-A11ReadOnlyPreflight {
     $Attempt4KeyDifference = @(Compare-Object `
         ($ExpectedAttempt4Keys | Sort-Object) `
         @($Attempts[3].PSObject.Properties.Name | Sort-Object))
+    $Attempt5KeyDifference = @(Compare-Object `
+        ($ExpectedAttempt5Keys | Sort-Object) `
+        @($Attempts[4].PSObject.Properties.Name | Sort-Object))
     if (
         $Attempt1KeyDifference.Count -ne 0 -or
         $Attempt2KeyDifference.Count -ne 0 -or
         $Attempt3KeyDifference.Count -ne 0 -or
-        $Attempt4KeyDifference.Count -ne 0
+        $Attempt4KeyDifference.Count -ne 0 -or
+        $Attempt5KeyDifference.Count -ne 0
     ) {
         throw 'A11 prior A11 attempt evidence fields mismatch'
     }
@@ -1576,6 +1710,57 @@ function Test-A11ReadOnlyPreflight {
         $Latest4Text -cne '2026-08-29T06:13:25.1659510Z' -or
         $Attempt4.links_absent -cne $true
     ) { throw 'A11 prior A11 aggregate-cache-inventory attempt drifted' }
+    $ExpectedFiles5 = @(
+        [pscustomobject][ordered]@{ path='audit/00-identity.json'; size=2873; sha256='9fb7f3572e8341af986f24473c2ee66933d17d736b632b95e0c3a64c91e9d67d' },
+        [pscustomobject][ordered]@{ path='audit/01-gpu-preflight.json'; size=125; sha256='de80ae6951e9b941a2777c38d2872b093aa7a83bdd84aabfb99e248e555e2bb7' },
+        [pscustomobject][ordered]@{ path='audit/10-build.json'; size=1234; sha256='3ef76de20f776e977f172d2ba9c3277185db693bd3a7fc9949bfe42b39af6f68' },
+        [pscustomobject][ordered]@{ path='audit/10-build.stderr.log'; size=865248; sha256='e53b9598c39343785aea27be4381f1755accb5f91553630af64d1b71712e82c5' },
+        [pscustomobject][ordered]@{ path='audit/10-build.stdout.log'; size=0; sha256='e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855' },
+        [pscustomobject][ordered]@{ path='audit/78-failure-diagnostic.json'; size=766; sha256='cc0e391fdb743dac2c2c80362d690703da08b9ae38c5a8294031ace8bef9c311' },
+        [pscustomobject][ordered]@{ path='audit/79-historical-preservation-final.json'; size=301; sha256='927c57d5390bf2267b22b6af2718035530f48071ea48cc926329a696397b319d' },
+        [pscustomobject][ordered]@{ path='audit/80-campaign-result.json'; size=751; sha256='346b4aa69f8e6c440262f463e4cbb756f39dd1dde0df51124f533093ffe8b651' },
+        [pscustomobject][ordered]@{ path='audit/81-campaign-file-manifest.json'; size=1885; sha256='8be8ee5adadb296d269c5dda0c1827d8ef9ee56d024872aa3ee6e0cb74bbedd6' },
+        [pscustomobject][ordered]@{ path='audit/82-campaign-closure.json'; size=659; sha256='a3ba8ef72165dde8443ac85ffcaaf27b307afd15af10c8a0d347ca7f30cfcaa1' }
+    )
+    $ExpectedDirectories5 = @(
+        'audit', 'wave0', 'wave0/checkpoints', 'wave0/model_cache',
+        'wave0/receipts'
+    )
+    $Attempt5 = $Attempts[4]
+    $ExpectedPaths5 = @(& $BuildExpectedRegisteredPaths `
+        @($ExpectedRun5Id, $ExpectedPeer5Id))
+    $Latest5Text = if ($Attempt5.latest_write_utc -is [DateTime]) {
+        $Attempt5.latest_write_utc.ToUniversalTime().ToString('o')
+    } else {
+        [string]$Attempt5.latest_write_utc
+    }
+    if (
+        [string]$Attempt5.state -cne 'image-build-failure' -or
+        [string]$Attempt5.run_id -cne $ExpectedRun5Id -or
+        [string]$Attempt5.source_commit -cne 'ed6f157c7cbd545895b9d047f6e094968a1f9d94' -or
+        [string]$Attempt5.specification_commit -cne 'b59b0d4407b98b460f6166ea7288ba6021dc7a78' -or
+        [string]$Attempt5.plan_commit -cne '7dbd3a7576ea76beccfc64f748c4e495259ea89b' -or
+        (@($Attempt5.registered_run_ids) | ConvertTo-Json -Compress) -cne
+            (@($ExpectedRun5Id, $ExpectedPeer5Id) | ConvertTo-Json -Compress) -or
+        (@($Attempt5.registered_image_tags) | ConvertTo-Json -Compress) -cne
+            (@($ExpectedImage5Tag, $ExpectedPeer5Tag) | ConvertTo-Json -Compress) -or
+        -not (& $PathListsEqual @($Attempt5.registered_paths) $ExpectedPaths5) -or
+        [string]$Attempt5.owner_authorization_id -cne 'steven004' -or
+        [int]$Attempt5.run_file_count -ne 10 -or
+        [string]$Attempt5.run_inventory_sha256 -cne 'e6a0b5bb9e0781c11989962d117fd0015d3411223c46d457dc4d1e37eabc0e64' -or
+        (@($Attempt5.file_records) | ConvertTo-Json -Compress) -cne
+            ($ExpectedFiles5 | ConvertTo-Json -Compress) -or
+        (@($Attempt5.directory_names) | ConvertTo-Json -Compress) -cne
+            ($ExpectedDirectories5 | ConvertTo-Json -Compress) -or
+        @($Attempt5.image_tags_present).Count -ne 0 -or
+        @($Attempt5.lease_paths_present).Count -ne 0 -or
+        $Attempt5.validation_present -cne $false -or
+        @($Attempt5.payload_file_paths_present).Count -ne 0 -or
+        (@($Attempt5.closure_paths_present) | ConvertTo-Json -Compress) -cne
+            (@('78-failure-diagnostic.json','79-historical-preservation-final.json','80-campaign-result.json','81-campaign-file-manifest.json','82-campaign-closure.json') | ConvertTo-Json -Compress) -or
+        $Latest5Text -cne '2026-08-29T13:39:47.0148945Z' -or
+        $Attempt5.links_absent -cne $true
+    ) { throw 'A11 prior A11 image-build-failure attempt drifted' }
     $PriorOwners = @($Evidence.prior_a11_attempts.attempts | ForEach-Object {
         [string]$_.owner_authorization_id
     })
@@ -1683,7 +1868,7 @@ function Test-A11PathEntryPresent {
 function Test-A11PhaseDestinationsAbsent {
     param(
         [Parameter(Mandatory = $true)][ValidateCount(2, 2)][object[]]$Identities,
-        [Parameter(Mandatory = $true)][ValidateCount(4, 4)][object[]]$PriorAttempts,
+        [Parameter(Mandatory = $true)][ValidateCount(5, 5)][object[]]$PriorAttempts,
         [Parameter(Mandatory = $true)][string]$OwnerAuthorizationId
     )
     $PriorRunIds = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
