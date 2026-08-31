@@ -13,7 +13,7 @@ import sys
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from itertools import combinations
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 import torch
@@ -575,6 +575,21 @@ def _require_pattern(value: object, pattern: re.Pattern[str], label: str) -> str
     return value
 
 
+def _require_posix_confined_path(value: object, root: str, label: str) -> PurePosixPath:
+    raw = _require_nonempty(value, f"{label} path")
+    path = PurePosixPath(raw)
+    phase_root = PurePosixPath(root)
+    if not path.is_absolute() or not phase_root.is_absolute():
+        raise StatisticalReplayError(f"{label} path must be POSIX absolute")
+    if ".." in path.parts:
+        raise StatisticalReplayError(f"{label} path contains traversal")
+    try:
+        path.relative_to(phase_root)
+    except ValueError as error:
+        raise StatisticalReplayError(f"{label} path escapes phase root") from error
+    return path
+
+
 def _load_json(path: Path, label: str) -> Mapping[str, object]:
     try:
         raw = path.read_bytes()
@@ -677,7 +692,11 @@ def _validate_output_destination(path: Path, root: Path) -> None:
 
 
 def _validated_file_record(
-    value: object, root: Path, label: str
+    value: object,
+    root: Path,
+    label: str,
+    *,
+    posix_root: str | None = None,
 ) -> tuple[Mapping[str, object], Path]:
     record = _require_exact_keys(value, {"path", "size", "sha256"}, label)
     size = record.get("size")
@@ -685,6 +704,8 @@ def _validated_file_record(
     if type(size) is not int or size < 0:
         raise StatisticalReplayError(f"{label} size is invalid")
     _require_pattern(digest, _HASH_PATTERN, f"{label} hash")
+    if posix_root is not None:
+        _require_posix_confined_path(record.get("path"), posix_root, label)
     path = _confined_regular_file(record.get("path"), root, label)
     if path.stat().st_size != size:
         raise StatisticalReplayError(f"{label} size mismatch")
@@ -775,9 +796,13 @@ def _validate_invocation_audit(
     if argv != expected_argv:
         raise StatisticalReplayError("invocation argv binding mismatch")
     stream_paths: dict[str, Path] = {}
+    posix_root = root.as_posix() if os.name == "posix" else None
     for stream in ("stdout", "stderr"):
         _, stream_paths[stream] = _validated_file_record(
-            audit.get(stream), root, f"invocation {stream}"
+            audit.get(stream),
+            root,
+            f"invocation {stream}",
+            posix_root=posix_root,
         )
     try:
         stdout = stream_paths["stdout"].read_bytes()

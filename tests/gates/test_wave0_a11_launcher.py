@@ -8,7 +8,7 @@ import json
 import subprocess
 import tempfile
 from datetime import datetime
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 
 import pytest
 
@@ -1004,6 +1004,7 @@ def _run_replica_stream_contract(
     stderr: str = "",
     presentation_aware: bool = False,
     emit_arguments: bool = False,
+    emit_invocation_audit: bool = False,
 ) -> subprocess.CompletedProcess[str]:
     campaign = tmp_path / "campaign"
     audit = campaign / "audit"
@@ -1043,8 +1044,16 @@ def _run_replica_stream_contract(
         if presentation_aware
         else f"$ObservedStderr = {_ps(stderr)}"
     )
-    output_arguments = (
-        "$script:ObservedArguments | ConvertTo-Json -Compress" if emit_arguments else ""
+    if emit_arguments and emit_invocation_audit:
+        raise AssertionError("replica adapter can emit one observation at a time")
+    output_observation = (
+        "$script:ObservedArguments | ConvertTo-Json -Compress"
+        if emit_arguments
+        else (
+            f"Get-Content -Raw -LiteralPath {_ps(str(audit / 'calibration-00-invocation.json'))}"
+            if emit_invocation_audit
+            else ""
+        )
     )
     body = f"""
 $Identity = [pscustomobject]@{{
@@ -1072,7 +1081,7 @@ function Invoke-A11Native {{
     }}
 }}
 Invoke-A11Replica -Identity $Identity -ReplicaId 'calibration-00'
-{output_arguments}
+{output_observation}
 """
     return _invoke_functions(
         _model_load_function_names(
@@ -1082,6 +1091,7 @@ Invoke-A11Replica -Identity $Identity -ReplicaId 'calibration-00'
             "Assert-A11FileRecordUnchanged",
             "New-A11ReplicaValArguments",
             "New-A11ReplicaArguments",
+            "ConvertTo-A11ContainerFileRecord",
             "Invoke-A11Replica",
         ),
         body,
@@ -1877,6 +1887,50 @@ def test_replica_model_load_presentation_is_exact_and_before_image(
 
     assert completed.returncode == 0, completed.stderr
     _assert_model_load_presentation_arguments(json.loads(completed.stdout))
+
+
+def test_replica_invocation_stream_records_use_container_posix_paths(
+    tmp_path: Path,
+) -> None:
+    completed = _run_replica_stream_contract(
+        tmp_path,
+        "PASS\n",
+        emit_invocation_audit=True,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    audit = json.loads(completed.stdout)
+    assert audit["argv"] == [
+        "val",
+        "probe",
+        "training-feasibility",
+        "--model-contract",
+        "/a11/calibration/wave0/receipts/model-contract.json",
+        "--checkpoint-root",
+        "/a11/calibration/wave0/checkpoints/calibration-00",
+        "--run-id",
+        "wave0-a11-calibration-test",
+        "--output",
+        "/a11/calibration/wave0/receipts/calibration-00.json",
+    ]
+    for stream, expected_path in (
+        (
+            "stdout",
+            "/a11/calibration/audit/calibration-00.stdout.log",
+        ),
+        (
+            "stderr",
+            "/a11/calibration/audit/calibration-00.stderr.log",
+        ),
+    ):
+        record = audit[stream]
+        assert record["path"] == expected_path
+        assert not PureWindowsPath(record["path"]).drive
+        host_record = _file_record(
+            tmp_path / "campaign" / "audit" / f"calibration-00.{stream}.log"
+        )
+        assert record["size"] == host_record["size"]
+        assert record["sha256"] == host_record["sha256"]
 
 
 @pytest.mark.parametrize("component", ["foundation_model_contract", "replica"])

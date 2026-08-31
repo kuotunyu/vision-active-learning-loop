@@ -628,6 +628,51 @@ def _file_record(path: Path) -> dict[str, object]:
     }
 
 
+def test_linux_invocation_stream_paths_require_confined_posix_semantics() -> None:
+    phase_root = "/a11/calibration"
+    serialized = json.loads(
+        json.dumps(
+            {
+                "stdout": "/a11/calibration/audit/calibration-00.stdout.log",
+                "stderr": "/a11/calibration/audit/calibration-00.stderr.log",
+            }
+        )
+    )
+
+    assert (
+        statistical_replay._require_posix_confined_path(
+            serialized["stdout"], phase_root, "invocation stdout"
+        ).as_posix()
+        == serialized["stdout"]
+    )
+    assert (
+        statistical_replay._require_posix_confined_path(
+            serialized["stderr"], phase_root, "invocation stderr"
+        ).as_posix()
+        == serialized["stderr"]
+    )
+
+
+@pytest.mark.parametrize(
+    "candidate",
+    [
+        "D:/vision-active-learning-loop-artifacts/wave0/audit/stdout.log",
+        "audit/calibration-00.stdout.log",
+        "/a11/validation/audit/calibration-00.stdout.log",
+        "/a11/calibration/audit/../outside.stdout.log",
+    ],
+)
+def test_linux_invocation_stream_paths_reject_host_relative_or_escape_forms(
+    candidate: str,
+) -> None:
+    with pytest.raises(StatisticalReplayError, match="path"):
+        statistical_replay._require_posix_confined_path(
+            candidate,
+            "/a11/calibration",
+            "invocation stdout",
+        )
+
+
 def _write_audit_fixture(root: Path, name: str, content: object | None = None) -> Path:
     path = root / "audits" / f"{name}.json"
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -981,6 +1026,56 @@ def _gate_arguments(manifest_path: Path, phase_root: Path, output: Path) -> list
         str(phase_root),
         "--output",
         str(output),
+    ]
+
+
+def test_linux_invocation_validator_supplies_posix_root_to_stream_records(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _, phase_root, manifest = _write_phase_manifest(tmp_path, "calibration")
+    replica = manifest["replicas"][0]
+    assert isinstance(replica, dict)
+    invocation_record = replica["invocation_audit"]
+    receipt_record = replica["feasibility"]
+    checkpoint_record = replica["checkpoint"]
+    assert isinstance(receipt_record, dict)
+    assert isinstance(checkpoint_record, dict)
+    observed_posix_roots: list[tuple[str, str | None]] = []
+    original = statistical_replay._validated_file_record
+
+    def capture_stream_root(
+        value: object,
+        root: Path,
+        label: str,
+        *,
+        posix_root: str | None = None,
+    ) -> tuple[Mapping[str, object], Path]:
+        if label in {"invocation stdout", "invocation stderr"}:
+            observed_posix_roots.append((label, posix_root))
+            if label == "invocation stderr":
+                raise StatisticalReplayError("stream roots captured")
+            return {}, phase_root
+        return original(value, root, label, posix_root=posix_root)
+
+    monkeypatch.setattr(
+        statistical_replay, "_validated_file_record", capture_stream_root
+    )
+    posix_os = type(
+        "PosixOS", (), {"name": "posix", "path": statistical_replay.os.path}
+    )
+    monkeypatch.setattr(statistical_replay, "os", posix_os)
+    with pytest.raises(StatisticalReplayError, match="stream roots captured"):
+        statistical_replay._validate_invocation_audit(
+            invocation_record,
+            phase_root,
+            run_id=str(manifest["run_id"]),
+            receipt_path=Path(str(receipt_record["path"])),
+            checkpoint_path=Path(str(checkpoint_record["path"])),
+        )
+
+    assert observed_posix_roots == [
+        ("invocation stdout", phase_root.as_posix()),
+        ("invocation stderr", phase_root.as_posix()),
     ]
 
 

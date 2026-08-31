@@ -2558,8 +2558,10 @@ function Invoke-A11Replica {
         schema_version = 1
         argv = @('val') + $ValArguments
         exit_code = [int]$Result.ExitCode
-        stdout = Get-A11FileRecord -Path $StdoutPath
-        stderr = Get-A11FileRecord -Path $StderrPath
+        stdout = ConvertTo-A11ContainerFileRecord $Identity `
+            (Get-A11FileRecord -Path $StdoutPath)
+        stderr = ConvertTo-A11ContainerFileRecord $Identity `
+            (Get-A11FileRecord -Path $StderrPath)
     }
     $InvocationPath = [IO.Path]::Combine($AuditRoot, "$ReplicaId-invocation.json")
     Write-A11NewText -Path $InvocationPath -Text (($Invocation | ConvertTo-Json -Depth 8 -Compress) + "`n")
