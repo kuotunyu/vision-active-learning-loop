@@ -1,0 +1,116 @@
+{
+  "diagnostic": "offline-cpu-recompute-of-a11-pair-metrics",
+  "source_root": "<evidence-root>\\wave0\\a11-runs\\wave0-a11-calibration-20260831T051426556Z-b3e22466",
+  "note": "Read-only recomputation over the frozen steven006 calibration replicas. Not an A11 receipt; not a Wave 0 pass; makes no claim beyond same-host replay spread.",
+  "replica_count": 12,
+  "pair_count": 66,
+  "pair_errors": [],
+  "derive_calibration_thresholds_error": null,
+  "metrics": {
+    "gradient_norm.relative_difference": {
+      "min": 5.3593422675825784e-05,
+      "median": 0.001088660148239779,
+      "max": 0.002812308736943333,
+      "threshold_1p5x_max": 0.004218463105415,
+      "ceiling": 0.01,
+      "within_ceiling": true
+    },
+    "model_update.backbone.cosine_defect": {
+      "min": 0.0016642513157603123,
+      "median": 0.0017653232459187707,
+      "max": 0.002016982175329196,
+      "threshold_1p5x_max": 0.003025473262993794,
+      "ceiling": 0.005,
+      "within_ceiling": true
+    },
+    "model_update.backbone.relative_l2": {
+      "min": 0.05769280262357838,
+      "median": 0.0594185522954162,
+      "max": 0.06351340079246603,
+      "threshold_1p5x_max": 0.09527010118869905,
+      "ceiling": 0.1,
+      "within_ceiling": true
+    },
+    "model_update.detector.cosine_defect": {
+      "min": 0.0002015755370378125,
+      "median": 0.0002235268345235908,
+      "max": 0.00024023020654762028,
+      "threshold_1p5x_max": 0.0003603453098214304,
+      "ceiling": 0.005,
+      "within_ceiling": true
+    },
+    "model_update.detector.relative_l2": {
+      "min": 0.020078575993579904,
+      "median": 0.021143398160053027,
+      "max": 0.021918924672578704,
+      "threshold_1p5x_max": 0.032878387008868054,
+      "ceiling": 0.1,
+      "within_ceiling": true
+    },
+    "optimizer_state.backbone.exp_avg.cosine_defect": {
+      "min": 2.6719831930033244e-05,
+      "median": 5.147327636861876e-05,
+      "max": 0.00010598182809806733,
+      "threshold_1p5x_max": 0.000158972742147101,
+      "ceiling": 0.005,
+      "within_ceiling": true
+    },
+    "optimizer_state.backbone.exp_avg.relative_l2": {
+      "min": 0.007310559903657056,
+      "median": 0.01015095841419106,
+      "max": 0.014563731123880805,
+      "threshold_1p5x_max": 0.021845596685821207,
+      "ceiling": 0.1,
+      "within_ceiling": true
+    },
+    "optimizer_state.backbone.exp_avg_sq.cosine_defect": {
+      "min": 1.581738109757147e-05,
+      "median": 0.0001050332873551163,
+      "max": 0.0004585103663289347,
+      "threshold_1p5x_max": 0.0006877655494934021,
+      "ceiling": 0.005,
+      "within_ceiling": true
+    },
+    "optimizer_state.backbone.exp_avg_sq.relative_l2": {
+      "min": 0.005632447398759646,
+      "median": 0.015541007026659781,
+      "max": 0.03190176621541863,
+      "threshold_1p5x_max": 0.04785264932312795,
+      "ceiling": 0.1,
+      "within_ceiling": true
+    },
+    "optimizer_state.detector.exp_avg.cosine_defect": {
+      "min": 5.736680124268645e-07,
+      "median": 6.200320838978257e-07,
+      "max": 7.358748638219836e-07,
+      "threshold_1p5x_max": 1.1038122957329755e-06,
+      "ceiling": 0.005,
+      "within_ceiling": true
+    },
+    "optimizer_state.detector.exp_avg.relative_l2": {
+      "min": 0.001089301764812944,
+      "median": 0.001562527826785092,
+      "max": 0.0030563773812913087,
+      "threshold_1p5x_max": 0.004584566071936963,
+      "ceiling": 0.1,
+      "within_ceiling": true
+    },
+    "optimizer_state.detector.exp_avg_sq.cosine_defect": {
+      "min": 3.157643035933688e-10,
+      "median": 5.576284434205547e-10,
+      "max": 1.023118811893653e-09,
+      "threshold_1p5x_max": 1.5346782178404794e-09,
+      "ceiling": 0.005,
+      "within_ceiling": true
+    },
+    "optimizer_state.detector.exp_avg_sq.relative_l2": {
+      "min": 0.00011003657916671562,
+      "median": 0.00217638039702993,
+      "max": 0.005616814283587729,
+      "threshold_1p5x_max": 0.008425221425381595,
+      "ceiling": 0.1,
+      "within_ceiling": true
+    }
+  },
+  "elapsed_seconds": 108.3
+}
