@@ -6,6 +6,7 @@ RT-DETR（`PekingU/rtdetr_r18vd`）在 RDD 道路損壞資料上的主動學習�
 **現況（2026-09-09）：尚未有任何一輪「基線 → 選樣 → 加入標註 → 重訓 → 同測試集比較」。**
 目前程式碼全部屬於 Wave 0（模型契約與單步訓練可行性），資料、選樣、多輪訓練與評估（Wave 1–3）只有計畫文件。
 完整評估見 [docs/status/2026-09-09-revival-assessment.md](docs/status/2026-09-09-revival-assessment.md)。
+復活方案第 1 步的降規協定草案（待核可）見 [docs/superpowers/specs/2026-09-09-val-v0.2-lite-protocol.md](docs/superpowers/specs/2026-09-09-val-v0.2-lite-protocol.md)。
 
 ## 分支與位置
 
