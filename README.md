@@ -40,7 +40,7 @@ v0.2-lite 復活進度（`src/vision_active_learning_loop/lite/`）：
 | 模組 | 狀態 |
 |---|---|
 | `acquisition.py` | 已完成。entropy / margin 逐 query 不確定度、影像分數（前 20 個 query 平均）、random 與 shared-start 排序、預算選取；28 個 CPU 測試 |
-| `manifest.py` | 未開始（復活方案第 3 步） |
+| `manifest.py` | 已完成。VOC 解析、item_id、完全重複收攏、凍結雜湊切分、覆蓋審核、公開視圖；27 個 CPU 測試 |
 | `train.py` | 未開始（第 4 步） |
 | `evaluate.py` | 未開始（第 4 步） |
 | `loop.py` | 未開始（第 6 步） |
