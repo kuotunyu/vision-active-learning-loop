@@ -8,9 +8,12 @@ handed to acquisition and training.
 
 from __future__ import annotations
 
+import argparse
 import hashlib
 import io
+import json
 import re
+import sys
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -19,6 +22,12 @@ from xml.etree import ElementTree
 from PIL import Image, UnidentifiedImageError
 
 from ..artifacts.digests import canonical_json_sha256
+from ..artifacts.no_clobber import (
+    NoClobberError,
+    open_unique_staging_file,
+    publish_staged_file_no_clobber,
+)
+from ..cli_manifest import command
 from ..models.rtdetr_contract import RDD_LABELS
 
 SCHEMA_VERSION = 1
@@ -327,3 +336,93 @@ def public_pool_view(manifest: Mapping[str, object]) -> dict:
             if row.get("split") == "pool"
         ],
     }
+
+
+def write_json_no_clobber(path: Path, document: Mapping[str, object]) -> None:
+    """Publish one canonical JSON document without overwriting anything."""
+    encoded = (
+        json.dumps(
+            document,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+            allow_nan=False,
+        )
+        + "\n"
+    ).encode("utf-8")
+    staging = open_unique_staging_file(path)
+    try:
+        with staging.handle as handle:
+            handle.write(encoded)
+            handle.flush()
+        publish_staged_file_no_clobber(staging.path, path)
+    finally:
+        staging.path.unlink(missing_ok=True)
+
+
+def _existing_directory(value: str, label: str) -> Path:
+    path = Path(value)
+    if not path.is_dir():
+        raise ManifestError(f"{label} directory is unavailable: {value}")
+    return path
+
+
+@command("lite manifest")
+def manifest_main(argv: Sequence[str] | None = None) -> int:
+    """Build, audit, and publish the frozen manifest plus its public view."""
+    parser = argparse.ArgumentParser(prog="val lite manifest")
+    parser.add_argument("--images", required=True)
+    parser.add_argument("--annotations", required=True)
+    parser.add_argument("--archive-sha256", required=True)
+    parser.add_argument("--output", required=True)
+    parser.add_argument("--public-view", required=True)
+    arguments = parser.parse_args(list(argv) if argv is not None else None)
+
+    output = Path(arguments.output)
+    view_path = Path(arguments.public_view)
+    try:
+        images = _existing_directory(arguments.images, "images")
+        annotations = _existing_directory(arguments.annotations, "annotations")
+        for destination in (output, view_path):
+            if destination.exists():
+                raise ManifestError(
+                    f"destination already exists: {destination.name}"
+                )
+        manifest = build_manifest(
+            scan_dataset(images, annotations),
+            source_archive_sha256=arguments.archive_sha256,
+        )
+    except ManifestError as error:
+        print(f"lite manifest input error: {error}", file=sys.stderr)
+        return 3
+
+    summary = {
+        key: manifest[key]
+        for key in (
+            "image_count",
+            "box_count",
+            "class_box_counts",
+            "alias_count",
+            "discarded_box_count",
+            "negative_image_count",
+        )
+    }
+    errors = audit_coverage(manifest)
+    if errors:
+        print(f"lite manifest summary: {json.dumps(summary)}", file=sys.stderr)
+        for error in errors:
+            print(f"lite manifest coverage: {error}", file=sys.stderr)
+        return 2
+
+    try:
+        write_json_no_clobber(output, manifest)
+        write_json_no_clobber(view_path, public_pool_view(manifest))
+    except (NoClobberError, OSError) as error:
+        print(f"lite manifest publication error: {error}", file=sys.stderr)
+        return 3
+    print(
+        json.dumps(
+            {**summary, "manifest_sha256": manifest_sha256(manifest)}, sort_keys=True
+        )
+    )
+    return 0

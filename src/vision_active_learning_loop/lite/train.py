@@ -95,8 +95,8 @@ def training_batches(
     seed: int,
     steps: int,
     batch_size: int = BATCH_SIZE,
-) -> Iterable[tuple[str, ...]]:
-    """Yield exactly `steps` full batches, reshuffling on every epoch boundary."""
+) -> Iterable[tuple[int, tuple[str, ...]]]:
+    """Yield exactly `steps` `(epoch, items)` full batches, reshuffling per epoch."""
     values = tuple(item_ids)
     if not isinstance(steps, int) or isinstance(steps, bool) or steps <= 0:
         raise TrainingError("steps must be a positive integer")
@@ -112,7 +112,7 @@ def training_batches(
         for start in range(0, len(order) - batch_size + 1, batch_size):
             if produced == steps:
                 break
-            yield order[start : start + batch_size]
+            yield epoch, order[start : start + batch_size]
             produced += 1
         epoch += 1
 
@@ -226,6 +226,7 @@ def fit_receipt(
     sampler_digest: str,
     model_sha256: str,
     checkpoint_sha256: str,
+    environment: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Bind one fit's observations to the identities that make it auditable."""
     if not isinstance(result, FitResult):
@@ -272,5 +273,10 @@ def fit_receipt(
                 "decreased": result.loss_decreased,
             },
             "peak_allocated_bytes": result.peak_allocated_bytes,
+            **(
+                {"environment": dict(environment)}
+                if environment is not None
+                else {}
+            ),
         },
     }

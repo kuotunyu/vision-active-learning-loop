@@ -40,11 +40,11 @@ v0.2-lite 復活進度（`src/vision_active_learning_loop/lite/`）：
 | 模組 | 狀態 |
 |---|---|
 | `acquisition.py` | 已完成。entropy / margin 逐 query 不確定度、影像分數（前 20 個 query 平均）、random 與 shared-start 排序、預算選取；28 個 CPU 測試 |
-| `manifest.py` | 已完成。VOC 解析、item_id、完全重複收攏、凍結雜湊切分、覆蓋審核、公開視圖；27 個 CPU 測試 |
+| `manifest.py` | 已完成。VOC 解析、item_id、完全重複收攏、凍結雜湊切分、覆蓋審核、公開視圖，以及 `val lite manifest` 命令；27 + 8 個 CPU 測試 |
 | `dataset.py` | 已完成。影像索引、樣本載入、確定性翻轉與色彩抖動、COCO 標註載荷、批次前處理、畫布幾何反算；23 個 CPU 測試 |
 | `train.py` | 已完成。1,000 步固定迴圈、每 epoch 重洗取樣、warm-up 加 cosine 排程、梯度裁切、fit 收據；20 個 CPU 測試 |
 | `evaluate.py` | 已完成。原始 query 轉偵測（前 100、無 NMS 無門檻）、pycocotools mAP 與四類 recall、nAUBC；13 個 CPU 測試 |
-| `loop.py` | 未開始（第 6 步） |
+| `loop.py` | 部分完成。`fit_once`：載入 pinned 快照、四類 reset、增強批次、固定步迴圈、checkpoint 與收據的無覆寫發布；4 個單元測試，加 1 個以 `VAL_LITE_SNAPSHOT` 開啟、用真 RT-DETR 在 CPU 跑 2 步的整合測試（已通過）。多輪排程與 `val lite run` 尚未寫（第 6 步） |
 
 ## 在本機（CPU）檢查
 

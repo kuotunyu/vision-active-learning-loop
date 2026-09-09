@@ -89,24 +89,26 @@ def test_training_batches_yields_the_requested_step_count() -> None:
     batches = list(training_batches(ITEM_IDS, seed=17, steps=7, batch_size=BATCH_SIZE))
 
     assert len(batches) == 7
-    assert all(len(batch) == BATCH_SIZE for batch in batches)
+    assert all(len(items) == BATCH_SIZE for _epoch, items in batches)
 
 
 def test_training_batches_consume_each_epoch_before_reshuffling() -> None:
     batches = list(training_batches(ITEM_IDS, seed=17, steps=5, batch_size=4))
 
-    first_epoch = [item for batch in batches[:5] for item in batch]
+    first_epoch = [item for _epoch, items in batches[:5] for item in items]
 
     assert len(set(first_epoch)) == len(ITEM_IDS)
     assert sorted(first_epoch) == sorted(ITEM_IDS)
+    assert [epoch for epoch, _items in batches] == [0, 0, 0, 0, 0]
 
 
 def test_training_batches_reshuffle_between_epochs() -> None:
     batches = list(training_batches(ITEM_IDS, seed=17, steps=10, batch_size=4))
 
-    assert [item for batch in batches[:5] for item in batch] != [
-        item for batch in batches[5:] for item in batch
+    assert [item for _epoch, items in batches[:5] for item in items] != [
+        item for _epoch, items in batches[5:] for item in items
     ]
+    assert [epoch for epoch, _items in batches] == [0] * 5 + [1] * 5
 
 
 def test_training_batches_are_deterministic_for_a_seed() -> None:
@@ -253,6 +255,26 @@ def test_fit_receipt_binds_the_experiment_identity() -> None:
     assert normative["recipe"]["gradient_clip"] == GRADIENT_CLIP
     assert normative["recipe"]["batch_size"] == BATCH_SIZE
     assert normative["loss"]["decreased"] is True
+
+
+def test_fit_receipt_embeds_the_runtime_environment_when_given() -> None:
+    result = _fit(count=20)
+
+    receipt = fit_receipt(
+        result,
+        experiment_id="lite-czech-20260909",
+        manifest_sha256="b" * 64,
+        arm="entropy",
+        seed=17,
+        budget_fraction=0.05,
+        acquired_item_ids=ITEM_IDS,
+        sampler_digest="c" * 64,
+        model_sha256="d" * 64,
+        checkpoint_sha256="e" * 64,
+        environment={"device": "cpu", "steps": 20},
+    )
+
+    assert receipt["normative"]["environment"] == {"device": "cpu", "steps": 20}
 
 
 def test_fit_receipt_rejects_an_unregistered_arm() -> None:
