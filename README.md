@@ -69,23 +69,21 @@ cd .worktrees\wave0-model-contract
 
 ## 跑 GPU 實驗（一條指令）
 
-開任何一個 PowerShell（不需要啟用 venv、不需要改 execution policy）：
-
-```powershell
-cd "<repo>\.worktrees\wave0-model-contract"
-```
+開任何一個 PowerShell（不需要 `cd`、不需要啟用 venv、不需要改 execution policy）。下面用絕對路徑呼叫，從任何目錄貼上都一樣。
 
 先只做檢查，不啟動任何東西：
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File scripts\run_lite_seed17.ps1 -DryRun
+powershell -ExecutionPolicy Bypass -File "<repo>\.worktrees\wave0-model-contract\scripts\run_lite_seed17.ps1" -DryRun
 ```
 
 每一行都是 `ok` 才往下。正式執行（GPU 被別的工作占用時會每 30 秒等一次，最多 4 小時）：
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File scripts\run_lite_seed17.ps1 -WaitForGpu
+powershell -ExecutionPolicy Bypass -File "<repo>\.worktrees\wave0-model-contract\scripts\run_lite_seed17.ps1" -WaitForGpu
 ```
+
+換 seed 就在後面加 `-Seed 29` 或 `-Seed 43`。腳本檔名固定不變，seed 由參數決定，輸出目錄與紀錄檔會自動帶上該 seed。
 
 腳本會依序：共享 2% 基線 fit 與評估 → §8 門檻（loss 下降、9 個 allowlist warning）→ 完整實驗（3 arm × 3 輪，共 10 個 fit）。任一步失敗就停，不重試、不覆寫；`RUNNING.lock` 防止同時跑兩份。全部輸出與逐字紀錄在 `<evidence-root>\lite\`：`lite-czech-s17-<時間戳>\{metrics.csv, curve.svg, ledger-*.json, experiment-receipt.json}` 與 `run-lite-seed17-<時間戳>.log`。
 
