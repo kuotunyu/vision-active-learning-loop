@@ -3,8 +3,8 @@
 RT-DETR（`PekingU/rtdetr_r18vd`）在 RDD 道路損壞資料上的主動學習實驗基礎建設。
 目標是比較 random / entropy / margin / core-set / hybrid 五種選樣策略在固定預算下的偵測表現。
 
-**現況（2026-09-09）：尚未有任何一輪完整的「基線 → 選樣 → 加入標註 → 重訓 → 同測試集比較」跑過真實資料。**
-原 Wave 0 分支停在模型契約與單步訓練可行性。復活工作依 v0.2-lite 協定進行，選樣、資料、訓練、評估四個模組已完成並有 CPU 測試，尚未接上真實資料與 GPU。
+**現況（2026-09-09）：第一輪完整的「基線 → 選樣 → 加入標註 → 重訓 → 同測試集比較」已在 RDD2022 Czech 子集、RTX 4090 上跑完（seed 17，10 個 fit，48 分鐘）。**
+結果與明講的限制見 [docs/results/2026-09-09-lite-czech-s17.md](docs/results/2026-09-09-lite-czech-s17.md)：entropy／margin 的 nAUBC 高於 random 0.004 到 0.005，但單一 seed 的差距落在同機重播離散度之內，還不是結論。原 Wave 0 分支停在模型契約與單步訓練可行性；復活工作依 v0.2-lite 協定進行。
 完整評估見 [docs/status/2026-09-09-revival-assessment.md](docs/status/2026-09-09-revival-assessment.md)，
 已核可的降規協定見 [docs/superpowers/specs/2026-09-09-val-v0.2-lite-protocol.md](docs/superpowers/specs/2026-09-09-val-v0.2-lite-protocol.md)。
 
@@ -52,7 +52,7 @@ v0.2-lite 復活進度（`src/vision_active_learning_loop/lite/`）：
 
 設 `VAL_LITE_SNAPSHOT` 可另跑用真 RT-DETR 在 CPU 走完整路徑的整合測試（fit、評估、基線命令、完整實驗；已通過）。`scripts/run_lite_seed17.ps1` 是把以上串起來的唯一啟動點，有 Windows PowerShell 5.1 解析檢查與 dry-run 測試。
 
-真實資料：RDD2022 Czech train 子樹已於 2026-09-09 取得並建好 manifest（2,829 張、1,745 框、test 574／pool 2,255），來源、雜湊與計數見 [docs/data-card.md](docs/data-card.md)。GPU 基線尚未執行。
+真實資料：RDD2022 Czech train 子樹已於 2026-09-09 取得並建好 manifest（2,829 張、1,745 框、test 574／pool 2,255），來源、雜湊與計數見 [docs/data-card.md](docs/data-card.md)。GPU 基線與完整實驗已執行，結果檔在 [docs/results/lite-czech-s17-20260909T1002Z/](docs/results/lite-czech-s17-20260909T1002Z/)。
 
 ## 在本機（CPU）檢查
 
