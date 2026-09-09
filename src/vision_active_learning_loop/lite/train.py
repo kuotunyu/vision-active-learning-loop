@@ -28,6 +28,8 @@ DETECTOR_LEARNING_RATE = 1e-4
 BACKBONE_LEARNING_RATE = 1e-5
 WEIGHT_DECAY = 1e-4
 REGISTERED_ARMS = ("random", "entropy", "margin")
+SHARED_START_ROLE = "shared"
+FIT_ROLES = REGISTERED_ARMS + (SHARED_START_ROLE,)
 REGISTERED_BUDGET_FRACTIONS = (0.02, 0.05, 0.10, 0.20)
 RECEIPT_TYPE = "lite-fit"
 SCHEMA_VERSION = 1
@@ -231,7 +233,7 @@ def fit_receipt(
     """Bind one fit's observations to the identities that make it auditable."""
     if not isinstance(result, FitResult):
         raise TrainingError("a fit result is required")
-    if arm not in REGISTERED_ARMS:
+    if arm not in FIT_ROLES:
         raise TrainingError("arm is not registered")
     if float(budget_fraction) not in REGISTERED_BUDGET_FRACTIONS:
         raise TrainingError("budget fraction is not registered")

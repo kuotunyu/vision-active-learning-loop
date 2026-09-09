@@ -44,7 +44,9 @@ v0.2-lite 復活進度（`src/vision_active_learning_loop/lite/`）：
 | `dataset.py` | 已完成。影像索引、樣本載入、確定性翻轉與色彩抖動、COCO 標註載荷、批次前處理、畫布幾何反算；23 個 CPU 測試 |
 | `train.py` | 已完成。1,000 步固定迴圈、每 epoch 重洗取樣、warm-up 加 cosine 排程、梯度裁切、fit 收據；20 個 CPU 測試 |
 | `evaluate.py` | 已完成。原始 query 轉偵測（前 100、無 NMS 無門檻）、pycocotools mAP 與四類 recall、nAUBC；13 個 CPU 測試 |
-| `loop.py` | 部分完成。`fit_once`：載入 pinned 快照、四類 reset、增強批次、固定步迴圈、checkpoint 與收據的無覆寫發布；4 個單元測試，加 1 個以 `VAL_LITE_SNAPSHOT` 開啟、用真 RT-DETR 在 CPU 跑 2 步的整合測試（已通過）。多輪排程與 `val lite run` 尚未寫（第 6 步） |
+| `loop.py` | 部分完成。`fit_once`（載入 pinned 快照、四類 reset、增強批次、固定步迴圈、checkpoint 與收據的無覆寫發布）、`evaluate_checkpoint`、`budget_count`、`shared_start_items`，以及 `val lite baseline` 命令（共享 2% 起點的 fit 加凍結 test 評估）。單元測試之外，設 `VAL_LITE_SNAPSHOT` 可跑 4 個用真 RT-DETR 在 CPU 走完整路徑的整合測試（已通過）。多輪排程與 `val lite run` 尚未寫（第 6 步） |
+
+真實資料：RDD2022 Czech train 子樹已於 2026-09-09 取得並建好 manifest（2,829 張、1,745 框、test 574／pool 2,255），來源、雜湊與計數見 [docs/data-card.md](docs/data-card.md)。GPU 基線尚未執行。
 
 ## 在本機（CPU）檢查
 

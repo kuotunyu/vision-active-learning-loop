@@ -16,8 +16,11 @@ from vision_active_learning_loop.lite.loop import (
     FitIdentity,
     FitRuntime,
     LoopError,
+    budget_count,
+    evaluate_checkpoint,
     fit_once,
     load_pinned_detector,
+    shared_start_items,
 )
 from vision_active_learning_loop.lite.manifest import item_id_for_bytes
 from vision_active_learning_loop.training.checkpoint_io import (
@@ -116,6 +119,40 @@ def test_fit_runtime_rejects_a_warmup_not_shorter_than_the_steps(
         )
 
 
+def test_budget_count_rounds_up_the_registered_fractions() -> None:
+    assert budget_count(0.02, 1598) == 32  # ceil(31.96)
+    assert budget_count(0.05, 1598) == 80  # ceil(79.9)
+    assert budget_count(0.10, 1598) == 160  # ceil(159.8)
+    assert budget_count(0.20, 1598) == 320  # ceil(319.6)
+
+
+def test_budget_count_is_exact_where_floating_point_would_overshoot() -> None:
+    # 0.10 * 100 is 10.000000000000002 in binary64; ceil must still give 10.
+    assert budget_count(0.10, 100) == 10
+    assert budget_count(0.20, 5) == 1
+
+
+def test_budget_count_rejects_an_unregistered_fraction_or_empty_pool() -> None:
+    with pytest.raises(LoopError):
+        budget_count(0.03, 100)
+    with pytest.raises(LoopError):
+        budget_count(0.02, 0)
+
+
+def test_shared_start_items_take_the_frozen_prefix_of_the_shared_order() -> None:
+    pool = ("item-a", "item-b", "item-c", "item-d", "item-e")
+
+    assert shared_start_items(pool, seed=17) == ("item-d",)  # B(0.02, 5) = 1
+
+
+def test_shared_start_items_ignore_the_pool_input_order() -> None:
+    pool = ("item-a", "item-b", "item-c", "item-d", "item-e")
+
+    assert shared_start_items(tuple(reversed(pool)), seed=17) == (
+        shared_start_items(pool, seed=17)
+    )
+
+
 def test_load_pinned_detector_rejects_an_absent_snapshot(tmp_path: Path) -> None:
     with pytest.raises(LoopError, match="snapshot"):
         load_pinned_detector(tmp_path / "absent")
@@ -155,3 +192,73 @@ def test_fit_once_trains_the_pinned_detector_on_cpu_and_publishes_evidence(
     )
     assert state.step == 2
     assert state.input_digests["manifest_sha256"] == "a" * 64
+
+
+@requires_snapshot
+def test_evaluate_checkpoint_scores_a_fresh_fit_on_cpu(tmp_path: Path) -> None:
+    rows, index = _rows_and_index(tmp_path, 6)
+    ordered = tuple(sorted(rows))
+    train_ids, test_ids = ordered[:4], ordered[4:]
+    identity = _identity(train_ids)
+    runtime = FitRuntime(
+        snapshot=Path(SNAPSHOT),
+        device=torch.device("cpu"),
+        steps=2,
+        batch_size=2,
+        warmup_steps=1,
+    )
+    artifacts = fit_once(
+        identity,
+        runtime,
+        rows_by_item=rows,
+        image_index=index,
+        output_dir=tmp_path / "f",
+    )
+    test_rows = [{**rows[item], "split": "test"} for item in test_ids]
+    # Give the tiny test split one box of every class so evaluation is legal.
+    for class_id, row in zip(range(4), test_rows * 2):
+        row["boxes"] = row["boxes"] + [[class_id, 1, 1, 20, 20]]
+
+    metrics = evaluate_checkpoint(
+        snapshot=Path(SNAPSHOT),
+        checkpoint_path=artifacts.checkpoint_path,
+        checkpoint_sha256=artifacts.checkpoint_sha256,
+        test_rows=test_rows,
+        image_index=index,
+        device=torch.device("cpu"),
+        batch_size=2,
+    )
+
+    assert set(metrics) >= {"mAP50_95", "AP50", "AP50_95_D40", "recall_D00"}
+    assert all(0.0 <= value <= 1.0 for value in metrics.values())
+
+
+@requires_snapshot
+def test_evaluate_checkpoint_rejects_a_wrong_checkpoint_digest(tmp_path: Path) -> None:
+    rows, index = _rows_and_index(tmp_path, 4)
+    identity = _identity(tuple(sorted(rows)))
+    runtime = FitRuntime(
+        snapshot=Path(SNAPSHOT),
+        device=torch.device("cpu"),
+        steps=2,
+        batch_size=2,
+        warmup_steps=1,
+    )
+    artifacts = fit_once(
+        identity,
+        runtime,
+        rows_by_item=rows,
+        image_index=index,
+        output_dir=tmp_path / "f",
+    )
+
+    with pytest.raises(LoopError, match="checkpoint"):
+        evaluate_checkpoint(
+            snapshot=Path(SNAPSHOT),
+            checkpoint_path=artifacts.checkpoint_path,
+            checkpoint_sha256="0" * 64,
+            test_rows=[{**row, "split": "test"} for row in rows.values()],
+            image_index=index,
+            device=torch.device("cpu"),
+            batch_size=2,
+        )
