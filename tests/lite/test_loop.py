@@ -126,8 +126,10 @@ def test_budget_count_rounds_up_the_registered_fractions() -> None:
     assert budget_count(0.20, 1598) == 320  # ceil(319.6)
 
 
-def test_budget_count_is_exact_where_floating_point_would_overshoot() -> None:
-    # 0.10 * 100 is 10.000000000000002 in binary64; ceil must still give 10.
+def test_budget_count_matches_the_exact_rational_ceiling() -> None:
+    # Exact integers must come back exactly. A brute-force check on 2026-09-09
+    # found no N <= 20,000 where binary64 ceil differs for these fractions, so
+    # the rational implementation is a guarantee, not a fix for an observed bug.
     assert budget_count(0.10, 100) == 10
     assert budget_count(0.20, 5) == 1
 

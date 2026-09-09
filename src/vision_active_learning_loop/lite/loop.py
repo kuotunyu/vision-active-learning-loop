@@ -11,12 +11,10 @@ from __future__ import annotations
 
 import argparse
 import json
-import math
 import re
 import sys
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
-from fractions import Fraction
 from pathlib import Path
 from typing import Any
 
@@ -51,6 +49,8 @@ from .dataset import (
 )
 from .evaluate import EvaluationError, detections_from_outputs, evaluate_detections
 from .manifest import manifest_sha256, write_json_no_clobber
+from .rounds import RoundsError
+from .rounds import budget_count as _exact_budget_count
 from .train import (
     BATCH_SIZE,
     FIT_ROLES,
@@ -330,14 +330,11 @@ def fit_once(
 
 
 def budget_count(fraction: float, pool_size: int) -> int:
-    """Return B(p) = ceil(p * N) exactly, without binary64 rounding artefacts."""
-    if float(fraction) not in REGISTERED_BUDGET_FRACTIONS:
-        raise LoopError("budget fraction is not registered")
-    if not isinstance(pool_size, int) or isinstance(pool_size, bool):
-        raise LoopError("pool size must be an integer")
-    if pool_size <= 0:
-        raise LoopError("pool size must be positive")
-    return math.ceil(Fraction(str(float(fraction))) * pool_size)
+    """Return B(p) = ceil(p * N) exactly; see `rounds.budget_count`."""
+    try:
+        return _exact_budget_count(fraction, pool_size)
+    except RoundsError as error:
+        raise LoopError(str(error)) from error
 
 
 def shared_start_items(pool_item_ids: Sequence[str], *, seed: int) -> tuple[str, ...]:
