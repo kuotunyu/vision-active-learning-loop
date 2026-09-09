@@ -3,10 +3,10 @@
 RT-DETR（`PekingU/rtdetr_r18vd`）在 RDD 道路損壞資料上的主動學習實驗基礎建設。
 目標是比較 random / entropy / margin / core-set / hybrid 五種選樣策略在固定預算下的偵測表現。
 
-**現況（2026-09-09）：尚未有任何一輪「基線 → 選樣 → 加入標註 → 重訓 → 同測試集比較」。**
-目前程式碼全部屬於 Wave 0（模型契約與單步訓練可行性），資料、選樣、多輪訓練與評估（Wave 1–3）只有計畫文件。
-完整評估見 [docs/status/2026-09-09-revival-assessment.md](docs/status/2026-09-09-revival-assessment.md)。
-復活方案第 1 步的降規協定草案（待核可）見 [docs/superpowers/specs/2026-09-09-val-v0.2-lite-protocol.md](docs/superpowers/specs/2026-09-09-val-v0.2-lite-protocol.md)。
+**現況（2026-09-09）：尚未有任何一輪完整的「基線 → 選樣 → 加入標註 → 重訓 → 同測試集比較」跑過真實資料。**
+原 Wave 0 分支停在模型契約與單步訓練可行性。復活工作依 v0.2-lite 協定進行，選樣、資料、訓練、評估四個模組已完成並有 CPU 測試，尚未接上真實資料與 GPU。
+完整評估見 [docs/status/2026-09-09-revival-assessment.md](docs/status/2026-09-09-revival-assessment.md)，
+已核可的降規協定見 [docs/superpowers/specs/2026-09-09-val-v0.2-lite-protocol.md](docs/superpowers/specs/2026-09-09-val-v0.2-lite-protocol.md)。
 
 ## 分支與位置
 
@@ -14,7 +14,7 @@ RT-DETR（`PekingU/rtdetr_r18vd`）在 RDD 道路損壞資料上的主動學習�
 |---|---|
 | `main` | `8217a93`，只有設計規格與 8 個 wave 的計畫文件 |
 | 主要開發分支 `codex/wave0-model-contract` | `10d866c`，147 個 commit，已推到私人 GitHub |
-| 本評估分支 `codex/revival-entry-20260909` | 由 `10d866c` 分出，只加入 README 與現況文件，不改動程式 |
+| 復活分支 `codex/revival-entry-20260909` | 由 `10d866c` 分出。加入 README、現況文件、v0.2-lite 協定與 `lite/` 模組；不改動任何既有 Wave 0 程式、測試、腳本或證據 |
 | GPU 執行證據（不進 Git） | `<evidence-root>\wave0`（2026-09-02 由 `D:\vision-active-learning-loop-artifacts` 搬入） |
 | 設計規格 | [docs/superpowers/specs/2026-08-23-vision-active-learning-loop-design.md](docs/superpowers/specs/2026-08-23-vision-active-learning-loop-design.md) |
 | 計畫索引 | [docs/superpowers/plans/2026-08-23-vision-active-learning-loop-plan-index.md](docs/superpowers/plans/2026-08-23-vision-active-learning-loop-plan-index.md) |
@@ -41,8 +41,9 @@ v0.2-lite 復活進度（`src/vision_active_learning_loop/lite/`）：
 |---|---|
 | `acquisition.py` | 已完成。entropy / margin 逐 query 不確定度、影像分數（前 20 個 query 平均）、random 與 shared-start 排序、預算選取；28 個 CPU 測試 |
 | `manifest.py` | 已完成。VOC 解析、item_id、完全重複收攏、凍結雜湊切分、覆蓋審核、公開視圖；27 個 CPU 測試 |
-| `train.py` | 未開始（第 4 步） |
-| `evaluate.py` | 未開始（第 4 步） |
+| `dataset.py` | 已完成。影像索引、樣本載入、確定性翻轉與色彩抖動、COCO 標註載荷、批次前處理、畫布幾何反算；23 個 CPU 測試 |
+| `train.py` | 已完成。1,000 步固定迴圈、每 epoch 重洗取樣、warm-up 加 cosine 排程、梯度裁切、fit 收據；20 個 CPU 測試 |
+| `evaluate.py` | 已完成。原始 query 轉偵測（前 100、無 NMS 無門檻）、pycocotools mAP 與四類 recall、nAUBC；13 個 CPU 測試 |
 | `loop.py` | 未開始（第 6 步） |
 
 ## 在本機（CPU）檢查
