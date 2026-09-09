@@ -48,7 +48,9 @@ v0.2-lite 復活進度（`src/vision_active_learning_loop/lite/`）：
 | `rounds.py` | 已完成。精確預算 `ceil(p·N)`、每輪選樣（random 凍結序的下一段、uncertainty 依分數取前 k）、ledger、策略只看得到的無標籤列；13 個 CPU 測試 |
 | `experiment.py` | 已完成。整體排程（共享起點 → 三 arm × 三輪 → 全部 checkpoint 一次評估）、池打分、`metrics.csv`、`curve.svg`、nAUBC 與對 random 的差、experiment receipt，以及 `val lite run` 命令；10 個排程測試用可注入的 fitter／scorer／evaluator 驗證巢狀預算、標籤隔離與產出檔 |
 
-設 `VAL_LITE_SNAPSHOT` 可另跑用真 RT-DETR 在 CPU 走完整路徑的整合測試（fit、評估、基線命令；已通過）。
+| `gate.py` | 已完成。`val lite gate`：§8 門檻（基線 loss 前 10% 中位數 > 後 10% 中位數；CUDA 時 allowlist warning 恰為 9），輸出 `PASS/FAIL {...}`，退出碼 0／2／3；7 個 CPU 測試 |
+
+設 `VAL_LITE_SNAPSHOT` 可另跑用真 RT-DETR 在 CPU 走完整路徑的整合測試（fit、評估、基線命令、完整實驗；已通過）。`scripts/run_lite_seed17.ps1` 是把以上串起來的唯一啟動點，有 Windows PowerShell 5.1 解析檢查與 dry-run 測試。
 
 真實資料：RDD2022 Czech train 子樹已於 2026-09-09 取得並建好 manifest（2,829 張、1,745 框、test 574／pool 2,255），來源、雜湊與計數見 [docs/data-card.md](docs/data-card.md)。GPU 基線尚未執行。
 
@@ -64,6 +66,30 @@ cd .worktrees\wave0-model-contract
 - 測試收集約需 4 分鐘（啟動器測試會解析大型 PowerShell 腳本）。
 - 2026-09-09 實測：773 passed、569 failed、14 skipped。569 個失敗全部是兩個啟動器測試檔找不到 `pwsh`（PowerShell 7 目前不在 PATH），Python 層測試全數通過。
 - 用既有 12 個 GPU 副本在 CPU 上重算 A11 的 13 個配對指標，全部落在實務上限內；數字與腳本在 `docs/status/`。
+
+## 跑 GPU 實驗（一條指令）
+
+開任何一個 PowerShell（不需要啟用 venv、不需要改 execution policy）：
+
+```powershell
+cd "<repo>\.worktrees\wave0-model-contract"
+```
+
+先只做檢查，不啟動任何東西：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\run_lite_seed17.ps1 -DryRun
+```
+
+每一行都是 `ok` 才往下。正式執行（GPU 被別的工作占用時會每 30 秒等一次，最多 4 小時）：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\run_lite_seed17.ps1 -WaitForGpu
+```
+
+腳本會依序：共享 2% 基線 fit 與評估 → §8 門檻（loss 下降、9 個 allowlist warning）→ 完整實驗（3 arm × 3 輪，共 10 個 fit）。任一步失敗就停，不重試、不覆寫；`RUNNING.lock` 防止同時跑兩份。全部輸出與逐字紀錄在 `<evidence-root>\lite\`：`lite-czech-s17-<時間戳>\{metrics.csv, curve.svg, ledger-*.json, experiment-receipt.json}` 與 `run-lite-seed17-<時間戳>.log`。
+
+不要做的事：不要同時開第二個視窗再跑一次；不要在 GPU 有別的工作時去掉 `-WaitForGpu`（腳本會直接以代碼 4 退出，不會硬擠）。
 
 ## 重要邊界
 
