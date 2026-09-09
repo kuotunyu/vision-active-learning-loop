@@ -48,6 +48,7 @@ v0.2-lite 復活進度（`src/vision_active_learning_loop/lite/`）：
 | `rounds.py` | 已完成。精確預算 `ceil(p·N)`、每輪選樣（random 凍結序的下一段、uncertainty 依分數取前 k）、ledger、策略只看得到的無標籤列；13 個 CPU 測試 |
 | `experiment.py` | 已完成。整體排程（共享起點 → 三 arm × 三輪 → 全部 checkpoint 一次評估）、池打分、`metrics.csv`、`curve.svg`、nAUBC 與對 random 的差、experiment receipt，以及 `val lite run` 命令；10 個排程測試用可注入的 fitter／scorer／evaluator 驗證巢狀預算、標籤隔離與產出檔 |
 
+| `summary.py` | 已完成。`val lite summarize`：跨 seed 彙總（每 seed 的 nAUBC、對 random 的配對差、平均與中位數、正負號一致性、各預算平均 mAP、20% 時最低類別 recall），輸出 `summary.json` 與 `summary.csv`；7 個 CPU 測試 |
 | `gate.py` | 已完成。`val lite gate`：§8 門檻（基線 loss 前 10% 中位數 > 後 10% 中位數；CUDA 時 allowlist warning 恰為 9），輸出 `PASS/FAIL {...}`，退出碼 0／2／3；7 個 CPU 測試 |
 
 設 `VAL_LITE_SNAPSHOT` 可另跑用真 RT-DETR 在 CPU 走完整路徑的整合測試（fit、評估、基線命令、完整實驗；已通過）。`scripts/run_lite_seed17.ps1` 是把以上串起來的唯一啟動點，有 Windows PowerShell 5.1 解析檢查與 dry-run 測試。
