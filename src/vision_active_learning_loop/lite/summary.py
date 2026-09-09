@@ -20,6 +20,7 @@ from typing import Any
 from ..artifacts.no_clobber import NoClobberError
 from ..cli_manifest import command
 from ..models.rtdetr_contract import RDD_LABELS
+from .experiment import write_budget_curve
 from .manifest import write_json_no_clobber
 from .train import REGISTERED_ARMS, REGISTERED_BUDGET_FRACTIONS, SHARED_START_ROLE
 
@@ -168,9 +169,21 @@ def summary_main(argv: Sequence[str] | None = None) -> int:
         output.mkdir(parents=True, exist_ok=True)
         json_path = output / "summary.json"
         csv_path = output / "summary.csv"
-        if json_path.exists() or csv_path.exists():
+        curve_path = output / "mean-curve.svg"
+        if json_path.exists() or csv_path.exists() or curve_path.exists():
             raise SummaryError(f"summary already exists in {output}")
         write_json_no_clobber(json_path, summary)
+        write_budget_curve(
+            output / "mean-curve.svg",
+            {
+                arm: [
+                    (float(fraction), value)
+                    for fraction, value in sorted(points.items())
+                ]
+                for arm, points in summary["mean_map50_95"].items()
+                if arm != SHARED_START_ROLE
+            },
+        )
         rows = _csv_rows(summary)
         columns = sorted(
             {key for row in rows for key in row}, key=lambda k: (k != "seed", k)

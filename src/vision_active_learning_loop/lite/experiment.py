@@ -174,7 +174,7 @@ def _fit_dir(root: Path, arm: str, fraction: float) -> Path:
 _CURVE_COLOURS = {"random": "#6b7280", "entropy": "#d97706", "margin": "#2563eb"}
 
 
-def _write_curve(
+def write_budget_curve(
     path: Path, curves: Mapping[str, Sequence[tuple[float, float]]]
 ) -> None:
     """Write a dependency-free SVG budget curve; the 2% point is shared."""
@@ -410,7 +410,7 @@ def run_experiment(
                     *[entry["metrics"][key] for key in METRIC_COLUMNS],
                 ]
             )
-    _write_curve(root / "curve.svg", curves)
+    write_budget_curve(root / "curve.svg", curves)
 
     receipt = {
         "receipt_type": RECEIPT_TYPE,

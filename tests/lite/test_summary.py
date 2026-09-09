@@ -160,3 +160,28 @@ def test_summary_command_reports_a_missing_receipt(tmp_path: Path) -> None:
     )
 
     assert exit_code == 3
+
+
+def test_summary_command_writes_a_mean_budget_curve(tmp_path: Path) -> None:
+    roots = []
+    for seed, naubc in (
+        (17, {"random": 0.0147, "entropy": 0.0185, "margin": 0.0202}),
+        (29, {"random": 0.0160, "entropy": 0.0150, "margin": 0.0210}),
+    ):
+        root = tmp_path / f"lite-czech-s{seed}-test"
+        root.mkdir()
+        (root / "experiment-receipt.json").write_text(
+            json.dumps(_receipt(seed, naubc)), encoding="utf-8"
+        )
+        roots.append(str(root))
+    out = tmp_path / "summary"
+
+    exit_code = summary_main(
+        ["--experiment", roots[0], "--experiment", roots[1], "--output", str(out)]
+    )
+
+    assert exit_code == 0
+    curve = (out / "mean-curve.svg").read_text(encoding="utf-8")
+    assert curve.startswith("<svg")
+    for arm in ("random", "entropy", "margin"):
+        assert f">{arm}<" in curve
