@@ -155,6 +155,17 @@ def test_shared_start_items_ignore_the_pool_input_order() -> None:
     )
 
 
+def test_deterministic_attention_context_restricts_sdpa_to_math() -> None:
+    from vision_active_learning_loop.lite.loop import deterministic_attention_context
+
+    flash_before = torch.backends.cuda.flash_sdp_enabled()
+    with deterministic_attention_context():
+        assert torch.backends.cuda.math_sdp_enabled() is True
+        assert torch.backends.cuda.flash_sdp_enabled() is False
+        assert torch.backends.cuda.mem_efficient_sdp_enabled() is False
+    assert torch.backends.cuda.flash_sdp_enabled() == flash_before
+
+
 def test_load_pinned_detector_rejects_an_absent_snapshot(tmp_path: Path) -> None:
     with pytest.raises(LoopError, match="snapshot"):
         load_pinned_detector(tmp_path / "absent")
@@ -188,6 +199,7 @@ def test_fit_once_trains_the_pinned_detector_on_cpu_and_publishes_evidence(
     assert normative["checkpoint_sha256"] == artifacts.checkpoint_sha256
     assert normative["environment"]["device"] == "cpu"
     assert normative["environment"]["steps"] == 2
+    assert normative["environment"]["sdpa_backend"] == "MATH"
     assert len(normative["model_sha256"]) == 64
     state = load_checkpoint_verified(
         artifacts.checkpoint_path, artifacts.checkpoint_sha256

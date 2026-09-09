@@ -126,6 +126,47 @@ def test_baseline_main_rejects_a_missing_manifest(tmp_path: Path) -> None:
     assert exit_code == 3
 
 
+def test_baseline_main_records_a_fit_failure_on_disk(tmp_path: Path) -> None:
+    manifest_path, view_path, images = _real_dataset(tmp_path / "data")
+    empty_snapshot = tmp_path / "empty-snapshot"
+    empty_snapshot.mkdir()
+    output_root = tmp_path / "artifacts"
+
+    exit_code = baseline_main(
+        [
+            "--manifest",
+            str(manifest_path),
+            "--public-view",
+            str(view_path),
+            "--images",
+            str(images),
+            "--snapshot",
+            str(empty_snapshot),
+            "--experiment-id",
+            "lite-fail",
+            "--seed",
+            "17",
+            "--device",
+            "cpu",
+            "--output-root",
+            str(output_root),
+            "--steps",
+            "2",
+            "--batch-size",
+            "1",
+            "--warmup-steps",
+            "1",
+        ]
+    )
+
+    assert exit_code == 2
+    failure = json.loads(
+        (output_root / "lite-fail" / "failure.json").read_text(encoding="utf-8")
+    )
+    assert failure["stage"] == "baseline"
+    assert "snapshot" in failure["error"]
+
+
 def _png(index: int) -> bytes:
     image = Image.new("RGB", (64, 48), (index % 256, 90, 30))
     buffer = io.BytesIO()

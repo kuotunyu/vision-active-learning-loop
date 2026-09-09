@@ -48,6 +48,20 @@ function Write-Step([string]$Message) {
     Write-Host ("[{0}] {1}" -f (Get-Date).ToUniversalTime().ToString('HH:mm:ssZ'), $Message)
 }
 
+function Invoke-Val {
+    # Run val.exe with stdout and stderr captured into files, then echo both so the
+    # transcript keeps every diagnostic (native stderr is otherwise lost in 5.1).
+    param([string[]]$Arguments)
+    $quoted = $Arguments | ForEach-Object { if ($_ -match '\s') { '"' + $_ + '"' } else { $_ } }
+    $outFile = [System.IO.Path]::GetTempFileName()
+    $errFile = [System.IO.Path]::GetTempFileName()
+    $process = Start-Process -FilePath $Val -ArgumentList $quoted -NoNewWindow -Wait -PassThru -RedirectStandardOutput $outFile -RedirectStandardError $errFile
+    foreach ($line in (Get-Content -LiteralPath $outFile)) { Write-Host $line }
+    foreach ($line in (Get-Content -LiteralPath $errFile)) { if ($line -notmatch 'Loading weights') { Write-Host $line } }
+    Remove-Item -LiteralPath $outFile, $errFile -Force -ErrorAction SilentlyContinue
+    return $process.ExitCode
+}
+
 function Get-GpuSample {
     $raw = & nvidia-smi --query-gpu=memory.used,utilization.gpu --format=csv,noheader,nounits
     if ($LASTEXITCODE -ne 0 -or -not $raw) { return $null }
@@ -135,16 +149,14 @@ try {
     $baselineId = "lite-czech-s$Seed-baseline-$stamp"
     Write-Step "baseline $baselineId starting (steps=$Steps batch=$BatchSize warmup=$WarmupSteps device=$Device)"
     $started = Get-Date
-    & $Val lite baseline --manifest $Manifest --public-view $PublicView --images $Images --snapshot $Snapshot --experiment-id $baselineId --seed $Seed --device $Device --output-root $OutputRoot --steps $Steps --batch-size $BatchSize --warmup-steps $WarmupSteps
-    $code = $LASTEXITCODE
+    $code = Invoke-Val @('lite', 'baseline', '--manifest', $Manifest, '--public-view', $PublicView, '--images', $Images, '--snapshot', $Snapshot, '--experiment-id', $baselineId, '--seed', "$Seed", '--device', $Device, '--output-root', $OutputRoot, '--steps', "$Steps", '--batch-size', "$BatchSize", '--warmup-steps', "$WarmupSteps")
     Write-Step ("baseline exit={0} elapsed={1:N0}s" -f $code, ((Get-Date) - $started).TotalSeconds)
     if ($code -ne 0) { Write-Step "baseline failed; see $transcript"; exit 2 }
 
     # ------------------------------------------------------------ Section 8 gate
     # Plain arguments only: PowerShell 5.1 mangles quoted code passed to python -c.
-    $gate = & $Val lite gate --experiment-dir (Join-Path $OutputRoot $baselineId) --device $Device
-    $gateCode = $LASTEXITCODE
-    Write-Step "section-8 gate: $gate"
+    $gateCode = Invoke-Val @('lite', 'gate', '--experiment-dir', (Join-Path $OutputRoot $baselineId), '--device', $Device)
+    Write-Step "section-8 gate exit=$gateCode (PASS/FAIL line above)"
     if ($gateCode -ne 0) { Write-Step 'gate failed; full experiment not started'; exit 2 }
     if ($SkipFullRun) { Write-Step 'baseline done; -SkipFullRun set'; exit 0 }
 
@@ -152,8 +164,7 @@ try {
     $fullId = "lite-czech-s$Seed-$stamp"
     Write-Step "full experiment $fullId starting (10 fits)"
     $started = Get-Date
-    & $Val lite run --manifest $Manifest --public-view $PublicView --images $Images --snapshot $Snapshot --experiment-id $fullId --seed $Seed --device $Device --output-root $OutputRoot --steps $Steps --batch-size $BatchSize --warmup-steps $WarmupSteps
-    $code = $LASTEXITCODE
+    $code = Invoke-Val @('lite', 'run', '--manifest', $Manifest, '--public-view', $PublicView, '--images', $Images, '--snapshot', $Snapshot, '--experiment-id', $fullId, '--seed', "$Seed", '--device', $Device, '--output-root', $OutputRoot, '--steps', "$Steps", '--batch-size', "$BatchSize", '--warmup-steps', "$WarmupSteps")
     Write-Step ("full experiment exit={0} elapsed={1:N0}s" -f $code, ((Get-Date) - $started).TotalSeconds)
     if ($code -ne 0) { Write-Step "full experiment failed; see $transcript"; exit 2 }
     Write-Step ("done. results: {0}" -f (Join-Path $OutputRoot $fullId))

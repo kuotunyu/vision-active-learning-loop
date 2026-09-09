@@ -89,6 +89,8 @@ powershell -ExecutionPolicy Bypass -File scripts\run_lite_seed17.ps1 -WaitForGpu
 
 腳本會依序：共享 2% 基線 fit 與評估 → §8 門檻（loss 下降、9 個 allowlist warning）→ 完整實驗（3 arm × 3 輪，共 10 個 fit）。任一步失敗就停，不重試、不覆寫；`RUNNING.lock` 防止同時跑兩份。全部輸出與逐字紀錄在 `<evidence-root>\lite\`：`lite-czech-s17-<時間戳>\{metrics.csv, curve.svg, ledger-*.json, experiment-receipt.json}` 與 `run-lite-seed17-<時間戳>.log`。
 
+失敗時看兩個地方：逐字紀錄 `run-lite-seed17-<時間戳>.log`（val 的 stdout 與 stderr 都在裡面），以及實驗目錄下的 `failure.json`（基線失敗時寫入，含完整診斷）。2026-09-09 第一次 GPU 基線就是被 warning 契約擋下（11 個而非 9 個），原因與修正記在協定 §3。
+
 不要做的事：不要同時開第二個視窗再跑一次；不要在 GPU 有別的工作時去掉 `-WaitForGpu`（腳本會直接以代碼 4 退出，不會硬擠）。
 
 ## 重要邊界

@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Any
 
 import torch
+from torch.nn.attention import SDPBackend, sdpa_kernel
 
 from ..artifacts.no_clobber import NoClobberError, create_directory_no_clobber
 from ..models.rtdetr_contract import extract_raw_contract, reset_four_class_head
@@ -97,6 +98,7 @@ class FitRuntime:
     warmup_steps: int = WARMUP_STEPS
     autocast_dtype: torch.dtype | None = None
     backward_runner: Callable[[Callable[[], None]], Any] | None = None
+    deterministic_attention: bool = True
 
 
 @dataclass(frozen=True)
@@ -146,6 +148,16 @@ def _validate_inputs(
             raise LoopError(f"{item_id} is absent from the manifest rows")
         if item_id not in image_index:
             raise LoopError(f"{item_id} is absent from the image index")
+
+
+def deterministic_attention_context():
+    """Restrict SDPA to the Math backend, as Wave 0 A6 did for the labeled step.
+
+    Fused Flash and Memory-Efficient attention backwards emit their own
+    nondeterminism warnings on CUDA; only the Math backend keeps the backward
+    warning inventory at the nine registered grid-sample warnings.
+    """
+    return sdpa_kernel(SDPBackend.MATH)
 
 
 def load_pinned_detector(snapshot: Path) -> torch.nn.Module:
@@ -201,6 +213,7 @@ def _environment(runtime: FitRuntime, evidence: Any) -> dict[str, Any]:
         "deterministic_algorithms": bool(
             torch.are_deterministic_algorithms_enabled()
         ),
+        "sdpa_backend": "MATH" if runtime.deterministic_attention else "default",
     }
     if runtime.device.type == "cuda":
         document["gpu_name"] = torch.cuda.get_device_name(runtime.device)
@@ -232,6 +245,12 @@ def fit_once(
     except FeasibilityError as error:
         raise LoopError(str(error)) from error
     model = load_pinned_detector(runtime.snapshot)
+    if runtime.deterministic_attention:
+        implementation = getattr(
+            getattr(model, "config", None), "_attn_implementation", None
+        )
+        if implementation != "sdpa":
+            raise LoopError("deterministic attention requires the sdpa implementation")
     model_sha256 = trainable_parameter_sha256(model)
     model.to(runtime.device)
     processor = build_contract_processor()
@@ -269,15 +288,26 @@ def fit_once(
             }
 
     try:
-        result = run_fit(
-            model=model,
-            optimizer=optimizer,
-            scheduler=scheduler,
-            batches=batches(),
-            backward_runner=runtime.backward_runner,
-            autocast_dtype=runtime.autocast_dtype,
-        )
-    except TrainingError as error:
+        if runtime.deterministic_attention:
+            with deterministic_attention_context():
+                result = run_fit(
+                    model=model,
+                    optimizer=optimizer,
+                    scheduler=scheduler,
+                    batches=batches(),
+                    backward_runner=runtime.backward_runner,
+                    autocast_dtype=runtime.autocast_dtype,
+                )
+        else:
+            result = run_fit(
+                model=model,
+                optimizer=optimizer,
+                scheduler=scheduler,
+                batches=batches(),
+                backward_runner=runtime.backward_runner,
+                autocast_dtype=runtime.autocast_dtype,
+            )
+    except (TrainingError, FeasibilityError) as error:
         raise LoopError(str(error)) from error
 
     order_digest = sampler_digest(consumed)
@@ -543,6 +573,18 @@ def baseline_main(argv: Sequence[str] | None = None) -> int:
         write_json_no_clobber(metrics_path, document)
     except (LoopError, EvaluationError, FeasibilityError, OSError) as error:
         print(f"lite baseline failed: {error}", file=sys.stderr)
+        try:
+            write_json_no_clobber(
+                experiment_root / "failure.json",
+                {
+                    "experiment_id": plan.experiment_id,
+                    "stage": "baseline",
+                    "type": type(error).__name__,
+                    "error": str(error),
+                },
+            )
+        except (NoClobberError, OSError) as publication_error:
+            print(f"failure record not written: {publication_error}", file=sys.stderr)
         return 2
     print(json.dumps(document, sort_keys=True))
     return 0
