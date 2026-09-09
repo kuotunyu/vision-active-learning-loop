@@ -33,7 +33,17 @@ RT-DETR（`PekingU/rtdetr_r18vd`）在 RDD 道路損壞資料上的主動學習�
 | `diagnose grid-sample-attribution` | 把重播差異歸因到 `grid_sampler_2d_backward_cuda` | 是，結果 `ATTRIBUTED` |
 | `gate statistical-replay calibrate` / `validate` | A11 統計重播包絡（12+12 副本） | 否；6 次啟動皆在彙總前失敗 |
 
-沒有的東西：RDD 資料下載與 manifest、去重與切分、五種選樣策略、多 epoch 訓練器、pycocotools 評估、預算曲線。
+沒有的東西：RDD 資料下載與 manifest、多輪訓練器、pycocotools 評估、預算曲線。
+
+v0.2-lite 復活進度（`src/vision_active_learning_loop/lite/`）：
+
+| 模組 | 狀態 |
+|---|---|
+| `acquisition.py` | 已完成。entropy / margin 逐 query 不確定度、影像分數（前 20 個 query 平均）、random 與 shared-start 排序、預算選取；28 個 CPU 測試 |
+| `manifest.py` | 未開始（復活方案第 3 步） |
+| `train.py` | 未開始（第 4 步） |
+| `evaluate.py` | 未開始（第 4 步） |
+| `loop.py` | 未開始（第 6 步） |
 
 ## 在本機（CPU）檢查
 
