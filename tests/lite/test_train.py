@@ -10,13 +10,19 @@ import torch
 
 from vision_active_learning_loop.lite.train import (
     BATCH_SIZE,
+    FIXED_EPOCHS_RULE,
+    FIXED_STEPS_RULE,
     GRADIENT_CLIP,
+    REGISTERED_TRAINING_RULES,
     TRAINING_STEPS,
     WARMUP_STEPS,
     TrainingError,
+    TrainingRule,
     build_lite_scheduler,
     fit_receipt,
+    fit_steps,
     learning_rate_multiplier,
+    rule_document,
     run_fit,
     training_batches,
 )
@@ -85,6 +91,55 @@ def test_registered_recipe_constants_are_the_protocol_values() -> None:
     assert GRADIENT_CLIP == 0.1
 
 
+def test_registered_training_rules_are_the_two_protocol_rules() -> None:
+    assert set(REGISTERED_TRAINING_RULES) == {"fixed-steps", "fixed-epochs"}
+    assert FIXED_STEPS_RULE.steps == TRAINING_STEPS
+    assert (FIXED_EPOCHS_RULE.epochs, FIXED_EPOCHS_RULE.min_steps) == (18, 200)
+
+
+@pytest.mark.parametrize(
+    ("images", "expected"),
+    [(46, 200), (113, 252), (226, 504), (451, 1008), (2255, 5058)],
+)
+def test_fixed_epochs_rule_matches_the_registered_step_table(images, expected) -> None:
+    # v0.2.1 Section 1: max(200, 18 * floor(N / 8)) at the Czech pool budgets.
+    assert fit_steps(FIXED_EPOCHS_RULE, images) == expected
+
+
+def test_fixed_steps_rule_ignores_the_image_count() -> None:
+    assert fit_steps(FIXED_STEPS_RULE, 46) == fit_steps(FIXED_STEPS_RULE, 2255) == 1000
+
+
+def test_fit_steps_rejects_a_pool_smaller_than_one_batch() -> None:
+    with pytest.raises(TrainingError, match="batch size"):
+        fit_steps(FIXED_EPOCHS_RULE, 7)
+
+
+def test_epoch_rule_floor_binds_exactly_at_the_minimum() -> None:
+    rule = TrainingRule(name="tiny", epochs=1, min_steps=3)
+
+    assert fit_steps(rule, 16, batch_size=8) == 3  # 1 * 2 batches < 3
+    assert fit_steps(rule, 32, batch_size=8) == 4  # 1 * 4 batches > 3
+
+
+def test_training_rule_rejects_an_incoherent_definition() -> None:
+    with pytest.raises(TrainingError):
+        TrainingRule(name="bad", steps=10, epochs=1, min_steps=1)
+    with pytest.raises(TrainingError):
+        TrainingRule(name="bad", epochs=1)
+    with pytest.raises(TrainingError):
+        TrainingRule(name="bad", epochs=0, min_steps=1)
+
+
+def test_rule_document_records_the_resolved_steps() -> None:
+    assert rule_document(FIXED_EPOCHS_RULE, steps=252) == {
+        "name": "fixed-epochs",
+        "epochs": 18,
+        "min_steps": 200,
+        "steps": 252,
+    }
+
+
 def test_training_batches_yields_the_requested_step_count() -> None:
     batches = list(training_batches(ITEM_IDS, seed=17, steps=7, batch_size=BATCH_SIZE))
 
@@ -131,6 +186,7 @@ def test_run_fit_decreases_loss_on_a_learnable_synthetic_task() -> None:
     assert all(math.isfinite(loss) for loss in result.losses)
     assert result.last_window_median < result.first_window_median
     assert result.loss_decreased is True
+    assert result.elapsed_seconds > 0.0
 
 
 def test_run_fit_records_one_learning_rate_and_gradient_norm_per_step() -> None:
@@ -252,9 +308,53 @@ def test_fit_receipt_binds_the_experiment_identity() -> None:
     assert normative["acquired_image_count"] == len(ITEM_IDS)
     assert normative["manifest_sha256"] == "b" * 64
     assert normative["steps"] == 20
+    assert normative["recipe"]["total_steps"] == 20
+    assert normative["elapsed_seconds"] == result.elapsed_seconds
+    assert "training_rule" not in normative and "epochs_started" not in normative
     assert normative["recipe"]["gradient_clip"] == GRADIENT_CLIP
     assert normative["recipe"]["batch_size"] == BATCH_SIZE
     assert normative["loss"]["decreased"] is True
+
+
+def _receipt(result, **overrides):
+    values = {
+        "experiment_id": "lite-czech-20260910",
+        "manifest_sha256": "b" * 64,
+        "arm": "entropy",
+        "seed": 17,
+        "budget_fraction": 0.05,
+        "acquired_item_ids": ITEM_IDS,
+        "sampler_digest": "c" * 64,
+        "model_sha256": "d" * 64,
+        "checkpoint_sha256": "e" * 64,
+    }
+    values.update(overrides)
+    return fit_receipt(result, **values)
+
+
+def test_fit_receipt_records_the_training_rule_and_epochs_when_given() -> None:
+    receipt = _receipt(
+        _fit(count=20),
+        training_rule=rule_document(FIXED_EPOCHS_RULE, steps=20),
+        epochs_started=4,
+    )
+
+    normative = receipt["normative"]
+    assert normative["training_rule"]["name"] == "fixed-epochs"
+    assert normative["training_rule"]["steps"] == 20
+    assert normative["epochs_started"] == 4
+
+
+def test_fit_receipt_accepts_the_reference_role_only_on_the_whole_pool() -> None:
+    result = _fit(count=20)
+
+    receipt = _receipt(result, arm="reference", budget_fraction=1.0)
+    assert receipt["normative"]["budget_fraction"] == 1.0
+
+    with pytest.raises(TrainingError, match="whole pool"):
+        _receipt(result, arm="reference", budget_fraction=0.2)
+    with pytest.raises(TrainingError, match="not registered"):
+        _receipt(result, arm="random", budget_fraction=1.0)
 
 
 def test_fit_receipt_embeds_the_runtime_environment_when_given() -> None:

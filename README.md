@@ -6,6 +6,10 @@ RT-DETR（`PekingU/rtdetr_r18vd`）在 RDD 道路損壞資料上的主動學習�
 **現況（2026-09-09）：三個登記 seed（17、29、43）各跑完一輪完整的「基線 → 選樣 → 加入標註 → 重訓 → 同測試集比較」**，共 30 個 fit，在 RDD2022 Czech 子集與 RTX 4090 上完成。
 entropy 與 margin 的配對 nAUBC 差對 random **三個 seed 都是正的**；20% 預算時最低類別 recall 三個 arm 區間不重疊（margin 是 random 的 2.6 到 4.7 倍）。
 結果、能說與不能說的界線見 [docs/results/2026-09-09-lite-czech-three-seeds.md](docs/results/2026-09-09-lite-czech-three-seeds.md)。
+
+**下一輪（2026-09-10，v0.2.1，GPU 尚未執行）**：驗證上述優勢是否對訓練長度規則穩健，並加入全標籤參考基線。
+預先登記的規則、常數與判定條件在 [docs/superpowers/specs/2026-09-10-val-v0.2.1-training-rule-protocol.md](docs/superpowers/specs/2026-09-10-val-v0.2.1-training-rule-protocol.md)；
+開始前的 CPU sanity audit（含一個之前沒記錄的事實：seed 43 跑了兩次，可當整條 pipeline 的同機重播對照）在 [docs/status/2026-09-10-lite-sanity-audit.md](docs/status/2026-09-10-lite-sanity-audit.md)。
 原 Wave 0 分支停在模型契約與單步訓練可行性；復活工作依 v0.2-lite 協定進行。
 完整評估見 [docs/status/2026-09-09-revival-assessment.md](docs/status/2026-09-09-revival-assessment.md)，
 已核可的降規協定見 [docs/superpowers/specs/2026-09-09-val-v0.2-lite-protocol.md](docs/superpowers/specs/2026-09-09-val-v0.2-lite-protocol.md)。
@@ -50,7 +54,10 @@ v0.2-lite 復活進度（`src/vision_active_learning_loop/lite/`）：
 | `rounds.py` | 已完成。精確預算 `ceil(p·N)`、每輪選樣（random 凍結序的下一段、uncertainty 依分數取前 k）、ledger、策略只看得到的無標籤列；13 個 CPU 測試 |
 | `experiment.py` | 已完成。整體排程（共享起點 → 三 arm × 三輪 → 全部 checkpoint 一次評估）、池打分、`metrics.csv`、`curve.svg`、nAUBC 與對 random 的差、experiment receipt，以及 `val lite run` 命令；10 個排程測試用可注入的 fitter／scorer／evaluator 驗證巢狀預算、標籤隔離與產出檔 |
 | `summary.py` | 已完成。`val lite summarize`：跨 seed 彙總（每 seed 的 nAUBC、對 random 的配對差、平均與中位數、正負號一致性、各預算平均 mAP、20% 時最低類別 recall），輸出 `summary.json` 與 `summary.csv`；7 個 CPU 測試 |
-| `gate.py` | 已完成。`val lite gate`：§8 門檻（基線 loss 前 10% 中位數 > 後 10% 中位數；CUDA 時 allowlist warning 恰為 9），輸出 `PASS/FAIL {...}`，退出碼 0／2／3；7 個 CPU 測試 |
+| `gate.py` | 已完成。`val lite gate`：§8 門檻（基線 loss 前 10% 中位數 > 後 10% 中位數；CUDA 時 allowlist warning 恰為 9），輸出 `PASS/FAIL {...}`，退出碼 0／2／3；`--role reference` 對參考基線做同一門檻 |
+| `train.py` 的訓練規則（v0.2.1） | 已完成，未在 GPU 跑過。`TrainingRule`：`fixed-steps`（1,000 步，原協定）與 `fixed-epochs`（`max(200, 18 × floor(N/8))` 步）；所有 `val lite` 命令加 `--rule`；fit 收據記錄規則、實際步數、開始的 epoch 數與秒數；實驗收據記錄 fit／打分／評估各階段秒數 |
+| `reference.py`（v0.2.1） | 已完成，未在 GPU 跑過。`val lite reference`：用 pool 全部 2,255 張與全部標籤訓練一個 fit 並在凍結 test 評估，輸出 `metrics-reference-1.00.json`；不讀 test 做任何選擇 |
+| `summary.py`（v0.2.1 擴充） | `val lite summarize` 加 `--reference`：報告訓練規則、各設定平均步數與秒數、跨 seed 的最小／最大**範圍**（不是信賴區間）、20% 相對參考基線的比例；對舊收據輸出的 nAUBC、配對差與曲線與已發布的 `summary-3seeds` 逐位元相同 |
 
 設 `VAL_LITE_SNAPSHOT` 可另跑用真 RT-DETR 在 CPU 走完整路徑的整合測試（fit、評估、基線命令、完整實驗；已通過）。`scripts/run_lite_seed17.ps1` 是把以上串起來的唯一啟動點，有 Windows PowerShell 5.1 解析檢查與 dry-run 測試。
 
@@ -68,6 +75,7 @@ cd .worktrees\wave0-model-contract
 - 測試不啟動 Docker、不做 GPU 運算，但 checkpoint 載入器會讀取 CUDA RNG 狀態，因此需要本機看得到一顆 GPU（不要設 `CUDA_VISIBLE_DEVICES=""`）。
 - 測試收集約需 4 分鐘（啟動器測試會解析大型 PowerShell 腳本）。
 - 2026-09-09 實測：773 passed、569 failed、14 skipped。569 個失敗全部是兩個啟動器測試檔找不到 `pwsh`（PowerShell 7 目前不在 PATH），Python 層測試全數通過。
+- 2026-09-10 `tests/lite`：209 passed、7 skipped（skipped 是設 `VAL_LITE_SNAPSHOT` 才跑的 CPU 整合測試）。
 - 用既有 12 個 GPU 副本在 CPU 上重算 A11 的 13 個配對指標，全部落在實務上限內；數字與腳本在 `docs/status/`。
 
 ## 跑 GPU 實驗（一條指令）
@@ -87,6 +95,14 @@ powershell -ExecutionPolicy Bypass -File "<repo>\.worktrees\wave0-model-contract
 ```
 
 換 seed 就在後面加 `-Seed 29` 或 `-Seed 43`。腳本檔名固定不變，seed 由參數決定，輸出目錄與紀錄檔會自動帶上該 seed。
+
+v0.2.1（固定 epoch 規則加全標籤參考基線）用同一支腳本，多兩個參數。pilot 先只跑 seed 17：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File "<repo>\.worktrees\wave0-model-contract\scripts\run_lite_seed17.ps1" -WaitForGpu -Rule fixed-epochs -Reference
+```
+
+順序是：2% 基線（200 步）→ 門檻 → 參考基線（2,255 張、5,058 步）→ 門檻 → 完整實驗（10 個 fit）。輸出目錄帶 `ep18`：`lite-czech-ep18-s17-<時間戳>\`、`lite-czech-ref-fixed-epochs-s17-<時間戳>\`。pilot 通過後再加 `-Seed 29`、`-Seed 43`；規則 A 的參考基線用 `-Rule fixed-steps -ReferenceOnly`（只跑參考 fit 與它的門檻，不重跑已完成的固定步數基線與實驗）。
 
 腳本會依序：共享 2% 基線 fit 與評估 → §8 門檻（loss 下降、9 個 allowlist warning）→ 完整實驗（3 arm × 3 輪，共 10 個 fit）。任一步失敗就停，不重試、不覆寫；`RUNNING.lock` 防止同時跑兩份。全部輸出與逐字紀錄在 `<evidence-root>\lite\`：`lite-czech-s17-<時間戳>\{metrics.csv, curve.svg, ledger-*.json, experiment-receipt.json}` 與 `run-lite-seed17-<時間戳>.log`。
 

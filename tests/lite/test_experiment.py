@@ -88,6 +88,7 @@ class _Recorder:
                 "items": tuple(identity.item_ids),
                 "rows": {item: dict(row) for item, row in rows_by_item.items()},
                 "output": output_dir,
+                "runtime": runtime,
             }
         )
         result = FitResult(
@@ -100,8 +101,12 @@ class _Recorder:
             last_window_median=1.0,
             loss_decreased=True,
             peak_allocated_bytes=0,
+            elapsed_seconds=1.5,
         )
-        receipt = {"receipt_type": "lite-fit", "normative": {"loss": {"final": 1.0}}}
+        receipt = {
+            "receipt_type": "lite-fit",
+            "normative": {"loss": {"final": 1.0}, "epochs_started": 3},
+        }
         (output_dir / "fit-receipt.json").write_text(json.dumps(receipt))
         return FitArtifacts(
             result=result,
@@ -291,6 +296,37 @@ def test_experiment_publishes_ledgers_metrics_and_receipt(tmp_path: Path) -> Non
     assert set(normative["naubc"]) == {"random", "entropy", "margin"}
     assert set(normative["naubc_delta_vs_random"]) == {"entropy", "margin"}
     assert summary.receipt_path == root / "experiment-receipt.json"
+    # v0.2.1: every fit carries its actual steps and cost; the receipt names the rule.
+    assert all(fit["steps"] == 2 for fit in normative["fits"])
+    assert all(fit["elapsed_seconds"] == 1.5 for fit in normative["fits"])
+    assert all(fit["epochs_started"] == 3 for fit in normative["fits"])
+    assert normative["runtime"]["training_rule"] == {
+        "name": "fixed-steps",
+        "steps": 2,
+        "epochs": None,
+        "min_steps": None,
+    }
+    assert normative["timing"]["fit_seconds"] == pytest.approx(15.0)
+    assert normative["timing"]["scoring_seconds"] >= 0.0
+    assert normative["timing"]["evaluation_seconds"] >= 0.0
+
+
+def test_experiment_hands_the_epoch_rule_to_every_fit(tmp_path: Path) -> None:
+    from vision_active_learning_loop.lite.train import FIXED_EPOCHS_RULE
+
+    _manifest_, recorder, _summary = _run(tmp_path, rule=FIXED_EPOCHS_RULE)
+    root = tmp_path / "artifacts" / "lite-test"
+
+    assert all(fit["runtime"].rule is FIXED_EPOCHS_RULE for fit in recorder.fits)
+    receipt = json.loads(
+        (root / "experiment-receipt.json").read_text(encoding="utf-8")
+    )
+    assert receipt["normative"]["runtime"]["training_rule"] == {
+        "name": "fixed-epochs",
+        "steps": None,
+        "epochs": 18,
+        "min_steps": 200,
+    }
 
 
 def test_naubc_uses_the_shared_point_and_the_arm_points(tmp_path: Path) -> None:

@@ -20,9 +20,12 @@ from vision_active_learning_loop.lite.loop import (
     evaluate_checkpoint,
     fit_once,
     load_pinned_detector,
+    resolved_rule,
+    resolved_steps,
     shared_start_items,
 )
 from vision_active_learning_loop.lite.manifest import item_id_for_bytes
+from vision_active_learning_loop.lite.train import FIXED_EPOCHS_RULE, TrainingRule
 from vision_active_learning_loop.training.checkpoint_io import (
     load_checkpoint_verified,
 )
@@ -106,7 +109,7 @@ def test_fit_runtime_rejects_a_warmup_not_shorter_than_the_steps(
 ) -> None:
     rows, index = _rows_and_index(tmp_path, 2)
     runtime = FitRuntime(
-        snapshot=tmp_path / "absent", device=torch.device("cpu"), steps=2
+        snapshot=tmp_path / "absent", device=torch.device("cpu"), steps=2, batch_size=2
     )
 
     with pytest.raises(LoopError, match="warm-up"):
@@ -117,6 +120,59 @@ def test_fit_runtime_rejects_a_warmup_not_shorter_than_the_steps(
             image_index=index,
             output_dir=tmp_path / "out",
         )
+
+
+def test_fit_identity_rejects_the_reference_role_below_the_whole_pool(
+    tmp_path: Path,
+) -> None:
+    rows, index = _rows_and_index(tmp_path, 2)
+    runtime = FitRuntime(snapshot=tmp_path / "absent", device=torch.device("cpu"))
+
+    with pytest.raises(LoopError, match="whole pool"):
+        fit_once(
+            _identity(tuple(rows), arm="reference", budget_fraction=0.02),
+            runtime,
+            rows_by_item=rows,
+            image_index=index,
+            output_dir=tmp_path / "out",
+        )
+
+
+def test_runtime_without_a_rule_is_the_fixed_step_rule_at_its_steps(
+    tmp_path: Path,
+) -> None:
+    runtime = FitRuntime(snapshot=tmp_path, device=torch.device("cpu"), steps=300)
+
+    assert resolved_rule(runtime) == TrainingRule(name="fixed-steps", steps=300)
+    assert resolved_steps(runtime, 46) == 300
+    assert resolved_steps(runtime, 2255) == 300
+
+
+def test_runtime_with_the_epoch_rule_scales_steps_with_the_acquired_count(
+    tmp_path: Path,
+) -> None:
+    runtime = FitRuntime(
+        snapshot=tmp_path, device=torch.device("cpu"), rule=FIXED_EPOCHS_RULE
+    )
+
+    assert resolved_steps(runtime, 46) == 200
+    assert resolved_steps(runtime, 451) == 1008
+    assert resolved_steps(runtime, 2255) == 5058
+
+
+def test_resolved_steps_rejects_a_warmup_not_shorter_than_the_rule_steps(
+    tmp_path: Path,
+) -> None:
+    runtime = FitRuntime(
+        snapshot=tmp_path,
+        device=torch.device("cpu"),
+        batch_size=2,
+        warmup_steps=2,
+        rule=TrainingRule(name="tiny", epochs=1, min_steps=2),
+    )
+
+    with pytest.raises(LoopError, match="warm-up"):
+        resolved_steps(runtime, 4)
 
 
 def test_budget_count_rounds_up_the_registered_fractions() -> None:
@@ -200,12 +256,48 @@ def test_fit_once_trains_the_pinned_detector_on_cpu_and_publishes_evidence(
     assert normative["environment"]["device"] == "cpu"
     assert normative["environment"]["steps"] == 2
     assert normative["environment"]["sdpa_backend"] == "MATH"
+    assert normative["training_rule"] == {
+        "name": "fixed-steps",
+        "epochs": None,
+        "min_steps": None,
+        "steps": 2,
+    }
+    assert normative["epochs_started"] == 1  # 4 images, batch 2, 2 steps
+    assert normative["elapsed_seconds"] > 0.0
     assert len(normative["model_sha256"]) == 64
     state = load_checkpoint_verified(
         artifacts.checkpoint_path, artifacts.checkpoint_sha256
     )
     assert state.step == 2
     assert state.input_digests["manifest_sha256"] == "a" * 64
+
+
+@requires_snapshot
+def test_fit_once_under_an_epoch_rule_records_the_rule_and_epochs(tmp_path: Path) -> None:
+    rows, index = _rows_and_index(tmp_path, 4)
+    identity = _identity(tuple(sorted(rows)))
+    runtime = FitRuntime(
+        snapshot=Path(SNAPSHOT),
+        device=torch.device("cpu"),
+        batch_size=2,
+        warmup_steps=1,
+        rule=TrainingRule(name="tiny", epochs=2, min_steps=1),
+    )
+
+    artifacts = fit_once(
+        identity, runtime, rows_by_item=rows, image_index=index, output_dir=tmp_path / "f"
+    )
+
+    normative = json.loads(artifacts.receipt_path.read_text(encoding="utf-8"))["normative"]
+    assert artifacts.result.steps == 4  # 2 epochs x 2 batches
+    assert normative["training_rule"] == {
+        "name": "tiny",
+        "epochs": 2,
+        "min_steps": 1,
+        "steps": 4,
+    }
+    assert normative["epochs_started"] == 2
+    assert normative["environment"]["steps"] == 4
 
 
 @requires_snapshot

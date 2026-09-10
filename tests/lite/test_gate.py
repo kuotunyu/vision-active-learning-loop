@@ -11,11 +11,15 @@ from vision_active_learning_loop.lite.gate import gate_main
 
 
 def _experiment(
-    root: Path, *, decreased: bool = True, warnings: int | None = 9
+    root: Path,
+    *,
+    decreased: bool = True,
+    warnings: int | None = 9,
+    suffix: str = "shared-0.02",
 ) -> Path:
-    fit = root / "fits" / "shared-0.02"
+    fit = root / "fits" / suffix
     fit.mkdir(parents=True)
-    (root / "metrics-shared-0.02.json").write_text(
+    (root / f"metrics-{suffix}.json").write_text(
         json.dumps(
             {
                 "loss": {
@@ -79,6 +83,19 @@ def test_gate_ignores_the_warning_count_on_cpu(tmp_path: Path, capsys) -> None:
 
     assert exit_code == 0
     assert capsys.readouterr().out.startswith("PASS ")
+
+
+def test_gate_can_check_the_reference_fit_instead(tmp_path: Path, capsys) -> None:
+    root = _experiment(tmp_path / "ref", suffix="reference-1.00", decreased=False)
+
+    exit_code = gate_main(
+        ["--experiment-dir", str(root), "--device", "cuda", "--role", "reference"]
+    )
+
+    assert exit_code == 2
+    assert capsys.readouterr().out.startswith("FAIL ")
+    # The default role still looks for the shared fit, which this root lacks.
+    assert gate_main(["--experiment-dir", str(root), "--device", "cuda"]) == 3
 
 
 def test_gate_reports_missing_evidence_as_an_input_error(tmp_path: Path) -> None:

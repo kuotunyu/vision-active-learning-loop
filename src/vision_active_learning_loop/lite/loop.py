@@ -54,17 +54,22 @@ from .rounds import RoundsError
 from .rounds import budget_count as _exact_budget_count
 from .train import (
     BATCH_SIZE,
-    FIT_ROLES,
+    FIXED_STEPS_RULE,
     REGISTERED_BUDGET_FRACTIONS,
+    REGISTERED_TRAINING_RULES,
     SHARED_START_ROLE,
     TRAINING_STEPS,
     WARMUP_STEPS,
     FitResult,
     TrainingError,
+    TrainingRule,
     build_lite_scheduler,
     fit_receipt,
+    fit_steps,
+    rule_document,
     run_fit,
     training_batches,
+    validate_role_fraction,
 )
 
 CHECKPOINT_NAME = "checkpoint.pt"
@@ -91,6 +96,13 @@ class FitIdentity:
 
 @dataclass(frozen=True)
 class FitRuntime:
+    """Where and how one fit runs.
+
+    `rule` decides the step count from the acquired image count (v0.2.1); when
+    it is None the fit runs exactly `steps`, which is how the fixed-step
+    protocol and the two-step CPU tests are expressed.
+    """
+
     snapshot: Path
     device: torch.device
     steps: int = TRAINING_STEPS
@@ -99,6 +111,7 @@ class FitRuntime:
     autocast_dtype: torch.dtype | None = None
     backward_runner: Callable[[Callable[[], None]], Any] | None = None
     deterministic_attention: bool = True
+    rule: TrainingRule | None = None
 
 
 @dataclass(frozen=True)
@@ -118,10 +131,10 @@ def _validate_identity(identity: FitIdentity) -> None:
         raise LoopError("experiment id is required")
     if not _SHA256_PATTERN.match(identity.manifest_sha256):
         raise LoopError("manifest digest must be a lowercase SHA-256")
-    if identity.arm not in FIT_ROLES:
-        raise LoopError(f"arm {identity.arm!r} is not registered")
-    if float(identity.budget_fraction) not in REGISTERED_BUDGET_FRACTIONS:
-        raise LoopError("budget fraction is not registered")
+    try:
+        validate_role_fraction(identity.arm, identity.budget_fraction)
+    except TrainingError as error:
+        raise LoopError(f"arm {identity.arm!r}: {error}") from error
     if not isinstance(identity.seed, int) or isinstance(identity.seed, bool):
         raise LoopError("seed must be an integer")
     items = identity.item_ids
@@ -134,8 +147,28 @@ def _validate_runtime(runtime: FitRuntime) -> None:
         raise LoopError("a fit runtime is required")
     if runtime.steps <= 0 or runtime.batch_size <= 0:
         raise LoopError("steps and batch size must be positive")
-    if runtime.warmup_steps <= 0 or runtime.warmup_steps >= runtime.steps:
+    if runtime.rule is not None and not isinstance(runtime.rule, TrainingRule):
+        raise LoopError("a training rule is required")
+
+
+def resolved_rule(runtime: FitRuntime) -> TrainingRule:
+    """Return the rule a runtime trains under; a bare step count is fixed-steps."""
+    if runtime.rule is not None:
+        return runtime.rule
+    return TrainingRule(name=FIXED_STEPS_RULE.name, steps=runtime.steps)
+
+
+def resolved_steps(runtime: FitRuntime, image_count: int) -> int:
+    """Return how many optimizer steps a fit on `image_count` images runs."""
+    try:
+        steps = fit_steps(
+            resolved_rule(runtime), image_count, batch_size=runtime.batch_size
+        )
+    except TrainingError as error:
+        raise LoopError(str(error)) from error
+    if runtime.warmup_steps <= 0 or runtime.warmup_steps >= steps:
         raise LoopError("warm-up steps must be positive and shorter than the fit")
+    return steps
 
 
 def _validate_inputs(
@@ -197,12 +230,12 @@ def _to_cpu_state(value: Any) -> Any:
     return value
 
 
-def _environment(runtime: FitRuntime, evidence: Any) -> dict[str, Any]:
+def _environment(runtime: FitRuntime, evidence: Any, *, steps: int) -> dict[str, Any]:
     document: dict[str, Any] = {
         "device": runtime.device.type,
         "torch": torch.__version__,
         "cuda": torch.version.cuda,
-        "steps": runtime.steps,
+        "steps": steps,
         "warmup_steps": runtime.warmup_steps,
         "batch_size": runtime.batch_size,
         "autocast_dtype": (
@@ -235,6 +268,7 @@ def fit_once(
     _validate_identity(identity)
     _validate_runtime(runtime)
     _validate_inputs(identity, rows_by_item, image_index)
+    steps = resolved_steps(runtime, len(identity.item_ids))
     try:
         output = create_directory_no_clobber(Path(output_dir))
     except (NoClobberError, OSError) as error:
@@ -256,7 +290,7 @@ def fit_once(
     processor = build_contract_processor()
     optimizer = build_optimizer(model)
     scheduler = build_lite_scheduler(
-        optimizer, total_steps=runtime.steps, warmup_steps=runtime.warmup_steps
+        optimizer, total_steps=steps, warmup_steps=runtime.warmup_steps
     )
 
     consumed: list[tuple[str, ...]] = []
@@ -267,7 +301,7 @@ def fit_once(
         for epoch, items in training_batches(
             identity.item_ids,
             seed=identity.seed,
-            steps=runtime.steps,
+            steps=steps,
             batch_size=runtime.batch_size,
         ):
             consumed.append(items)
@@ -342,7 +376,9 @@ def fit_once(
         sampler_digest=order_digest,
         model_sha256=model_sha256,
         checkpoint_sha256=checkpoint_sha256,
-        environment=_environment(runtime, result.backward_evidence),
+        environment=_environment(runtime, result.backward_evidence, steps=steps),
+        training_rule=rule_document(resolved_rule(runtime), steps=steps),
+        epochs_started=last_epoch + 1,
     )
     receipt_path = output / RECEIPT_NAME
     try:
@@ -486,10 +522,111 @@ def _load_json(path: Path, label: str) -> Mapping[str, Any]:
     return document
 
 
-@command("lite baseline")
-def baseline_main(argv: Sequence[str] | None = None) -> int:
-    """Fit the shared 2% start from the pinned base and score it on the test split."""
-    parser = argparse.ArgumentParser(prog="val lite baseline")
+def add_runtime_arguments(parser: argparse.ArgumentParser) -> None:
+    """Add the training-length options shared by every lite command."""
+    parser.add_argument(
+        "--rule", choices=sorted(REGISTERED_TRAINING_RULES), default=FIXED_STEPS_RULE.name
+    )
+    parser.add_argument("--steps", type=int, default=TRAINING_STEPS)
+    parser.add_argument("--batch-size", type=int, default=BATCH_SIZE)
+    parser.add_argument("--warmup-steps", type=int, default=WARMUP_STEPS)
+
+
+def runtime_from_arguments(
+    arguments: argparse.Namespace, *, snapshot: Path, device: torch.device
+) -> FitRuntime:
+    """Build the runtime for a device from parsed command-line options.
+
+    `--steps` is honoured only under the fixed-step rule (it is how the CPU
+    integration tests shorten a fit); an epoch rule derives its own steps.
+    """
+    rule = REGISTERED_TRAINING_RULES[arguments.rule]
+    return FitRuntime(
+        snapshot=Path(snapshot),
+        device=device,
+        steps=arguments.steps,
+        batch_size=arguments.batch_size,
+        warmup_steps=arguments.warmup_steps,
+        autocast_dtype=torch.bfloat16 if device.type == "cuda" else None,
+        backward_runner=cuda_backward_runner() if device.type == "cuda" else None,
+        rule=None if rule.steps is not None else rule,
+    )
+
+
+def fit_and_score(
+    identity: FitIdentity,
+    runtime: FitRuntime,
+    *,
+    rows_by_item: Mapping[str, Mapping[str, Any]],
+    image_index: Mapping[str, Path],
+    test_rows: Sequence[Mapping[str, Any]],
+    fit_dir: Path,
+    pool_size: int,
+) -> dict[str, Any]:
+    """Train one fit, score it on the frozen test split, and describe both."""
+    artifacts = fit_once(
+        identity,
+        runtime,
+        rows_by_item=rows_by_item,
+        image_index=image_index,
+        output_dir=fit_dir,
+    )
+    metrics = evaluate_checkpoint(
+        snapshot=runtime.snapshot,
+        checkpoint_path=artifacts.checkpoint_path,
+        checkpoint_sha256=artifacts.checkpoint_sha256,
+        test_rows=test_rows,
+        image_index=image_index,
+        device=runtime.device,
+        batch_size=runtime.batch_size,
+    )
+    normative = artifacts.receipt["normative"]
+    return {
+        "experiment_id": identity.experiment_id,
+        "manifest_sha256": identity.manifest_sha256,
+        "seed": identity.seed,
+        "arm": identity.arm,
+        "budget_fraction": identity.budget_fraction,
+        "budget": len(identity.item_ids),
+        "pool_size": pool_size,
+        "checkpoint_sha256": artifacts.checkpoint_sha256,
+        "test_image_count": len(test_rows),
+        "training_rule": normative["training_rule"],
+        "steps": normative["steps"],
+        "epochs_started": normative["epochs_started"],
+        "elapsed_seconds": normative["elapsed_seconds"],
+        "loss": normative["loss"],
+        "metrics": metrics,
+    }
+
+
+def record_failure(experiment_root: Path, *, experiment_id: str, stage: str, error: Exception) -> None:
+    """Leave the diagnosis on disk next to the evidence, never overwriting."""
+    try:
+        write_json_no_clobber(
+            experiment_root / "failure.json",
+            {
+                "experiment_id": experiment_id,
+                "stage": stage,
+                "type": type(error).__name__,
+                "error": str(error),
+            },
+        )
+    except (NoClobberError, OSError) as publication_error:
+        print(f"failure record not written: {publication_error}", file=sys.stderr)
+
+
+def scored_fit_main(
+    argv: Sequence[str] | None,
+    *,
+    prog: str,
+    stage: str,
+    role: str,
+    fraction: float,
+    plan_items: Callable[[BaselinePlan, Mapping[str, Any]], tuple[str, ...]],
+) -> int:
+    """Run one scored fit command: parse, plan, fit, evaluate, publish."""
+    parser = argparse.ArgumentParser(prog=prog)
     parser.add_argument("--manifest", required=True)
     parser.add_argument("--public-view", required=True)
     parser.add_argument("--images", required=True)
@@ -498,9 +635,7 @@ def baseline_main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--seed", required=True, type=int)
     parser.add_argument("--device", required=True)
     parser.add_argument("--output-root", required=True)
-    parser.add_argument("--steps", type=int, default=TRAINING_STEPS)
-    parser.add_argument("--batch-size", type=int, default=BATCH_SIZE)
-    parser.add_argument("--warmup-steps", type=int, default=WARMUP_STEPS)
+    add_runtime_arguments(parser)
     arguments = parser.parse_args(list(argv) if argv is not None else None)
 
     try:
@@ -509,82 +644,59 @@ def baseline_main(argv: Sequence[str] | None = None) -> int:
         plan = plan_baseline(
             manifest, view, seed=arguments.seed, experiment_id=arguments.experiment_id
         )
+        items = plan_items(plan, view)
         image_index = build_image_index(Path(arguments.images))
         device = torch.device(arguments.device)
     except (LoopError, DatasetError, RuntimeError) as error:
-        print(f"lite baseline input error: {error}", file=sys.stderr)
+        print(f"{prog[4:]} input error: {error}", file=sys.stderr)
         return 3
 
     rows = {row["item_id"]: row for row in manifest["images"]}
-    acquired_rows = {item: rows[item] for item in plan.start_item_ids}
     test_rows = [row for row in manifest["images"] if row["split"] == "test"]
     experiment_root = Path(arguments.output_root) / plan.experiment_id
-    fit_dir = experiment_root / "fits" / f"{SHARED_START_ROLE}-0.02"
-    metrics_path = experiment_root / f"metrics-{SHARED_START_ROLE}-0.02.json"
+    suffix = f"{role}-{fraction:.2f}"
     (experiment_root / "fits").mkdir(parents=True, exist_ok=True)
 
     identity = FitIdentity(
         experiment_id=plan.experiment_id,
         manifest_sha256=plan.manifest_sha256,
-        arm=SHARED_START_ROLE,
+        arm=role,
         seed=plan.seed,
-        budget_fraction=REGISTERED_BUDGET_FRACTIONS[0],
-        item_ids=plan.start_item_ids,
+        budget_fraction=fraction,
+        item_ids=items,
     )
-    runtime = FitRuntime(
-        snapshot=Path(arguments.snapshot),
-        device=device,
-        steps=arguments.steps,
-        batch_size=arguments.batch_size,
-        warmup_steps=arguments.warmup_steps,
-        autocast_dtype=torch.bfloat16 if device.type == "cuda" else None,
-        backward_runner=cuda_backward_runner() if device.type == "cuda" else None,
+    runtime = runtime_from_arguments(
+        arguments, snapshot=Path(arguments.snapshot), device=device
     )
     try:
-        artifacts = fit_once(
+        document = fit_and_score(
             identity,
             runtime,
-            rows_by_item=acquired_rows,
+            rows_by_item={item: rows[item] for item in items},
             image_index=image_index,
-            output_dir=fit_dir,
-        )
-        metrics = evaluate_checkpoint(
-            snapshot=runtime.snapshot,
-            checkpoint_path=artifacts.checkpoint_path,
-            checkpoint_sha256=artifacts.checkpoint_sha256,
             test_rows=test_rows,
-            image_index=image_index,
-            device=device,
-            batch_size=arguments.batch_size,
+            fit_dir=experiment_root / "fits" / suffix,
+            pool_size=plan.pool_size,
         )
-        document = {
-            "experiment_id": plan.experiment_id,
-            "manifest_sha256": plan.manifest_sha256,
-            "seed": plan.seed,
-            "arm": SHARED_START_ROLE,
-            "budget_fraction": REGISTERED_BUDGET_FRACTIONS[0],
-            "budget": plan.budget,
-            "pool_size": plan.pool_size,
-            "checkpoint_sha256": artifacts.checkpoint_sha256,
-            "test_image_count": len(test_rows),
-            "loss": artifacts.receipt["normative"]["loss"],
-            "metrics": metrics,
-        }
-        write_json_no_clobber(metrics_path, document)
+        write_json_no_clobber(experiment_root / f"metrics-{suffix}.json", document)
     except (LoopError, EvaluationError, FeasibilityError, OSError) as error:
-        print(f"lite baseline failed: {error}", file=sys.stderr)
-        try:
-            write_json_no_clobber(
-                experiment_root / "failure.json",
-                {
-                    "experiment_id": plan.experiment_id,
-                    "stage": "baseline",
-                    "type": type(error).__name__,
-                    "error": str(error),
-                },
-            )
-        except (NoClobberError, OSError) as publication_error:
-            print(f"failure record not written: {publication_error}", file=sys.stderr)
+        print(f"{prog[4:]} failed: {error}", file=sys.stderr)
+        record_failure(
+            experiment_root, experiment_id=plan.experiment_id, stage=stage, error=error
+        )
         return 2
     print(json.dumps(document, sort_keys=True))
     return 0
+
+
+@command("lite baseline")
+def baseline_main(argv: Sequence[str] | None = None) -> int:
+    """Fit the shared 2% start from the pinned base and score it on the test split."""
+    return scored_fit_main(
+        argv,
+        prog="val lite baseline",
+        stage="baseline",
+        role=SHARED_START_ROLE,
+        fraction=REGISTERED_BUDGET_FRACTIONS[0],
+        plan_items=lambda plan, _view: plan.start_item_ids,
+    )

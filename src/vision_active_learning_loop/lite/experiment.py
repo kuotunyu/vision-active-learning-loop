@@ -11,6 +11,7 @@ import argparse
 import csv
 import json
 import sys
+import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -35,11 +36,13 @@ from .loop import (
     FitIdentity,
     FitRuntime,
     LoopError,
+    add_runtime_arguments,
     cuda_backward_runner,
     evaluate_checkpoint,
     fit_once,
     load_pinned_detector,
     plan_baseline,
+    resolved_rule,
 )
 from .manifest import write_json_no_clobber
 from .rounds import (
@@ -53,9 +56,11 @@ from .train import (
     BATCH_SIZE,
     REGISTERED_ARMS,
     REGISTERED_BUDGET_FRACTIONS,
+    REGISTERED_TRAINING_RULES,
     SHARED_START_ROLE,
     TRAINING_STEPS,
     WARMUP_STEPS,
+    TrainingRule,
 )
 
 RECEIPT_TYPE = "lite-experiment"
@@ -81,6 +86,7 @@ class ExperimentConfig:
     steps: int = TRAINING_STEPS
     batch_size: int = BATCH_SIZE
     warmup_steps: int = WARMUP_STEPS
+    rule: TrainingRule | None = None
 
 
 @dataclass(frozen=True)
@@ -164,6 +170,7 @@ def _runtime(config: ExperimentConfig) -> FitRuntime:
         warmup_steps=config.warmup_steps,
         autocast_dtype=torch.bfloat16 if is_cuda else None,
         backward_runner=cuda_backward_runner() if is_cuda else None,
+        rule=config.rule,
     )
 
 
@@ -274,6 +281,7 @@ def run_experiment(
     pool_ids = tuple(str(row["item_id"]) for row in public_view["images"])
     test_rows = [row for row in manifest["images"] if row["split"] == "test"]
     runtime = _runtime(config)
+    timing = {"fit_seconds": 0.0, "scoring_seconds": 0.0, "evaluation_seconds": 0.0}
 
     def fit(arm: str, fraction: float, items: Sequence[str]) -> FitArtifacts:
         ordered = tuple(sorted(items))
@@ -313,6 +321,7 @@ def run_experiment(
             unacquired = tuple(item for item in pool_ids if item not in acquired)
             scores = None
             if arm != "random":
+                started = time.perf_counter()
                 scores = scorer(
                     arm=arm,
                     snapshot=runtime.snapshot,
@@ -323,6 +332,7 @@ def run_experiment(
                     device=config.device,
                     batch_size=config.batch_size,
                 )
+                timing["scoring_seconds"] += time.perf_counter() - started
             try:
                 chosen = next_acquisition(
                     arm,
@@ -359,6 +369,7 @@ def run_experiment(
 
     evaluated: list[dict[str, Any]] = []
     for record in fits:
+        started = time.perf_counter()
         metrics = evaluator(
             snapshot=runtime.snapshot,
             checkpoint_path=record.artifacts.checkpoint_path,
@@ -368,6 +379,9 @@ def run_experiment(
             device=config.device,
             batch_size=config.batch_size,
         )
+        timing["evaluation_seconds"] += time.perf_counter() - started
+        result = record.artifacts.result
+        timing["fit_seconds"] += result.elapsed_seconds
         evaluated.append(
             {
                 "arm": record.arm,
@@ -375,6 +389,11 @@ def run_experiment(
                 "budget": record.budget,
                 "checkpoint_sha256": record.artifacts.checkpoint_sha256,
                 "receipt_path": str(record.artifacts.receipt_path.relative_to(root)),
+                "steps": result.steps,
+                "epochs_started": record.artifacts.receipt["normative"].get(
+                    "epochs_started"
+                ),
+                "elapsed_seconds": result.elapsed_seconds,
                 "metrics": {key: float(metrics[key]) for key in METRIC_COLUMNS},
             }
         )
@@ -433,7 +452,9 @@ def run_experiment(
                 "batch_size": config.batch_size,
                 "warmup_steps": config.warmup_steps,
                 "snapshot": str(config.snapshot),
+                "training_rule": asdict(resolved_rule(runtime)),
             },
+            "timing": timing,
             "fits": evaluated,
             "naubc": naubc,
             "naubc_delta_vs_random": deltas,
@@ -473,15 +494,14 @@ def run_main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--device", required=True)
     parser.add_argument("--output-root", required=True)
     parser.add_argument("--arms", default=",".join(REGISTERED_ARMS))
-    parser.add_argument("--steps", type=int, default=TRAINING_STEPS)
-    parser.add_argument("--batch-size", type=int, default=BATCH_SIZE)
-    parser.add_argument("--warmup-steps", type=int, default=WARMUP_STEPS)
+    add_runtime_arguments(parser)
     arguments = parser.parse_args(list(argv) if argv is not None else None)
 
     try:
         manifest = _load_json(Path(arguments.manifest), "manifest")
         view = _load_json(Path(arguments.public_view), "public view")
         image_index = build_image_index(Path(arguments.images))
+        rule = REGISTERED_TRAINING_RULES[arguments.rule]
         config = ExperimentConfig(
             experiment_id=arguments.experiment_id,
             seed=arguments.seed,
@@ -492,6 +512,7 @@ def run_main(argv: Sequence[str] | None = None) -> int:
             steps=arguments.steps,
             batch_size=arguments.batch_size,
             warmup_steps=arguments.warmup_steps,
+            rule=None if rule.steps is not None else rule,
         )
         _validate_config(config)
     except (ExperimentError, DatasetError, RuntimeError) as error:

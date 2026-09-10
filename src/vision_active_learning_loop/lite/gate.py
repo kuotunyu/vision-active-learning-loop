@@ -18,7 +18,17 @@ from typing import Any
 
 from ..cli_manifest import command
 from .loop import ALLOWLISTED_BACKWARD_WARNINGS, RECEIPT_NAME
-from .train import REGISTERED_BUDGET_FRACTIONS, SHARED_START_ROLE
+from .train import (
+    REFERENCE_FRACTION,
+    REFERENCE_ROLE,
+    REGISTERED_BUDGET_FRACTIONS,
+    SHARED_START_ROLE,
+)
+
+GATED_ROLES = {
+    SHARED_START_ROLE: REGISTERED_BUDGET_FRACTIONS[0],
+    REFERENCE_ROLE: REFERENCE_FRACTION,
+}
 
 
 class GateError(ValueError):
@@ -35,10 +45,14 @@ def _load(path: Path, label: str) -> Mapping[str, Any]:
     return document
 
 
-def evaluate_gate(experiment_dir: Path, *, device: str) -> tuple[bool, dict[str, Any]]:
+def evaluate_gate(
+    experiment_dir: Path, *, device: str, role: str = SHARED_START_ROLE
+) -> tuple[bool, dict[str, Any]]:
     """Return the verdict and the observations it rests on."""
     root = Path(experiment_dir)
-    suffix = f"{SHARED_START_ROLE}-{REGISTERED_BUDGET_FRACTIONS[0]:.2f}"
+    if role not in GATED_ROLES:
+        raise GateError(f"role {role!r} is not gated")
+    suffix = f"{role}-{GATED_ROLES[role]:.2f}"
     metrics = _load(root / f"metrics-{suffix}.json", "baseline metrics")
     receipt = _load(root / "fits" / suffix / RECEIPT_NAME, "baseline fit receipt")
     try:
@@ -67,10 +81,11 @@ def gate_main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="val lite gate")
     parser.add_argument("--experiment-dir", required=True)
     parser.add_argument("--device", required=True)
+    parser.add_argument("--role", choices=sorted(GATED_ROLES), default=SHARED_START_ROLE)
     arguments = parser.parse_args(list(argv) if argv is not None else None)
     try:
         passed, observations = evaluate_gate(
-            Path(arguments.experiment_dir), device=arguments.device
+            Path(arguments.experiment_dir), device=arguments.device, role=arguments.role
         )
     except GateError as error:
         print(f"lite gate input error: {error}", file=sys.stderr)

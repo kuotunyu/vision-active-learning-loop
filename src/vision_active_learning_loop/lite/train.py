@@ -1,16 +1,19 @@
-"""Fixed-step training loop and fit receipt for v0.2-lite.
+"""Training loop, training-length rules, and fit receipt for v0.2-lite.
 
-Implements protocol Section 3: one thousand optimizer steps with a fifty-step
-linear warm-up then cosine decay, batch size eight, gradient-norm clipping at
-0.1, and a seed-deterministic sampler that reshuffles every epoch. The loop
-takes its model, optimizer, scheduler, and batches from the caller so the same
-code path serves the GPU run and the CPU tests.
+Implements protocol Section 3: a fifty-step linear warm-up then cosine decay,
+batch size eight, gradient-norm clipping at 0.1, and a seed-deterministic
+sampler that reshuffles every epoch. The number of optimizer steps comes from
+a registered training rule (v0.2.1 Section 1): `fixed-steps` is the original
+one thousand; `fixed-epochs` scales with the acquired image count under an
+explicit minimum. The loop takes its model, optimizer, scheduler, and batches
+from the caller so the same code path serves the GPU run and the CPU tests.
 """
 
 from __future__ import annotations
 
 import math
 import statistics
+import time
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
@@ -29,8 +32,10 @@ BACKBONE_LEARNING_RATE = 1e-5
 WEIGHT_DECAY = 1e-4
 REGISTERED_ARMS = ("random", "entropy", "margin")
 SHARED_START_ROLE = "shared"
-FIT_ROLES = REGISTERED_ARMS + (SHARED_START_ROLE,)
+REFERENCE_ROLE = "reference"
+FIT_ROLES = REGISTERED_ARMS + (SHARED_START_ROLE, REFERENCE_ROLE)
 REGISTERED_BUDGET_FRACTIONS = (0.02, 0.05, 0.10, 0.20)
+REFERENCE_FRACTION = 1.0
 RECEIPT_TYPE = "lite-fit"
 SCHEMA_VERSION = 1
 
@@ -39,6 +44,59 @@ _SHA256_LENGTH = 64
 
 class TrainingError(ValueError):
     """Raised when a training input, step, or receipt field is not usable."""
+
+
+@dataclass(frozen=True)
+class TrainingRule:
+    """How many optimizer steps one fit runs for a given acquired set.
+
+    `steps` fixes the count outright; otherwise the count is
+    `max(min_steps, epochs * floor(image_count / batch_size))`.
+    """
+
+    name: str
+    steps: int | None = None
+    epochs: int | None = None
+    min_steps: int | None = None
+
+    def __post_init__(self) -> None:
+        if self.steps is not None:
+            if self.steps <= 0 or self.epochs is not None or self.min_steps is not None:
+                raise TrainingError("a fixed-step rule takes only a positive step count")
+        elif self.epochs is None or self.min_steps is None:
+            raise TrainingError("an epoch rule needs both epochs and min_steps")
+        elif self.epochs <= 0 or self.min_steps <= 0:
+            raise TrainingError("epochs and min_steps must be positive")
+
+
+FIXED_STEPS_RULE = TrainingRule(name="fixed-steps", steps=TRAINING_STEPS)
+FIXED_EPOCHS_RULE = TrainingRule(name="fixed-epochs", epochs=18, min_steps=200)
+REGISTERED_TRAINING_RULES = {
+    rule.name: rule for rule in (FIXED_STEPS_RULE, FIXED_EPOCHS_RULE)
+}
+
+
+def fit_steps(rule: TrainingRule, image_count: int, *, batch_size: int = BATCH_SIZE) -> int:
+    """Return the number of optimizer steps `rule` prescribes for a fit."""
+    if not isinstance(rule, TrainingRule):
+        raise TrainingError("a training rule is required")
+    if not isinstance(image_count, int) or isinstance(image_count, bool):
+        raise TrainingError("image count must be an integer")
+    if batch_size <= 0 or image_count < batch_size:
+        raise TrainingError("batch size exceeds the acquired pool")
+    if rule.steps is not None:
+        return rule.steps
+    return max(rule.min_steps, rule.epochs * (image_count // batch_size))
+
+
+def rule_document(rule: TrainingRule, *, steps: int) -> dict[str, Any]:
+    """Describe one rule and the steps it resolved to, for receipts."""
+    return {
+        "name": rule.name,
+        "epochs": rule.epochs,
+        "min_steps": rule.min_steps,
+        "steps": int(steps),
+    }
 
 
 @dataclass(frozen=True)
@@ -52,6 +110,7 @@ class FitResult:
     last_window_median: float
     loss_decreased: bool
     peak_allocated_bytes: int
+    elapsed_seconds: float = 0.0
     backward_evidence: Any = field(default=None)
 
 
@@ -153,6 +212,7 @@ def run_fit(
     evidence: Any = None
 
     model.train()
+    started = time.perf_counter()
     for batch in batches:
         optimizer.zero_grad(set_to_none=True)
         if autocast_dtype is None:
@@ -184,6 +244,9 @@ def run_fit(
 
     if not losses:
         raise TrainingError("a fit requires at least one step")
+    if device is not None and device.type == "cuda":
+        torch.cuda.synchronize(device)
+    elapsed = time.perf_counter() - started
 
     first_window = _median_window(losses, last=False)
     last_window = _median_window(losses, last=True)
@@ -202,6 +265,7 @@ def run_fit(
         last_window_median=last_window,
         loss_decreased=last_window < first_window,
         peak_allocated_bytes=peak_allocated,
+        elapsed_seconds=float(elapsed),
         backward_evidence=evidence,
     )
 
@@ -214,6 +278,18 @@ def _digest(value: object, label: str) -> str:
     ):
         raise TrainingError(f"{label} must be a lowercase SHA-256")
     return value
+
+
+def validate_role_fraction(arm: str, budget_fraction: float) -> None:
+    """Reject an unregistered role or a budget the role may not train at."""
+    if arm not in FIT_ROLES:
+        raise TrainingError("arm is not registered")
+    fraction = float(budget_fraction)
+    if arm == REFERENCE_ROLE:
+        if fraction != REFERENCE_FRACTION:
+            raise TrainingError("the reference role trains on the whole pool only")
+    elif fraction not in REGISTERED_BUDGET_FRACTIONS:
+        raise TrainingError("budget fraction is not registered")
 
 
 def fit_receipt(
@@ -229,14 +305,13 @@ def fit_receipt(
     model_sha256: str,
     checkpoint_sha256: str,
     environment: Mapping[str, Any] | None = None,
+    training_rule: Mapping[str, Any] | None = None,
+    epochs_started: int | None = None,
 ) -> dict[str, Any]:
     """Bind one fit's observations to the identities that make it auditable."""
     if not isinstance(result, FitResult):
         raise TrainingError("a fit result is required")
-    if arm not in FIT_ROLES:
-        raise TrainingError("arm is not registered")
-    if float(budget_fraction) not in REGISTERED_BUDGET_FRACTIONS:
-        raise TrainingError("budget fraction is not registered")
+    validate_role_fraction(arm, budget_fraction)
     if not isinstance(experiment_id, str) or not experiment_id:
         raise TrainingError("experiment id is required")
     if not isinstance(seed, int) or isinstance(seed, bool):
@@ -259,6 +334,13 @@ def fit_receipt(
             "model_sha256": _digest(model_sha256, "model digest"),
             "checkpoint_sha256": _digest(checkpoint_sha256, "checkpoint digest"),
             "steps": result.steps,
+            "elapsed_seconds": result.elapsed_seconds,
+            **({"epochs_started": int(epochs_started)} if epochs_started is not None else {}),
+            **(
+                {"training_rule": dict(training_rule)}
+                if training_rule is not None
+                else {}
+            ),
             "recipe": {
                 "batch_size": BATCH_SIZE,
                 "gradient_clip": result.gradient_clip,
@@ -266,7 +348,7 @@ def fit_receipt(
                 "backbone_learning_rate": BACKBONE_LEARNING_RATE,
                 "weight_decay": WEIGHT_DECAY,
                 "warmup_steps": WARMUP_STEPS,
-                "total_steps": TRAINING_STEPS,
+                "total_steps": result.steps,
             },
             "loss": {
                 "final": result.losses[-1],

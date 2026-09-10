@@ -83,6 +83,38 @@ def test_dry_run_reports_every_input_and_launches_nothing(tmp_path: Path) -> Non
 
 
 @requires_powershell
+def test_dry_run_reports_the_rule_and_reference_plan(tmp_path: Path) -> None:
+    completed = _run(
+        "-DryRun", "-Rule", "fixed-epochs", "-Reference", "-Seed", "29", *_overrides(tmp_path)
+    )
+
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    assert (
+        "rule=fixed-epochs seed=29 reference=True referenceonly=False fullrun=True"
+        in completed.stdout
+    )
+
+
+@requires_powershell
+def test_dry_run_reference_only_implies_reference_and_no_full_run(tmp_path: Path) -> None:
+    completed = _run("-DryRun", "-ReferenceOnly", *_overrides(tmp_path))
+
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    assert (
+        "rule=fixed-steps seed=17 reference=True referenceonly=True fullrun=False"
+        in completed.stdout
+    )
+
+
+@requires_powershell
+def test_script_rejects_an_unregistered_rule(tmp_path: Path) -> None:
+    completed = _run("-DryRun", "-Rule", "fixed-days", *_overrides(tmp_path))
+
+    assert completed.returncode != 0
+    assert "preflight ok" not in completed.stdout
+
+
+@requires_powershell
 def test_dry_run_fails_closed_on_a_missing_input(tmp_path: Path) -> None:
     completed = _run("-DryRun", *_overrides(tmp_path, manifest_exists=False))
 
