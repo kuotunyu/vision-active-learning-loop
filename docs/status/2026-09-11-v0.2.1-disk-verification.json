@@ -1,0 +1,394 @@
+{
+ "evidence_root": "<evidence-root>\\lite",
+ "running_lock_present": false,
+ "runs": [
+  {
+   "seed": 17,
+   "rule": "fixed-epochs",
+   "baseline": {
+    "experiment_id": "lite-czech-ep18-s17-baseline-20260911T0546Z",
+    "steps": 200,
+    "epochs_started": 40,
+    "elapsed_seconds": 50.933429999997315,
+    "mAP50_95": 0.0023140022571957967
+   },
+   "reference": {
+    "experiment_id": "lite-czech-ref-fixed-epochs-s17-20260911T0546Z",
+    "steps": 5058,
+    "epochs_started": 18,
+    "elapsed_seconds": 1774.4635675999962,
+    "mAP50_95": 0.06557124693431146,
+    "min_class_recall": 0.2518518518518518
+   },
+   "random_ledger_identical_to_v02_lite": true,
+   "experiment": {
+    "experiment_id": "lite-czech-ep18-s17-20260911T0546Z",
+    "timing": {
+     "evaluation_seconds": 121.0565462000086,
+     "fit_seconds": 2390.908865999976,
+     "scoring_seconds": 189.91030800001317
+    },
+    "naubc": {
+     "entropy": 0.02042827090560665,
+     "margin": 0.017852698672849596,
+     "random": 0.01591172950500773
+    },
+    "naubc_delta_vs_random": {
+     "entropy": 0.004516541400598921,
+     "margin": 0.0019409691678418661
+    },
+    "fits": [
+     {
+      "fit": "shared-0.02",
+      "steps": 200,
+      "images": 46,
+      "epochs_started": 40,
+      "elapsed_seconds": 93.59334059999674
+     },
+     {
+      "fit": "random-0.05",
+      "steps": 252,
+      "images": 113,
+      "epochs_started": 18,
+      "elapsed_seconds": 122.50575459999527
+     },
+     {
+      "fit": "random-0.10",
+      "steps": 504,
+      "images": 226,
+      "epochs_started": 18,
+      "elapsed_seconds": 240.73041190000367
+     },
+     {
+      "fit": "random-0.20",
+      "steps": 1008,
+      "images": 451,
+      "epochs_started": 18,
+      "elapsed_seconds": 483.01377499999944
+     },
+     {
+      "fit": "entropy-0.05",
+      "steps": 252,
+      "images": 113,
+      "epochs_started": 18,
+      "elapsed_seconds": 121.55175269999745
+     },
+     {
+      "fit": "entropy-0.10",
+      "steps": 504,
+      "images": 226,
+      "epochs_started": 18,
+      "elapsed_seconds": 215.2788972999988
+     },
+     {
+      "fit": "entropy-0.20",
+      "steps": 1008,
+      "images": 451,
+      "epochs_started": 18,
+      "elapsed_seconds": 475.7745777999953
+     },
+     {
+      "fit": "margin-0.05",
+      "steps": 252,
+      "images": 113,
+      "epochs_started": 18,
+      "elapsed_seconds": 114.91567199999554
+     },
+     {
+      "fit": "margin-0.10",
+      "steps": 504,
+      "images": 226,
+      "epochs_started": 18,
+      "elapsed_seconds": 233.03285389999655
+     },
+     {
+      "fit": "margin-0.20",
+      "steps": 1008,
+      "images": 451,
+      "epochs_started": 18,
+      "elapsed_seconds": 290.51183019999735
+     }
+    ]
+   },
+   "logs": [
+    "run-lite-ep18-seed17-20260911T0546Z.log"
+   ],
+   "failures": []
+  },
+  {
+   "seed": 29,
+   "rule": "fixed-epochs",
+   "baseline": {
+    "experiment_id": "lite-czech-ep18-s29-baseline-20260911T0707Z",
+    "steps": 200,
+    "epochs_started": 40,
+    "elapsed_seconds": 84.73335089999455,
+    "mAP50_95": 0.000594261380891517
+   },
+   "reference": {
+    "experiment_id": "lite-czech-ref-fixed-epochs-s29-20260911T0707Z",
+    "steps": 5058,
+    "epochs_started": 18,
+    "elapsed_seconds": 1520.7575144000002,
+    "mAP50_95": 0.06697115827744747,
+    "min_class_recall": 0.3318181818181819
+   },
+   "random_ledger_identical_to_v02_lite": true,
+   "experiment": {
+    "experiment_id": "lite-czech-ep18-s29-20260911T0707Z",
+    "timing": {
+     "evaluation_seconds": 116.75607780000428,
+     "fit_seconds": 1229.3539604999896,
+     "scoring_seconds": 121.53356429999985
+    },
+    "naubc": {
+     "entropy": 0.015369681849160625,
+     "margin": 0.01707239830619909,
+     "random": 0.010700355492329252
+    },
+    "naubc_delta_vs_random": {
+     "entropy": 0.004669326356831373,
+     "margin": 0.0063720428138698375
+    },
+    "fits": [
+     {
+      "fit": "shared-0.02",
+      "steps": 200,
+      "images": 46,
+      "epochs_started": 40,
+      "elapsed_seconds": 44.64137270000356
+     },
+     {
+      "fit": "random-0.05",
+      "steps": 252,
+      "images": 113,
+      "epochs_started": 18,
+      "elapsed_seconds": 56.916011499997694
+     },
+     {
+      "fit": "random-0.10",
+      "steps": 504,
+      "images": 226,
+      "epochs_started": 18,
+      "elapsed_seconds": 111.6947727999941
+     },
+     {
+      "fit": "random-0.20",
+      "steps": 1008,
+      "images": 451,
+      "epochs_started": 18,
+      "elapsed_seconds": 223.690671999997
+     },
+     {
+      "fit": "entropy-0.05",
+      "steps": 252,
+      "images": 113,
+      "epochs_started": 18,
+      "elapsed_seconds": 55.581253699994704
+     },
+     {
+      "fit": "entropy-0.10",
+      "steps": 504,
+      "images": 226,
+      "epochs_started": 18,
+      "elapsed_seconds": 111.5720835999964
+     },
+     {
+      "fit": "entropy-0.20",
+      "steps": 1008,
+      "images": 451,
+      "epochs_started": 18,
+      "elapsed_seconds": 228.25589259999833
+     },
+     {
+      "fit": "margin-0.05",
+      "steps": 252,
+      "images": 113,
+      "epochs_started": 18,
+      "elapsed_seconds": 57.305532900005346
+     },
+     {
+      "fit": "margin-0.10",
+      "steps": 504,
+      "images": 226,
+      "epochs_started": 18,
+      "elapsed_seconds": 113.63720769999782
+     },
+     {
+      "fit": "margin-0.20",
+      "steps": 1008,
+      "images": 451,
+      "epochs_started": 18,
+      "elapsed_seconds": 226.05916100000468
+     }
+    ]
+   },
+   "logs": [
+    "run-lite-ep18-seed29-20260911T0707Z.log"
+   ],
+   "failures": []
+  },
+  {
+   "seed": 43,
+   "rule": "fixed-epochs",
+   "baseline": {
+    "experiment_id": "lite-czech-ep18-s43-baseline-20260911T0801Z",
+    "steps": 200,
+    "epochs_started": 40,
+    "elapsed_seconds": 41.50542220000352,
+    "mAP50_95": 0.002091970336073406
+   },
+   "reference": {
+    "experiment_id": "lite-czech-ref-fixed-epochs-s43-20260911T0801Z",
+    "steps": 5058,
+    "epochs_started": 18,
+    "elapsed_seconds": 1060.2113107999976,
+    "mAP50_95": 0.06658039987771411,
+    "min_class_recall": 0.32592592592592595
+   },
+   "random_ledger_identical_to_v02_lite": true,
+   "experiment": {
+    "experiment_id": "lite-czech-ep18-s43-20260911T0801Z",
+    "timing": {
+     "evaluation_seconds": 110.76105550000648,
+     "fit_seconds": 1159.4905599000049,
+     "scoring_seconds": 114.6416463999849
+    },
+    "naubc": {
+     "entropy": 0.0207270232056847,
+     "margin": 0.019610557767794978,
+     "random": 0.01093328263752863
+    },
+    "naubc_delta_vs_random": {
+     "entropy": 0.00979374056815607,
+     "margin": 0.008677275130266348
+    },
+    "fits": [
+     {
+      "fit": "shared-0.02",
+      "steps": 200,
+      "images": 46,
+      "epochs_started": 40,
+      "elapsed_seconds": 41.49292740000237
+     },
+     {
+      "fit": "random-0.05",
+      "steps": 252,
+      "images": 113,
+      "epochs_started": 18,
+      "elapsed_seconds": 52.50482190000184
+     },
+     {
+      "fit": "random-0.10",
+      "steps": 504,
+      "images": 226,
+      "epochs_started": 18,
+      "elapsed_seconds": 107.87286380000296
+     },
+     {
+      "fit": "random-0.20",
+      "steps": 1008,
+      "images": 451,
+      "epochs_started": 18,
+      "elapsed_seconds": 207.75166109999554
+     },
+     {
+      "fit": "entropy-0.05",
+      "steps": 252,
+      "images": 113,
+      "epochs_started": 18,
+      "elapsed_seconds": 55.22950409999612
+     },
+     {
+      "fit": "entropy-0.10",
+      "steps": 504,
+      "images": 226,
+      "epochs_started": 18,
+      "elapsed_seconds": 107.54256709999754
+     },
+     {
+      "fit": "entropy-0.20",
+      "steps": 1008,
+      "images": 451,
+      "epochs_started": 18,
+      "elapsed_seconds": 213.47919030000048
+     },
+     {
+      "fit": "margin-0.05",
+      "steps": 252,
+      "images": 113,
+      "epochs_started": 18,
+      "elapsed_seconds": 55.3422544999994
+     },
+     {
+      "fit": "margin-0.10",
+      "steps": 504,
+      "images": 226,
+      "epochs_started": 18,
+      "elapsed_seconds": 105.04509710000275
+     },
+     {
+      "fit": "margin-0.20",
+      "steps": 1008,
+      "images": 451,
+      "epochs_started": 18,
+      "elapsed_seconds": 213.22967260000587
+     }
+    ]
+   },
+   "logs": [
+    "run-lite-ep18-seed43-20260911T0801Z.log"
+   ],
+   "failures": []
+  },
+  {
+   "seed": 17,
+   "rule": "fixed-steps",
+   "reference": {
+    "experiment_id": "lite-czech-ref-fixed-steps-s17-20260911T0846Z",
+    "steps": 1000,
+    "epochs_started": 4,
+    "elapsed_seconds": 213.50856389999535,
+    "mAP50_95": 0.03683050486486971,
+    "min_class_recall": 0.2888888888888889
+   },
+   "logs": [
+    "run-lite-seed17-20260911T0846Z.log"
+   ],
+   "failures": []
+  },
+  {
+   "seed": 29,
+   "rule": "fixed-steps",
+   "reference": {
+    "experiment_id": "lite-czech-ref-fixed-steps-s29-20260911T0853Z",
+    "steps": 1000,
+    "epochs_started": 4,
+    "elapsed_seconds": 209.6921086000002,
+    "mAP50_95": 0.034682811963287125,
+    "min_class_recall": 0.25925925925925924
+   },
+   "logs": [
+    "run-lite-seed29-20260911T0853Z.log"
+   ],
+   "failures": []
+  },
+  {
+   "seed": 43,
+   "rule": "fixed-steps",
+   "reference": {
+    "experiment_id": "lite-czech-ref-fixed-steps-s43-20260911T0858Z",
+    "steps": 1000,
+    "epochs_started": 4,
+    "elapsed_seconds": 214.15879579999455,
+    "mAP50_95": 0.042459916499474656,
+    "min_class_recall": 0.28518518518518515
+   },
+   "logs": [
+    "run-lite-seed43-20260911T0858Z.log"
+   ],
+   "failures": []
+  }
+ ],
+ "total_failures": 0
+}

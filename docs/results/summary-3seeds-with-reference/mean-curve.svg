@@ -1,0 +1,36 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="640" height="400" viewBox="0 0 640 400" font-family="sans-serif" font-size="12">
+<rect width="640" height="400" fill="#ffffff"/>
+<line x1="64" y1="344.0" x2="616" y2="344.0" stroke="#e5e7eb"/>
+<text x="58" y="348.0" text-anchor="end">0.00</text>
+<line x1="64" y1="280.0" x2="616" y2="280.0" stroke="#e5e7eb"/>
+<text x="58" y="284.0" text-anchor="end">0.01</text>
+<line x1="64" y1="216.0" x2="616" y2="216.0" stroke="#e5e7eb"/>
+<text x="58" y="220.0" text-anchor="end">0.02</text>
+<line x1="64" y1="152.0" x2="616" y2="152.0" stroke="#e5e7eb"/>
+<text x="58" y="156.0" text-anchor="end">0.03</text>
+<line x1="64" y1="88.0" x2="616" y2="88.0" stroke="#e5e7eb"/>
+<text x="58" y="92.0" text-anchor="end">0.04</text>
+<line x1="64" y1="24.0" x2="616" y2="24.0" stroke="#e5e7eb"/>
+<text x="58" y="28.0" text-anchor="end">0.05</text>
+<text x="64.0" y="362" text-anchor="middle">2%</text>
+<text x="156.0" y="362" text-anchor="middle">5%</text>
+<text x="309.3" y="362" text-anchor="middle">10%</text>
+<text x="616.0" y="362" text-anchor="middle">20%</text>
+<rect x="64" y="24" width="552" height="320" fill="none" stroke="#9ca3af"/>
+<polyline points="156.0,299.3 309.3,222.0 616.0,158.3" fill="none" stroke="#d97706" stroke-width="2"/>
+<circle cx="156.0" cy="299.3" r="3.5" fill="#d97706"/>
+<circle cx="309.3" cy="222.0" r="3.5" fill="#d97706"/>
+<circle cx="616.0" cy="158.3" r="3.5" fill="#d97706"/>
+<text x="608" y="40" text-anchor="end" fill="#d97706">entropy</text>
+<polyline points="156.0,292.3 309.3,222.3 616.0,105.4" fill="none" stroke="#2563eb" stroke-width="2"/>
+<circle cx="156.0" cy="292.3" r="3.5" fill="#2563eb"/>
+<circle cx="309.3" cy="222.3" r="3.5" fill="#2563eb"/>
+<circle cx="616.0" cy="105.4" r="3.5" fill="#2563eb"/>
+<text x="608" y="56" text-anchor="end" fill="#2563eb">margin</text>
+<polyline points="156.0,291.3 309.3,264.7 616.0,196.2" fill="none" stroke="#6b7280" stroke-width="2"/>
+<circle cx="156.0" cy="291.3" r="3.5" fill="#6b7280"/>
+<circle cx="309.3" cy="264.7" r="3.5" fill="#6b7280"/>
+<circle cx="616.0" cy="196.2" r="3.5" fill="#6b7280"/>
+<text x="608" y="72" text-anchor="end" fill="#6b7280">random</text>
+<text x="340.0" y="392" text-anchor="middle">acquired image fraction (2% point is shared) vs source-test mAP50-95</text>
+</svg>
