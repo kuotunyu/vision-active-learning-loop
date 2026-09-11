@@ -186,3 +186,75 @@ def test_scoring_rows_refuse_a_test_row() -> None:
 
     with pytest.raises(RoundsError, match="test"):
         scoring_rows(rows, unacquired=("item-t",))
+
+
+# ------------------------------------------------------------------ v0.3 diversity arms
+
+import torch  # noqa: E402
+
+from vision_active_learning_loop.lite.diversity import Embeddings, k_center_select  # noqa: E402
+from vision_active_learning_loop.lite.rounds import DiversityRound, diversity_round  # noqa: E402
+from vision_active_learning_loop.lite.train import DIVERSITY_ARMS, REGISTERED_ARMS  # noqa: E402
+
+
+def _embeddings(ids: tuple[str, ...]) -> Embeddings:
+    generator = torch.Generator().manual_seed(7)
+    vectors = torch.randn((len(ids), 6), generator=generator)
+    vectors = vectors / vectors.norm(dim=1, keepdim=True)
+    ordered = sorted(range(len(ids)), key=lambda index: ids[index])
+    return Embeddings(
+        item_ids=tuple(ids[i] for i in ordered), vectors=vectors[ordered], sha256="e" * 64
+    )
+
+
+def test_registered_arms_include_the_diversity_arms() -> None:
+    assert REGISTERED_ARMS == ("random", "entropy", "margin", "coreset", "hybrid")
+    assert DIVERSITY_ARMS == ("coreset", "hybrid")
+
+
+def test_coreset_round_uses_acquired_items_as_centers_and_records_distances() -> None:
+    embeddings = _embeddings(POOL)
+    acquired = set(POOL[:5])
+    result = diversity_round(
+        "coreset", scores=None, acquired=acquired, pool_ids=POOL, count=3, embeddings=embeddings
+    )
+    assert isinstance(result, DiversityRound)
+    assert len(result.chosen) == 3 and not set(result.chosen) & acquired
+    assert set(result.distances) == set(result.chosen)
+    assert result.shortlist is None
+    unacquired = tuple(item for item in POOL if item not in acquired)
+    direct = k_center_select(
+        unacquired, embeddings.rows(unacquired), embeddings.rows(sorted(acquired)), 3
+    )
+    assert result.chosen == tuple(item for item, _ in direct)
+
+
+def test_hybrid_round_shortlists_by_score_then_runs_k_center() -> None:
+    embeddings = _embeddings(POOL)
+    scores = {item: (index * 37) % 101 / 101.0 for index, item in enumerate(POOL)}
+    result = diversity_round(
+        "hybrid", scores=scores, acquired=set(POOL[:2]), pool_ids=POOL, count=2, embeddings=embeddings
+    )
+    assert result.shortlist is not None and len(result.shortlist) == 10  # 5 x 2
+    assert set(result.chosen) <= set(result.shortlist)
+    top = sorted((item for item in POOL[2:]), key=lambda item: (-scores[item], item))[:10]
+    assert result.shortlist == tuple(top)
+
+
+def test_next_acquisition_routes_the_diversity_arms() -> None:
+    embeddings = _embeddings(POOL)
+    chosen = next_acquisition(
+        "coreset", scores=None, acquired=set(), pool_ids=POOL, seed=17, count=2, embeddings=embeddings
+    )
+    assert len(chosen) == 2
+    with pytest.raises(RoundsError, match="embeddings"):
+        next_acquisition("coreset", scores=None, acquired=set(), pool_ids=POOL, seed=17, count=2)
+    with pytest.raises(RoundsError, match="scores"):
+        next_acquisition(
+            "coreset", scores={item: 0.1 for item in POOL}, acquired=set(), pool_ids=POOL,
+            seed=17, count=2, embeddings=embeddings,
+        )
+    with pytest.raises(RoundsError, match="score"):
+        next_acquisition(
+            "hybrid", scores=None, acquired=set(), pool_ids=POOL, seed=17, count=2, embeddings=embeddings
+        )

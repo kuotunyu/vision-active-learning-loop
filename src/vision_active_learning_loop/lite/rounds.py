@@ -14,7 +14,8 @@ from fractions import Fraction
 from typing import Any
 
 from .acquisition import random_acquisition_order, select_by_score
-from .train import REGISTERED_ARMS, REGISTERED_BUDGET_FRACTIONS
+from .diversity import DiversityError, Embeddings, hybrid_candidates, k_center_select
+from .train import DIVERSITY_ARMS, REGISTERED_ARMS, REGISTERED_BUDGET_FRACTIONS
 
 START_FRACTION = REGISTERED_BUDGET_FRACTIONS[0]
 LATER_FRACTIONS = REGISTERED_BUDGET_FRACTIONS[1:]
@@ -60,6 +61,60 @@ def round_plan(*, pool_size: int) -> tuple[tuple[float, int, int], ...]:
     return tuple(plan)
 
 
+@dataclass(frozen=True)
+class DiversityRound:
+    chosen: tuple[str, ...]
+    distances: dict[str, float]
+    shortlist: tuple[str, ...] | None
+
+
+def diversity_round(
+    arm: str,
+    *,
+    scores: Mapping[str, float] | None,
+    acquired: Iterable[str],
+    pool_ids: Sequence[str],
+    count: int,
+    embeddings: Embeddings | None,
+) -> DiversityRound:
+    """One core-set or hybrid round: candidates, centers and the greedy k-center pick."""
+    if arm not in DIVERSITY_ARMS:
+        raise RoundsError(f"arm {arm!r} is not a diversity arm")
+    if embeddings is None:
+        raise RoundsError(f"{arm} requires embeddings")
+    if not isinstance(count, int) or isinstance(count, bool) or count <= 0:
+        raise RoundsError("count must be a positive integer")
+    taken = sorted(set(acquired))
+    taken_set = set(taken)
+    unacquired = tuple(item for item in pool_ids if item not in taken_set)
+    if count > len(unacquired):
+        raise RoundsError("count exceeds the unacquired pool")
+    shortlist: tuple[str, ...] | None = None
+    if arm == "coreset":
+        if scores is not None:
+            raise RoundsError("the coreset arm must not receive scores")
+        candidates: tuple[str, ...] = unacquired
+    else:
+        if not isinstance(scores, Mapping):
+            raise RoundsError("the hybrid arm requires a score per unacquired item")
+        missing = [item for item in unacquired if item not in scores]
+        if missing:
+            raise RoundsError(f"score missing for {missing[0]}")
+        shortlist = hybrid_candidates({item: scores[item] for item in unacquired}, count)
+        candidates = shortlist
+    try:
+        picked = k_center_select(
+            candidates, embeddings.rows(candidates), embeddings.rows(taken), count
+        )
+    except DiversityError as error:
+        raise RoundsError(str(error)) from error
+    return DiversityRound(
+        chosen=tuple(item for item, _ in picked),
+        distances={item: distance for item, distance in picked},
+        shortlist=shortlist,
+    )
+
+
 def next_acquisition(
     arm: str,
     *,
@@ -68,6 +123,7 @@ def next_acquisition(
     pool_ids: Sequence[str],
     seed: int,
     count: int,
+    embeddings: Embeddings | None = None,
 ) -> tuple[str, ...]:
     """Choose the next `count` unacquired images for one arm."""
     if arm not in REGISTERED_ARMS:
@@ -78,6 +134,16 @@ def next_acquisition(
     unacquired = tuple(item for item in pool_ids if item not in taken)
     if count > len(unacquired):
         raise RoundsError("count exceeds the unacquired pool")
+
+    if arm in DIVERSITY_ARMS:
+        return diversity_round(
+            arm,
+            scores=scores,
+            acquired=taken,
+            pool_ids=pool_ids,
+            count=count,
+            embeddings=embeddings,
+        ).chosen
 
     if arm == "random":
         if scores is not None:
