@@ -374,6 +374,24 @@ def curve_segment(scene: Scene, ctx: Context, fade_out: bool = True) -> None:
         scene.play(FadeOut(*scene.mobjects), run_time=0.5)
 
 
+# ------------------------------------------------------------------ outro
+
+
+def outro_segment(scene: Scene, ctx: Context, fade_out: bool = True) -> None:
+    style = ctx.style
+    lines = VGroup(
+        text(ctx, "outro_1", "label"),
+        text(ctx, "outro_2", "label"),
+        text(ctx, "outro_3", "label", style.colors["start"]),
+    ).arrange(DOWN, buff=0.35)
+    path = text(ctx, "outro_path", "small", style.colors["muted"]).next_to(lines, DOWN, buff=0.6)
+    scene.play(LaggedStart(*[FadeIn(line, shift=UP * 0.15) for line in lines], lag_ratio=0.35), run_time=1.4)
+    scene.play(FadeIn(path), run_time=0.4)
+    scene.wait(2.0)
+    if fade_out:
+        scene.play(FadeOut(*scene.mobjects), run_time=0.5)
+
+
 # ------------------------------------------------------------------ scenes
 
 
@@ -403,6 +421,11 @@ class CurveSegment(Scene):
         curve_segment(self, make_context(), fade_out=False)
 
 
+class OutroSegment(Scene):
+    def construct(self) -> None:
+        outro_segment(self, make_context(), fade_out=False)
+
+
 class ValLoopShort(Scene):
     def construct(self) -> None:
         ctx = make_context()
@@ -411,3 +434,4 @@ class ValLoopShort(Scene):
         pool_segment(self, ctx, layout)
         loop_segment(self, ctx, layout)
         curve_segment(self, ctx)
+        outro_segment(self, ctx)
