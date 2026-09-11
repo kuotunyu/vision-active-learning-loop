@@ -126,7 +126,7 @@ class _Recorder:
             }
         )
         # Deterministic, arm-dependent scores so the two arms diverge.
-        offset = 0.0 if arm == "entropy" else 0.5
+        offset = {"entropy": 0.0, "hybrid": 0.0, "margin": 0.5}[arm]
         return {
             row["item_id"]: (int(row["item_id"][-4:]) % 97) / 97.0 + offset
             for row in public_rows
@@ -434,3 +434,83 @@ def test_run_experiment_end_to_end_with_the_pinned_detector_on_cpu(
             (summary.root / f"ledger-{arm}.json").read_text(encoding="utf-8")
         )
         assert all(entry["score"] is not None for entry in ledger["entries"])
+
+
+# ------------------------------------------------------------------ v0.3 diversity arms
+
+from vision_active_learning_loop.lite.diversity import Embeddings  # noqa: E402
+
+
+def _fake_embeddings(manifest: dict) -> Embeddings:
+    ids = tuple(sorted(row["item_id"] for row in manifest["images"] if row["split"] == "pool"))
+    generator = torch.Generator().manual_seed(3)
+    vectors = torch.randn((len(ids), 5), generator=generator)
+    vectors = vectors / vectors.norm(dim=1, keepdim=True)
+    return Embeddings(item_ids=ids, vectors=vectors, sha256="f" * 64)
+
+
+def _run_diversity(tmp_path: Path, **overrides):
+    manifest = _manifest()
+    recorder = _Recorder(tmp_path)
+    summary = run_experiment(
+        _config(tmp_path, arms=("random", "coreset", "hybrid"), **overrides),
+        manifest=manifest,
+        public_view=public_pool_view(manifest),
+        image_index={row["item_id"]: tmp_path / "img" for row in manifest["images"]},
+        fitter=recorder.fitter,
+        scorer=recorder.scorer,
+        evaluator=recorder.evaluator,
+        embeddings=_fake_embeddings(manifest),
+    )
+    return manifest, recorder, summary
+
+
+def test_diversity_arms_run_ten_fits_and_only_hybrid_scores(tmp_path: Path) -> None:
+    _, recorder, summary = _run_diversity(tmp_path)
+    assert summary.fit_count == 10
+    assert {call["arm"] for call in recorder.score_calls} == {"hybrid"}
+    assert len(recorder.score_calls) == 3
+
+
+def test_diversity_ledgers_record_distances_and_hybrid_shortlists(tmp_path: Path) -> None:
+    _, _, summary = _run_diversity(tmp_path)
+    coreset = json.loads((summary.root / "ledger-coreset.json").read_text(encoding="utf-8"))
+    hybrid = json.loads((summary.root / "ledger-hybrid.json").read_text(encoding="utf-8"))
+    expected = budget_count(0.20, POOL_SIZE) - budget_count(0.02, POOL_SIZE)
+    assert len(coreset["entries"]) == len(hybrid["entries"]) == expected
+    assert all(0.0 <= entry["score"] <= 2.0 for entry in coreset["entries"])
+    shortlists = json.loads((summary.root / "hybrid-shortlists.json").read_text(encoding="utf-8"))
+    assert shortlists["arm"] == "hybrid" and len(shortlists["rounds"]) == 3
+    first = shortlists["rounds"][0]
+    assert first["round_index"] == 1
+    first_delta = budget_count(0.05, POOL_SIZE) - budget_count(0.02, POOL_SIZE)
+    assert len(first["candidates"]) == min(5 * first_delta, POOL_SIZE - budget_count(0.02, POOL_SIZE))
+    chosen_round_1 = {entry["item_id"] for entry in hybrid["entries"] if entry["round_index"] == 1}
+    assert chosen_round_1 <= {candidate["item_id"] for candidate in first["candidates"]}
+
+
+def test_experiment_receipt_binds_the_embeddings_hash(tmp_path: Path) -> None:
+    _, _, summary = _run_diversity(tmp_path)
+    receipt = json.loads(summary.receipt_path.read_text(encoding="utf-8"))["normative"]
+    assert receipt["embeddings_sha256"] == "f" * 64
+    assert receipt["arms"] == ["random", "coreset", "hybrid"]
+    assert set(receipt["naubc_delta_vs_random"]) == {"coreset", "hybrid"}
+
+
+def test_diversity_arms_without_embeddings_are_refused(tmp_path: Path) -> None:
+    manifest = _manifest()
+    with pytest.raises(ExperimentError, match="embeddings"):
+        run_experiment(
+            _config(tmp_path, arms=("random", "coreset")),
+            manifest=manifest,
+            public_view=public_pool_view(manifest),
+            image_index={row["item_id"]: tmp_path / "img" for row in manifest["images"]},
+            fitter=_Recorder(tmp_path).fitter,
+        )
+
+
+def test_classic_arms_receipt_has_a_null_embeddings_hash(tmp_path: Path) -> None:
+    _, _, summary = _run(tmp_path)
+    receipt = json.loads(summary.receipt_path.read_text(encoding="utf-8"))["normative"]
+    assert receipt["embeddings_sha256"] is None
+    assert not (summary.root / "hybrid-shortlists.json").exists()

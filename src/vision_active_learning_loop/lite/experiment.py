@@ -44,9 +44,11 @@ from .loop import (
     plan_baseline,
     resolved_rule,
 )
+from .diversity import HYBRID_FACTOR, DiversityError, Embeddings, load_embeddings
 from .manifest import write_json_no_clobber
 from .rounds import (
     RoundsError,
+    diversity_round,
     ledger_entries,
     next_acquisition,
     round_plan,
@@ -54,6 +56,7 @@ from .rounds import (
 )
 from .train import (
     BATCH_SIZE,
+    DIVERSITY_ARMS,
     REGISTERED_ARMS,
     REGISTERED_BUDGET_FRACTIONS,
     REGISTERED_TRAINING_RULES,
@@ -68,7 +71,11 @@ SCHEMA_VERSION = 1
 METRIC_COLUMNS = ("mAP50_95", "AP50") + tuple(
     f"{prefix}_{label}" for label in RDD_LABELS for prefix in ("AP50_95", "recall")
 )
-_SCORERS = {"entropy": entropy_image_scores, "margin": margin_image_scores}
+_SCORERS = {
+    "entropy": entropy_image_scores,
+    "margin": margin_image_scores,
+    "hybrid": entropy_image_scores,
+}
 
 
 class ExperimentError(ValueError):
@@ -87,6 +94,7 @@ class ExperimentConfig:
     batch_size: int = BATCH_SIZE
     warmup_steps: int = WARMUP_STEPS
     rule: TrainingRule | None = None
+    embeddings_path: Path | None = None
 
 
 @dataclass(frozen=True)
@@ -178,7 +186,13 @@ def _fit_dir(root: Path, arm: str, fraction: float) -> Path:
     return root / "fits" / f"{arm}-{fraction:.2f}"
 
 
-_CURVE_COLOURS = {"random": "#6b7280", "entropy": "#d97706", "margin": "#2563eb"}
+_CURVE_COLOURS = {
+    "random": "#6b7280",
+    "entropy": "#d97706",
+    "margin": "#2563eb",
+    "coreset": "#7c3aed",
+    "hybrid": "#059669",
+}
 
 
 def write_budget_curve(
@@ -257,9 +271,18 @@ def run_experiment(
     fitter: Callable[..., FitArtifacts] = fit_once,
     scorer: Callable[..., Mapping[str, float]] = score_pool,
     evaluator: Callable[..., Mapping[str, float]] = evaluate_checkpoint,
+    embeddings: Embeddings | None = None,
 ) -> ExperimentSummary:
     """Run the shared start, every arm's rounds, and the final evaluation pass."""
     _validate_config(config)
+    needs_embeddings = any(arm in DIVERSITY_ARMS for arm in config.arms)
+    if needs_embeddings and embeddings is None:
+        if config.embeddings_path is None:
+            raise ExperimentError("coreset/hybrid arms require embeddings")
+        try:
+            embeddings = load_embeddings(config.embeddings_path)
+        except DiversityError as error:
+            raise ExperimentError(str(error)) from error
     try:
         plan = plan_baseline(
             manifest, public_view, seed=config.seed, experiment_id=config.experiment_id
@@ -279,6 +302,11 @@ def run_experiment(
 
     rows = {row["item_id"]: row for row in manifest["images"]}
     pool_ids = tuple(str(row["item_id"]) for row in public_view["images"])
+    if needs_embeddings and embeddings is not None:
+        known = set(embeddings.item_ids)
+        absent = [item for item in pool_ids if item not in known]
+        if absent:
+            raise ExperimentError(f"embeddings lack pool item {absent[0]}")
     test_rows = [row for row in manifest["images"] if row["split"] == "test"]
     runtime = _runtime(config)
     timing = {"fit_seconds": 0.0, "scoring_seconds": 0.0, "evaluation_seconds": 0.0}
@@ -315,12 +343,13 @@ def run_experiment(
         acquired: set[str] = set(plan.start_item_ids)
         previous = shared
         entries = []
+        shortlists: list[dict[str, Any]] = []
         for round_index, (fraction, count, delta) in enumerate(
             round_plan(pool_size=plan.pool_size), start=1
         ):
             unacquired = tuple(item for item in pool_ids if item not in acquired)
             scores = None
-            if arm != "random":
+            if arm in _SCORERS:
                 started = time.perf_counter()
                 scores = scorer(
                     arm=arm,
@@ -334,14 +363,38 @@ def run_experiment(
                 )
                 timing["scoring_seconds"] += time.perf_counter() - started
             try:
-                chosen = next_acquisition(
-                    arm,
-                    scores=scores,
-                    acquired=acquired,
-                    pool_ids=pool_ids,
-                    seed=config.seed,
-                    count=delta,
-                )
+                if arm in DIVERSITY_ARMS:
+                    diversity = diversity_round(
+                        arm,
+                        scores=scores,
+                        acquired=acquired,
+                        pool_ids=pool_ids,
+                        count=delta,
+                        embeddings=embeddings,
+                    )
+                    chosen = diversity.chosen
+                    ledger_scores: Mapping[str, float] | None = diversity.distances
+                    if diversity.shortlist is not None and scores is not None:
+                        shortlists.append(
+                            {
+                                "round_index": round_index,
+                                "budget_fraction": float(fraction),
+                                "candidates": [
+                                    {"item_id": item, "score": float(scores[item])}
+                                    for item in diversity.shortlist
+                                ],
+                            }
+                        )
+                else:
+                    chosen = next_acquisition(
+                        arm,
+                        scores=scores,
+                        acquired=acquired,
+                        pool_ids=pool_ids,
+                        seed=config.seed,
+                        count=delta,
+                    )
+                    ledger_scores = scores
             except RoundsError as error:
                 raise ExperimentError(str(error)) from error
             entries.extend(
@@ -349,7 +402,7 @@ def run_experiment(
                     round_index=round_index,
                     budget_fraction=fraction,
                     chosen=chosen,
-                    scores=scores,
+                    scores=ledger_scores,
                 )
             )
             acquired |= set(chosen)
@@ -366,6 +419,16 @@ def run_experiment(
                 "entries": [asdict(entry) for entry in entries],
             },
         )
+        if arm == "hybrid":
+            write_json_no_clobber(
+                root / "hybrid-shortlists.json",
+                {
+                    "arm": arm,
+                    "seed": config.seed,
+                    "factor": HYBRID_FACTOR,
+                    "rounds": shortlists,
+                },
+            )
 
     evaluated: list[dict[str, Any]] = []
     for record in fits:
@@ -455,6 +518,9 @@ def run_experiment(
                 "training_rule": asdict(resolved_rule(runtime)),
             },
             "timing": timing,
+            "embeddings_sha256": (
+                embeddings.sha256 if needs_embeddings and embeddings is not None else None
+            ),
             "fits": evaluated,
             "naubc": naubc,
             "naubc_delta_vs_random": deltas,
@@ -493,7 +559,12 @@ def run_main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--seed", required=True, type=int)
     parser.add_argument("--device", required=True)
     parser.add_argument("--output-root", required=True)
-    parser.add_argument("--arms", default=",".join(REGISTERED_ARMS))
+    parser.add_argument("--arms", default=",".join(REGISTERED_ARMS[:3]))
+    parser.add_argument(
+        "--embeddings",
+        default=None,
+        help="embeddings-dinov2-small.npz (required for the coreset and hybrid arms)",
+    )
     add_runtime_arguments(parser)
     arguments = parser.parse_args(list(argv) if argv is not None else None)
 
@@ -513,6 +584,7 @@ def run_main(argv: Sequence[str] | None = None) -> int:
             batch_size=arguments.batch_size,
             warmup_steps=arguments.warmup_steps,
             rule=None if rule.steps is not None else rule,
+            embeddings_path=Path(arguments.embeddings) if arguments.embeddings else None,
         )
         _validate_config(config)
     except (ExperimentError, DatasetError, RuntimeError) as error:
