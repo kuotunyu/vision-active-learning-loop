@@ -10,11 +10,13 @@ from manim import (
     RIGHT,
     UP,
     Create,
+    DashedLine,
     Dot,
     FadeIn,
     FadeOut,
     GrowFromEdge,
     LaggedStart,
+    Polygon,
     Rectangle,
     ReplacementTransform,
     Scene,
@@ -191,7 +193,66 @@ def chapter_rules_segment(scene: Scene, ctx: LongContext, fade_out: bool = True)
         scene.play(FadeOut(*scene.mobjects), run_time=0.5)
 
 
+# ------------------------------------------------------------------ chapter 2: full-label reference
+
+PANEL_WIDTH = 6.3
+
+
+def _fit_panel(mobjects: list[Text], width: float = PANEL_WIDTH) -> None:
+    for mob in mobjects:
+        if mob.width > width:
+            mob.scale_to_fit_width(width)
+
+
+def chapter_reference_segment(scene: Scene, ctx: LongContext, fade_out: bool = True) -> None:
+    style = ctx.style
+    a, b = ctx.pair.rule_a, ctx.pair.rule_b
+    ref_b = [r.map50_95 for r in b.reference.values()]
+    ref_a = [r.map50_95 for r in a.reference.values()]
+    y_max = round(max(ref_b) * 1.2 + 0.005, 2)
+    axes = _axes(ctx.short, y_max).to_edge(LEFT, buff=0.7).shift(UP * 0.2)
+    lines = VGroup(*[_line(axes, b.mean_curve[arm], style.colors[arm], 4) for arm in ARMS])
+    legend = arm_legend(ctx).next_to(axes, UP, buff=0.3)
+    scene.play(Create(axes), FadeIn(legend), run_time=0.6)
+    scene.play(Create(lines), run_time=1.2)
+
+    ref_line = DashedLine(
+        axes.c2p(0, b.reference_mean), axes.c2p(0.22, b.reference_mean),
+        color=style.colors["muted"], stroke_width=3,
+    )
+    head = text_long(ctx, "ch2_ref_line", "label")
+    head_range = text_long(ctx, "ch2_ref_range", "small", style.colors["muted"])
+    _fit_panel([head, head_range])
+    panel = VGroup(head, head_range).arrange(DOWN, aligned_edge=LEFT, buff=0.15).to_edge(RIGHT, buff=0.6).shift(UP * 1.6)
+    scene.play(Create(ref_line), FadeIn(panel), run_time=1.0)
+    scene.wait(1.2)
+
+    ratio = text_long(ctx, "ch2_ratio", "caption")
+    _fit_panel([ratio])
+    ratio.next_to(panel, DOWN, buff=0.5, aligned_edge=LEFT)
+    scene.play(FadeIn(ratio), run_time=0.6)
+    scene.wait(2.0)
+
+    band = Polygon(
+        axes.c2p(0, min(ref_a)), axes.c2p(0.22, min(ref_a)), axes.c2p(0.22, max(ref_a)), axes.c2p(0, max(ref_a)),
+        fill_color=style.colors["muted"], fill_opacity=0.25, stroke_width=0,
+    )
+    ref_a_text = text_long(ctx, "ch2_ref_a", "caption", style.colors["start"])
+    ref_a_note = text_long(ctx, "ch2_ref_a_note", "small", style.colors["muted"])
+    VGroup(ref_a_text, ref_a_note).arrange(DOWN, buff=0.15).to_edge(DOWN, buff=0.4)
+    scene.play(FadeIn(band), FadeIn(ref_a_text), run_time=0.8)
+    scene.play(FadeIn(ref_a_note), run_time=0.5)
+    scene.wait(2.4)
+    if fade_out:
+        scene.play(FadeOut(*scene.mobjects), run_time=0.5)
+
+
 # ------------------------------------------------------------------ scenes
+
+
+class ChapterReference(Scene):
+    def construct(self) -> None:
+        chapter_reference_segment(self, make_long_context(), fade_out=False)
 
 
 class ChapterRules(Scene):
