@@ -6,6 +6,7 @@ RT-DETR（`PekingU/rtdetr_r18vd`）在 RDD 道路損壞資料上的主動學習�
 **現況（2026-09-11）：v0.2.1 跑完。** 在固定 epoch 規則（`fixed-epochs`，每個 fit `max(200, 18 × floor(N/8))` 步）下重跑三個 seed（30 個 fit），並為兩種訓練長度規則各跑三個全標籤參考基線（2,255 張）。
 entropy 與 margin 的配對 nAUBC 差對 random 在新規則下**仍然三個 seed 都是正的**（與固定 1,000 步的 v0.2-lite 相同，兩種規則各 3/3）；20% 預算時 entropy／margin 約達同 seed 參考基線的 0.49 到 0.63，random 0.30 到 0.45。
 一個負面結果：v0.2-lite 報告的「20% 最低類別 recall 三個 arm 區間不重疊」在固定 epoch 規則下不成立。
+**v0.3（2026-09-12）補齊 core-set 與 hybrid**（DINOv2-small 向量、貪婪 k-center；hybrid 先用 entropy 篩候選），同樣三個 seed、固定 epoch 規則、實驗內與 random 配對：hybrid 對 random 三個 seed 都為正（3/3）；core-set 在一個 seed 為負（2/3），依預先登記的規則寫「不一致」。五種策略的第一輪比較到此完成，見 [docs/results/2026-09-12-v0.3-diversity.md](docs/results/2026-09-12-v0.3-diversity.md)（含 12 對 random arm 的同機重播差，最大 0.0075，是讀所有配對差量值的尺度）。
 結果、每個設定的影像／框／負樣本數、步數與秒數、能說與不能說的界線見 [docs/results/2026-09-11-v0.2.1-training-rule.md](docs/results/2026-09-11-v0.2.1-training-rule.md)；磁碟核對腳本與輸出在 [docs/status/2026-09-11-v0.2.1-disk-verification.py](docs/status/2026-09-11-v0.2.1-disk-verification.py) 與同名 `.json`。
 
 ![主動學習迴圈（30 秒）：三個 arm 從同一個 46 張起點分岔，三個 seed 的 margin − random 配對差都為正](docs/media/val-loop-short.gif)

@@ -1,0 +1,283 @@
+{
+ "evidence_root": "<evidence-root>\\lite",
+ "running_lock_present": false,
+ "runs": [
+  {
+   "seed": 17,
+   "experiment_id": "lite-czech-ep18-div-s17-20260911T1411Z",
+   "embeddings_sha256": "53ff05766e7345e48c43281baa01d5db48d2e66594ae0f2ea83ea04aa9c072dd",
+   "timing": {
+    "evaluation_seconds": 230.40047469999809,
+    "fit_seconds": 2598.250331200001,
+    "scoring_seconds": 126.08579859999918
+   },
+   "naubc": {
+    "coreset": 0.013845541082879612,
+    "hybrid": 0.01665525633864994,
+    "random": 0.014528516196849181
+   },
+   "naubc_delta_vs_random": {
+    "coreset": -0.0006829751139695688,
+    "hybrid": 0.0021267401418007606
+   },
+   "fits": [
+    {
+     "fit": "shared-0.02",
+     "steps": 200,
+     "images": 46,
+     "elapsed_seconds": 90.68388330000016
+    },
+    {
+     "fit": "random-0.05",
+     "steps": 252,
+     "images": 113,
+     "elapsed_seconds": 121.39643939999951
+    },
+    {
+     "fit": "random-0.10",
+     "steps": 504,
+     "images": 226,
+     "elapsed_seconds": 239.16691440000068
+    },
+    {
+     "fit": "random-0.20",
+     "steps": 1008,
+     "images": 451,
+     "elapsed_seconds": 498.8363952999989
+    },
+    {
+     "fit": "coreset-0.05",
+     "steps": 252,
+     "images": 113,
+     "elapsed_seconds": 131.89661570000135
+    },
+    {
+     "fit": "coreset-0.10",
+     "steps": 504,
+     "images": 226,
+     "elapsed_seconds": 248.77157350000016
+    },
+    {
+     "fit": "coreset-0.20",
+     "steps": 1008,
+     "images": 451,
+     "elapsed_seconds": 494.8225661000015
+    },
+    {
+     "fit": "hybrid-0.05",
+     "steps": 252,
+     "images": 113,
+     "elapsed_seconds": 108.23146479999923
+    },
+    {
+     "fit": "hybrid-0.10",
+     "steps": 504,
+     "images": 226,
+     "elapsed_seconds": 217.11658139999963
+    },
+    {
+     "fit": "hybrid-0.20",
+     "steps": 1008,
+     "images": 451,
+     "elapsed_seconds": 447.3278972999997
+    }
+   ],
+   "selection_replay": {
+    "coreset": {
+     "replayed": 405,
+     "matches_ledger": true
+    },
+    "hybrid": {
+     "replayed": 405,
+     "matches_ledger": true
+    }
+   },
+   "failures": []
+  },
+  {
+   "seed": 29,
+   "experiment_id": "lite-czech-ep18-div-s29-20260911T1541Z",
+   "embeddings_sha256": "53ff05766e7345e48c43281baa01d5db48d2e66594ae0f2ea83ea04aa9c072dd",
+   "timing": {
+    "evaluation_seconds": 232.54842759999156,
+    "fit_seconds": 2830.3625910000083,
+    "scoring_seconds": 132.70229930000278
+   },
+   "naubc": {
+    "coreset": 0.013269215191803956,
+    "hybrid": 0.012735051330917352,
+    "random": 0.009958436343738573
+   },
+   "naubc_delta_vs_random": {
+    "coreset": 0.003310778848065382,
+    "hybrid": 0.002776614987178778
+   },
+   "fits": [
+    {
+     "fit": "shared-0.02",
+     "steps": 200,
+     "images": 46,
+     "elapsed_seconds": 92.59438910000245
+    },
+    {
+     "fit": "random-0.05",
+     "steps": 252,
+     "images": 113,
+     "elapsed_seconds": 116.25109109999903
+    },
+    {
+     "fit": "random-0.10",
+     "steps": 504,
+     "images": 226,
+     "elapsed_seconds": 236.92963010000312
+    },
+    {
+     "fit": "random-0.20",
+     "steps": 1008,
+     "images": 451,
+     "elapsed_seconds": 514.9212325999979
+    },
+    {
+     "fit": "coreset-0.05",
+     "steps": 252,
+     "images": 113,
+     "elapsed_seconds": 143.84123099999852
+    },
+    {
+     "fit": "coreset-0.10",
+     "steps": 504,
+     "images": 226,
+     "elapsed_seconds": 283.31364360000225
+    },
+    {
+     "fit": "coreset-0.20",
+     "steps": 1008,
+     "images": 451,
+     "elapsed_seconds": 564.8209429000017
+    },
+    {
+     "fit": "hybrid-0.05",
+     "steps": 252,
+     "images": 113,
+     "elapsed_seconds": 138.04115300000194
+    },
+    {
+     "fit": "hybrid-0.10",
+     "steps": 504,
+     "images": 226,
+     "elapsed_seconds": 271.9672719000009
+    },
+    {
+     "fit": "hybrid-0.20",
+     "steps": 1008,
+     "images": 451,
+     "elapsed_seconds": 467.68200570000045
+    }
+   ],
+   "selection_replay": {
+    "coreset": {
+     "replayed": 405,
+     "matches_ledger": true
+    },
+    "hybrid": {
+     "replayed": 405,
+     "matches_ledger": true
+    }
+   },
+   "failures": []
+  },
+  {
+   "seed": 43,
+   "experiment_id": "lite-czech-ep18-div-s43-20260911T1712Z",
+   "embeddings_sha256": "53ff05766e7345e48c43281baa01d5db48d2e66594ae0f2ea83ea04aa9c072dd",
+   "timing": {
+    "evaluation_seconds": 227.26772080000592,
+    "fit_seconds": 2564.515389599994,
+    "scoring_seconds": 95.71893070000078
+   },
+   "naubc": {
+    "coreset": 0.01155868735345312,
+    "hybrid": 0.016320618036983925,
+    "random": 0.007569830363827932
+   },
+   "naubc_delta_vs_random": {
+    "coreset": 0.003988856989625189,
+    "hybrid": 0.008750787673155992
+   },
+   "fits": [
+    {
+     "fit": "shared-0.02",
+     "steps": 200,
+     "images": 46,
+     "elapsed_seconds": 89.87375020000036
+    },
+    {
+     "fit": "random-0.05",
+     "steps": 252,
+     "images": 113,
+     "elapsed_seconds": 107.62932860000001
+    },
+    {
+     "fit": "random-0.10",
+     "steps": 504,
+     "images": 226,
+     "elapsed_seconds": 224.3550740999999
+    },
+    {
+     "fit": "random-0.20",
+     "steps": 1008,
+     "images": 451,
+     "elapsed_seconds": 470.69127129999833
+    },
+    {
+     "fit": "coreset-0.05",
+     "steps": 252,
+     "images": 113,
+     "elapsed_seconds": 118.78498109999782
+    },
+    {
+     "fit": "coreset-0.10",
+     "steps": 504,
+     "images": 226,
+     "elapsed_seconds": 240.5809539999973
+    },
+    {
+     "fit": "coreset-0.20",
+     "steps": 1008,
+     "images": 451,
+     "elapsed_seconds": 473.03642749999926
+    },
+    {
+     "fit": "hybrid-0.05",
+     "steps": 252,
+     "images": 113,
+     "elapsed_seconds": 120.6097665999987
+    },
+    {
+     "fit": "hybrid-0.10",
+     "steps": 504,
+     "images": 226,
+     "elapsed_seconds": 231.54823620000025
+    },
+    {
+     "fit": "hybrid-0.20",
+     "steps": 1008,
+     "images": 451,
+     "elapsed_seconds": 487.40560000000187
+    }
+   ],
+   "selection_replay": {
+    "coreset": {
+     "replayed": 405,
+     "matches_ledger": true
+    },
+    "hybrid": {
+     "replayed": 405,
+     "matches_ledger": true
+    }
+   },
+   "failures": []
+  }
+ ],
+ "total_failures": 0
+}
