@@ -8,6 +8,10 @@ entropy 與 margin 的配對 nAUBC 差對 random 在新規則下**仍然三個 s
 一個負面結果：v0.2-lite 報告的「20% 最低類別 recall 三個 arm 區間不重疊」在固定 epoch 規則下不成立。
 結果、每個設定的影像／框／負樣本數、步數與秒數、能說與不能說的界線見 [docs/results/2026-09-11-v0.2.1-training-rule.md](docs/results/2026-09-11-v0.2.1-training-rule.md)；磁碟核對腳本與輸出在 [docs/status/2026-09-11-v0.2.1-disk-verification.py](docs/status/2026-09-11-v0.2.1-disk-verification.py) 與同名 `.json`。
 
+![主動學習迴圈（30 秒）：三個 arm 從同一個 46 張起點分岔，三個 seed 的 margin − random 配對差都為正](docs/media/val-loop-short.gif)
+
+上面的動畫由 [docs/media/manim/](docs/media/manim/) 渲染，數字直接讀自 `docs/results/` 的 summary 與收據；它只做說明，不是證據。
+
 上一輪 v0.2-lite（2026-09-09，固定 1,000 步）的三 seed 結果原樣保留：[docs/results/2026-09-09-lite-czech-three-seeds.md](docs/results/2026-09-09-lite-czech-three-seeds.md)。
 v0.2.1 的預先登記協定（規則、常數、判定條件，看到結果前後未改）在 [docs/superpowers/specs/2026-09-10-val-v0.2.1-training-rule-protocol.md](docs/superpowers/specs/2026-09-10-val-v0.2.1-training-rule-protocol.md)；
 開始前的 CPU sanity audit（含 seed 43 跑了兩次這件事，當整條 pipeline 的同機重播對照）在 [docs/status/2026-09-10-lite-sanity-audit.md](docs/status/2026-09-10-lite-sanity-audit.md)；
