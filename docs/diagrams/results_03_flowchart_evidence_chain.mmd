@@ -1,0 +1,23 @@
+%% Source of the fenced block in docs/results/2026-09-11-v0.2.1-training-rule.md（§2 從磁碟核對過的事）. Solid edges are fields that bind one file to another; dotted edges are what 2026-09-11-v0.2.1-disk-verification.py recomputes and compares.
+flowchart TD
+    MAN["manifest.json<br/>SHA-256 3d961040…9388d"] -->|manifest_sha256| XR["experiment-receipt.json<br/>seed、pool 2,255、test 574、budgets、nAUBC"]
+    PIN["PekingU/rtdetr_r18vd @ cc5b50f3…<br/>四類 reset 後 model_sha256 = bb736d53…"] -->|model_sha256| FR
+    XR -->|receipt_path × 10| FR["fits/arm-fraction/fit-receipt.json<br/>steps、epochs_started、training_rule<br/>allowlisted_backward_warnings、sdpa_backend"]
+    FR -->|checkpoint_sha256| CK["checkpoint.pt（不進 git）<br/>位元組的 SHA-256"]
+    XR -->|checkpoint_sha256 同一值| CK
+    XR --> LG["ledger-random／entropy／margin.json<br/>405 筆 = 67 + 113 + 225，item_id 不重複"]
+    XR --> MC["metrics.csv、curve.svg<br/>每個 fit 在凍結 test 的 mAP50-95"]
+    RM["metrics-reference-1.00.json<br/>全池 fit，同一 test"] --> SUM
+    XR -->|三個 seed| SUM["summary.json、summary.csv<br/>nAUBC、配對差、範圍、相對參考基線"]
+
+    VER["disk-verification.py"] -.->|重算 SHA-256，三方比對| CK
+    VER -.->|步數依規則、epoch、warning 恰 9、MATH| FR
+    VER -.->|405 筆巢狀、random 序同 v0.2-lite| LG
+    VER -.->|manifest 雜湊、恰 10 個 fit| XR
+
+    classDef file fill:#E6E6FA,stroke:#333,stroke-width:2px,color:#1A1A5E
+    classDef bin fill:#D3D3D3,stroke:#333,stroke-width:2px,color:#000
+    classDef check fill:#90EE90,stroke:#333,stroke-width:2px,color:#0B3D0B
+    class MAN,XR,FR,LG,MC,RM,SUM,PIN file
+    class CK bin
+    class VER check
