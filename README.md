@@ -33,6 +33,33 @@ v0.2.1 的預先登記協定（規則、常數、判定條件，看到結果前�
 
 ## 程式碼裡有什麼
 
+整條 lite pipeline 與每個檔案從哪裡來。節點是實際註冊的 `val lite` 命令與它們寫出的檔案；圖源在 [docs/diagrams/](docs/diagrams/)，改程式時一起改。
+
+```mermaid
+flowchart TD
+    M["manifest.json（切分與標註）<br/>public-pool.json（無標籤的 pool 視圖）"] --> B["val lite baseline<br/>共享 2% 起點 fit（46 張）"]
+    B --> BM["metrics-shared-0.02.json<br/>fits/shared-0.02/fit-receipt.json + checkpoint.pt"]
+    BM --> G1{"val lite gate<br/>loss 前 10% 中位數 > 後 10%？<br/>allowlist warning 恰 9？"}
+    G1 -->|FAIL：exit 2| STOP["停止：不重試、不覆寫<br/>failure.json + transcript log"]
+    G1 -->|PASS| R["val lite reference（v0.2.1）<br/>pool 全部 2,255 張的 fit"]
+    R --> RM["metrics-reference-1.00.json<br/>fits/reference-1.00/fit-receipt.json"]
+    RM --> G2{"val lite gate --role reference"}
+    G2 -->|FAIL：exit 2| STOP
+    G2 -->|PASS| RUN["val lite run --rule fixed-steps／fixed-epochs<br/>3 arm × 3 輪：打分 → 選前 k → fit → 評估<br/>random 凍結序；entropy／margin 依分數"]
+    RUN --> OUT["metrics.csv、curve.svg<br/>ledger-random／entropy／margin.json<br/>experiment-receipt.json"]
+    OUT --> S["val lite summarize（三 seed，--reference）<br/>summary.json、summary.csv、mean-curve.svg"]
+    S --> V["docs/status/2026-09-11-v0.2.1-disk-verification.py<br/>雜湊、步數、warning、ledger 巢狀"]
+
+    classDef cmd fill:#90EE90,stroke:#333,stroke-width:2px,color:#0B3D0B
+    classDef file fill:#E6E6FA,stroke:#333,stroke-width:2px,color:#1A1A5E
+    classDef gate fill:#FFD700,stroke:#333,stroke-width:2px,color:#000
+    classDef stop fill:#FFB6C1,stroke:#DC143C,stroke-width:2px,color:#000
+    class B,R,RUN,S,V cmd
+    class M,BM,RM,OUT file
+    class G1,G2 gate
+    class STOP stop
+```
+
 `val` CLI（`src/vision_active_learning_loop/`）目前有 8 個命令，全部是 Wave 0：
 
 | 命令 | 作用 | 實際在 GPU 跑過 |
