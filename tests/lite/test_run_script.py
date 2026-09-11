@@ -120,3 +120,23 @@ def test_dry_run_fails_closed_on_a_missing_input(tmp_path: Path) -> None:
 
     assert completed.returncode == 3
     assert "MISSING manifest" in completed.stdout
+
+
+@requires_powershell
+def test_dry_run_reports_the_arms_and_requires_embeddings_for_diversity(tmp_path: Path) -> None:
+    missing = _run(
+        "-DryRun", "-Rule", "fixed-epochs", "-Arms", "random,coreset,hybrid", *_overrides(tmp_path)
+    )
+    assert missing.returncode == 3, missing.stdout + missing.stderr
+    assert "embeddings" in (missing.stdout + missing.stderr).lower()
+
+    npz = tmp_path / "embeddings-dinov2-small.npz"
+    npz.write_bytes(b"x")
+    completed = _run(
+        "-DryRun", "-Rule", "fixed-epochs", "-Arms", "random,coreset,hybrid",
+        "-Embeddings", str(npz), *_overrides(tmp_path / "second"),
+    )
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    assert "arms=random,coreset,hybrid" in completed.stdout
+    assert "embeddings=" in completed.stdout
+    assert "preflight ok" in completed.stdout

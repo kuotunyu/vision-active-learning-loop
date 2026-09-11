@@ -37,7 +37,9 @@ param(
     [switch]$ReferenceOnly,
     [switch]$SkipFullRun,
     [switch]$DryRun,
-    [string]$Manifest = '<evidence-root>\lite\data\czech\manifest.json',
+    [string]$Arms = 'random,entropy,margin',
+    [string]$Embeddings = '',
+    [string]$Manifest ='<evidence-root>\lite\data\czech\manifest.json',
     [string]$PublicView = '<evidence-root>\lite\data\czech\public-pool.json',
     [string]$Images = '<data-root>\rdd2022\czech\images',
     [string]$Snapshot = '<evidence-root>\wave0\model_cache\snapshots\PekingU--rtdetr_r18vd\cc5b50f32f0100caaa3bd275343e2fb17762c73d',
@@ -58,6 +60,12 @@ $WaitLimitSeconds = 4 * 3600
 $RuleTag = if ($Rule -eq 'fixed-epochs') { 'ep18-' } else { '' }
 if ($ReferenceOnly) { $Reference = $true; $SkipFullRun = $true }
 $RuntimeArguments = @('--rule', $Rule, '--steps', "$Steps", '--batch-size', "$BatchSize", '--warmup-steps', "$WarmupSteps")
+# v0.3: the diversity arms need the pool embeddings; their experiments get a `div` tag.
+$ArmList = @(($Arms -split ',') | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+$NeedsEmbeddings = ($ArmList -contains 'coreset') -or ($ArmList -contains 'hybrid')
+$ArmsTag = if ($NeedsEmbeddings) { 'div-' } else { '' }
+$RunArguments = @('--arms', ($ArmList -join ','))
+if ($Embeddings) { $RunArguments += @('--embeddings', $Embeddings) }
 
 function Write-Step([string]$Message) {
     Write-Host ("[{0}] {1}" -f (Get-Date).ToUniversalTime().ToString('HH:mm:ssZ'), $Message)
@@ -99,6 +107,17 @@ foreach ($check in $checks) {
     if (-not $exists) { $missing += 1 }
     Write-Host ("{0,-6} {1,-18} {2}" -f $(if ($exists) { 'ok' } else { 'MISSING' }), $check.Name, $check.Path)
 }
+if ($NeedsEmbeddings) {
+    if (-not $Embeddings) {
+        Write-Host 'MISSING embeddings         coreset/hybrid need -Embeddings <embeddings-dinov2-small.npz>'
+        $missing += 1
+    } elseif (-not (Test-Path -LiteralPath $Embeddings)) {
+        Write-Host ("MISSING embeddings         {0}" -f $Embeddings)
+        $missing += 1
+    } else {
+        Write-Host ("{0,-6} {1,-18} {2}" -f 'ok', 'embeddings', $Embeddings)
+    }
+}
 if ($missing -gt 0) {
     Write-Host "preflight failed: $missing input(s) missing"
     exit 3
@@ -113,7 +132,7 @@ if ($null -eq $sample) {
 } else {
     Write-Host ("gpu    used={0} MiB util={1}%  (free means <{2} MiB and <{3}%)" -f $sample.UsedMiB, $sample.Util, $GpuFreeMiB, $GpuFreeUtil)
 }
-Write-Host ("{0,-6} {1,-18} rule={2} seed={3} reference={4} referenceonly={5} fullrun={6}" -f 'ok', 'plan', $Rule, $Seed, [bool]$Reference, [bool]$ReferenceOnly, (-not $SkipFullRun))
+Write-Host ("{0,-6} {1,-18} rule={2} seed={3} reference={4} referenceonly={5} fullrun={6} arms={7} embeddings={8}" -f 'ok', 'plan', $Rule, $Seed, [bool]$Reference, [bool]$ReferenceOnly, (-not $SkipFullRun), ($ArmList -join ','), $(if ($Embeddings) { $Embeddings } else { 'none' }))
 if ($DryRun) {
     Write-Host 'preflight ok (dry run; nothing launched)'
     exit 0
@@ -129,7 +148,7 @@ try {
 }
 
 $stamp = (Get-Date).ToUniversalTime().ToString('yyyyMMddTHHmmZ')
-$transcript = Join-Path $OutputRoot ("run-lite-{0}seed{1}-{2}.log" -f $RuleTag, $Seed, $stamp)
+$transcript = Join-Path $OutputRoot ("run-lite-{0}{1}seed{2}-{3}.log" -f $RuleTag, $ArmsTag, $Seed, $stamp)
 Start-Transcript -Path $transcript -Append | Out-Null
 try {
     # ------------------------------------------------------------ GPU
@@ -192,10 +211,10 @@ try {
     if ($SkipFullRun) { Write-Step 'done; full experiment skipped (-SkipFullRun or -ReferenceOnly)'; exit 0 }
 
     # ------------------------------------------------------------ full experiment
-    $fullId = "lite-czech-$($RuleTag)s$Seed-$stamp"
-    Write-Step "full experiment $fullId starting (10 fits, rule=$Rule)"
+    $fullId = "lite-czech-$($RuleTag)$($ArmsTag)s$Seed-$stamp"
+    Write-Step "full experiment $fullId starting ($($ArmList.Count) arms: $($ArmList -join ','), rule=$Rule)"
     $started = Get-Date
-    $code = Invoke-Val (@('lite', 'run', '--manifest', $Manifest, '--public-view', $PublicView, '--images', $Images, '--snapshot', $Snapshot, '--experiment-id', $fullId, '--seed', "$Seed", '--device', $Device, '--output-root', $OutputRoot) + $RuntimeArguments)
+    $code = Invoke-Val (@('lite', 'run', '--manifest', $Manifest, '--public-view', $PublicView, '--images', $Images, '--snapshot', $Snapshot, '--experiment-id', $fullId, '--seed', "$Seed", '--device', $Device, '--output-root', $OutputRoot) + $RuntimeArguments + $RunArguments)
     Write-Step ("full experiment exit={0} elapsed={1:N0}s" -f $code, ((Get-Date) - $started).TotalSeconds)
     if ($code -ne 0) { Write-Step "full experiment failed; see $transcript"; exit 2 }
     Write-Step ("done. results: {0}" -f (Join-Path $OutputRoot $fullId))

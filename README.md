@@ -137,6 +137,18 @@ powershell -ExecutionPolicy Bypass -File "<repo>\scripts\run_lite_seed17.ps1" -W
 
 順序是：2% 基線（200 步）→ 門檻 → 參考基線（2,255 張、5,058 步）→ 門檻 → 完整實驗（10 個 fit）。輸出目錄帶 `ep18`：`lite-czech-ep18-s17-<時間戳>\`、`lite-czech-ref-fixed-epochs-s17-<時間戳>\`。pilot 通過後再加 `-Seed 29`、`-Seed 43`；規則 A 的參考基線用 `-Rule fixed-steps -ReferenceOnly`（只跑參考 fit 與它的門檻，不重跑已完成的固定步數基線與實驗）。
 
+v0.3（core-set 與 hybrid，協定在 [docs/superpowers/specs/2026-09-11-val-v0.3-diversity-protocol.md](docs/superpowers/specs/2026-09-11-val-v0.3-diversity-protocol.md)）先算一次 pool 的 embedding（GPU 空閒時約 1 分鐘；`--device cpu` 約 5 分鐘）：
+
+```powershell
+<repo>\.venv\Scripts\val.exe lite embed --manifest "<evidence-root>\lite\data\czech\manifest.json" --images "<data-root>\rdd2022\czech\images" --snapshot "<evidence-root>\wave0\model_cache\snapshots\facebook--dinov2-small\ed25f3a31f01632728cabb09d1542f84ab7b0056" --output-dir "<evidence-root>\lite\data\czech" --device cuda
+```
+
+再用同一支啟動器跑 `random + coreset + hybrid`（實驗 id 帶 `div`；`-Seed 29`、`-Seed 43` 同理）：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File "<repo>\scripts\run_lite_seed17.ps1" -WaitForGpu -Rule fixed-epochs -Arms random,coreset,hybrid -Embeddings "<evidence-root>\lite\data\czech\embeddings-dinov2-small.npz"
+```
+
 腳本會依序：共享 2% 基線 fit 與評估 → §8 門檻（loss 下降、9 個 allowlist warning）→ 完整實驗（3 arm × 3 輪，共 10 個 fit）。任一步失敗就停，不重試、不覆寫；`RUNNING.lock` 防止同時跑兩份。全部輸出與逐字紀錄在 `<evidence-root>\lite\`：`lite-czech-s17-<時間戳>\{metrics.csv, curve.svg, ledger-*.json, experiment-receipt.json}` 與 `run-lite-seed17-<時間戳>.log`。
 
 啟動器的實際順序、退出碼與停止點，由 `scripts/run_lite_seed17.ps1` 導出：
