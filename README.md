@@ -7,7 +7,7 @@ RT-DETR（`PekingU/rtdetr_r18vd`）在 RDD 道路損壞資料上的主動學習�
 entropy 與 margin 的配對 nAUBC 差對 random **三個 seed 都是正的**；20% 預算時最低類別 recall 三個 arm 區間不重疊（margin 是 random 的 2.6 到 4.7 倍）。
 結果、能說與不能說的界線見 [docs/results/2026-09-09-lite-czech-three-seeds.md](docs/results/2026-09-09-lite-czech-three-seeds.md)。
 
-**下一輪（2026-09-10，v0.2.1，GPU 尚未執行）**：驗證上述優勢是否對訓練長度規則穩健，並加入全標籤參考基線。
+**下一輪（2026-09-10，v0.2.1，GPU 尚未執行；2026-09-11 暫停，接續步驟見 [docs/status/2026-09-11-v0.2.1-handoff.md](docs/status/2026-09-11-v0.2.1-handoff.md)）**：驗證上述優勢是否對訓練長度規則穩健，並加入全標籤參考基線。
 預先登記的規則、常數與判定條件在 [docs/superpowers/specs/2026-09-10-val-v0.2.1-training-rule-protocol.md](docs/superpowers/specs/2026-09-10-val-v0.2.1-training-rule-protocol.md)；
 開始前的 CPU sanity audit（含一個之前沒記錄的事實：seed 43 跑了兩次，可當整條 pipeline 的同機重播對照）在 [docs/status/2026-09-10-lite-sanity-audit.md](docs/status/2026-09-10-lite-sanity-audit.md)。
 原 Wave 0 分支停在模型契約與單步訓練可行性；復活工作依 v0.2-lite 協定進行。
