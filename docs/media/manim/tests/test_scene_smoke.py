@@ -7,7 +7,7 @@ import pytest
 
 PROJECT = Path(__file__).resolve().parents[1]
 SHORT_SCENES = ["TitleSegment", "PoolSegment", "LoopSegment", "CurveSegment", "OutroSegment", "ValLoopShort"]
-LONG_SCENES = ["ChapterRules", "ChapterReference"]
+LONG_SCENES = ["ChapterRules", "ChapterReference", "ChapterRecall"]
 
 pytestmark = pytest.mark.slow
 

@@ -9,6 +9,7 @@ from manim import (
     LEFT,
     RIGHT,
     UP,
+    Axes,
     Create,
     DashedLine,
     Dot,
@@ -16,6 +17,7 @@ from manim import (
     FadeOut,
     GrowFromEdge,
     LaggedStart,
+    Line,
     Polygon,
     Rectangle,
     ReplacementTransform,
@@ -247,7 +249,91 @@ def chapter_reference_segment(scene: Scene, ctx: LongContext, fade_out: bool = T
         scene.play(FadeOut(*scene.mobjects), run_time=0.5)
 
 
+# ------------------------------------------------------------------ chapter 3: minimum-class recall
+
+ARM_X = {"random": 1.0, "entropy": 2.0, "margin": 3.0}
+
+
+def _recall_axes(ctx: LongContext, y_max: float) -> Axes:
+    axes = Axes(
+        x_range=[0, 4, 1],
+        y_range=[0, y_max, 0.1],
+        x_length=6.0,
+        y_length=4.0,
+        tips=False,
+        axis_config={"include_numbers": False, "stroke_color": ctx.style.colors["muted"]},
+    )
+    axes.x_axis.add_labels({ARM_X[arm]: _tick(ctx.short, arm) for arm in ARMS}, font_size=ctx.style.sizes["small"])
+    labels = {}
+    value = 0.1
+    while value <= y_max + 1e-9:
+        labels[round(value, 6)] = _tick(ctx.short, f"{value:.1f}")
+        value = round(value + 0.1, 6)
+    axes.y_axis.add_labels(labels, font_size=ctx.style.sizes["small"])
+    return axes
+
+
+def _recall_marks(ctx: LongContext, axes: Axes, data: ExplainerData) -> tuple[VGroup, VGroup]:
+    """Dots per (arm, seed) and a bracket per arm spanning min..max."""
+    dots, brackets = VGroup(), VGroup()
+    offsets = [-0.18, 0.0, 0.18]
+    for arm in ARMS:
+        values = data.arm_values_20("min_recall_20", arm)
+        color = ctx.style.colors[arm]
+        for offset, value in zip(offsets, values):
+            dots.add(Dot(axes.c2p(ARM_X[arm] + offset, value), radius=0.09, color=color))
+        x = ARM_X[arm] + 0.42
+        low, high = axes.c2p(x, min(values)), axes.c2p(x, max(values))
+        brackets.add(VGroup(
+            Line(low, high, color=color, stroke_width=3),
+            Line(low + LEFT * 0.08, low + RIGHT * 0.08, color=color, stroke_width=3),
+            Line(high + LEFT * 0.08, high + RIGHT * 0.08, color=color, stroke_width=3),
+        ))
+    return dots, brackets
+
+
+def chapter_recall_segment(scene: Scene, ctx: LongContext, fade_out: bool = True) -> None:
+    style = ctx.style
+    a, b = ctx.pair.rule_a, ctx.pair.rule_b
+    chapter_card(scene, ctx, "ch3_title", "ch3_sub")
+    y_max = round(max(v for d in (a, b) for arm in ARMS for v in d.arm_values_20("min_recall_20", arm)) * 1.25 + 0.05, 1)
+    axes = _recall_axes(ctx, y_max).to_edge(LEFT, buff=0.9).shift(UP * 0.2)
+    y_label = text_long(ctx, "ch3_sub", "small", style.colors["muted"]).next_to(axes, UP, buff=0.25)
+    scene.play(Create(axes), FadeIn(y_label), run_time=0.7)
+
+    dots_a, brackets_a = _recall_marks(ctx, axes, a)
+    head_a = text_long(ctx, "ch3_a", "label")
+    ranges_a = text_long(ctx, "ch3_a_ranges", "small", style.colors["muted"])
+    _fit_panel([head_a, ranges_a], 5.4)
+    panel_a = VGroup(head_a, ranges_a).arrange(DOWN, aligned_edge=LEFT, buff=0.2).to_edge(RIGHT, buff=0.5).shift(UP * 1.2)
+    scene.play(LaggedStart(*[FadeIn(dot, scale=0.5) for dot in dots_a], lag_ratio=0.05), run_time=1.0)
+    scene.play(Create(brackets_a), FadeIn(panel_a), run_time=0.9)
+    scene.wait(2.2)
+
+    dots_b, brackets_b = _recall_marks(ctx, axes, b)
+    head_b = text_long(ctx, "ch3_b", "label")
+    note_b = text_long(ctx, "ch3_b_note", "small", style.colors["muted"])
+    _fit_panel([head_b, note_b], 5.4)
+    VGroup(head_b, note_b).arrange(DOWN, aligned_edge=LEFT, buff=0.2).to_edge(RIGHT, buff=0.5).shift(DOWN * 1.0)
+    scene.play(
+        *[Transform(old, new) for old, new in zip(dots_a, dots_b)],
+        *[Transform(old, new) for old, new in zip(brackets_a, brackets_b)],
+        panel_a.animate.set_opacity(0.45),
+        run_time=1.4,
+    )
+    scene.play(FadeIn(head_b), run_time=0.5)
+    scene.play(FadeIn(note_b), run_time=0.5)
+    scene.wait(2.4)
+    if fade_out:
+        scene.play(FadeOut(*scene.mobjects), run_time=0.5)
+
+
 # ------------------------------------------------------------------ scenes
+
+
+class ChapterRecall(Scene):
+    def construct(self) -> None:
+        chapter_recall_segment(self, make_long_context(), fade_out=False)
 
 
 class ChapterReference(Scene):
