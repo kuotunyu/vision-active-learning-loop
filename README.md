@@ -139,6 +139,40 @@ powershell -ExecutionPolicy Bypass -File "<repo>\scripts\run_lite_seed17.ps1" -W
 
 腳本會依序：共享 2% 基線 fit 與評估 → §8 門檻（loss 下降、9 個 allowlist warning）→ 完整實驗（3 arm × 3 輪，共 10 個 fit）。任一步失敗就停，不重試、不覆寫；`RUNNING.lock` 防止同時跑兩份。全部輸出與逐字紀錄在 `<evidence-root>\lite\`：`lite-czech-s17-<時間戳>\{metrics.csv, curve.svg, ledger-*.json, experiment-receipt.json}` 與 `run-lite-seed17-<時間戳>.log`。
 
+啟動器的實際順序、退出碼與停止點，由 `scripts/run_lite_seed17.ps1` 導出：
+
+```mermaid
+sequenceDiagram
+    participant O as 👤 owner（PowerShell 5.1）
+    participant L as run_lite_seed17.ps1
+    participant N as nvidia-smi
+    participant V as val.exe
+    participant E as 證據目錄 lite\
+
+    O->>L: -WaitForGpu -Rule fixed-epochs -Reference [-Seed N]
+    L->>L: preflight：val、python、manifest、影像、模型快照
+    Note over L: 缺任一輸入 → exit 3（-DryRun 在此停止，exit 0）
+    L->>E: 建立 RUNNING.lock
+    Note over L,E: 鎖檔已存在 → exit 3，不啟動第二份
+    loop 每 30 秒取樣，直到連續兩次低於 4,000 MiB 且低於 5%
+        L->>N: 查記憶體與利用率
+        N-->>L: used、util
+    end
+    Note over L,N: 沒帶 -WaitForGpu 且 GPU 忙 → exit 4；等超過 4 小時 → exit 4
+    L->>V: lite baseline（共享 2% 起點）
+    V-->>E: metrics-shared-0.02.json、fit 收據、checkpoint.pt
+    L->>V: lite gate
+    Note over L,V: 任一階段回傳非 0 → exit 2，不重試、不覆寫
+    L->>V: lite reference（-Reference）
+    V-->>E: metrics-reference-1.00.json、fit 收據
+    L->>V: lite gate --role reference
+    Note over L: -ReferenceOnly：到此 exit 0，不跑完整實驗
+    L->>V: lite run（3 arm × 3 輪，10 個 fit）
+    V-->>E: metrics.csv、curve.svg、ledger-*.json、experiment-receipt.json
+    L->>E: 刪除 RUNNING.lock，關閉 transcript（run-lite-…log）
+    L-->>O: done. results: lite-czech-…（exit 0）
+```
+
 失敗時看兩個地方：逐字紀錄 `run-lite-seed17-<時間戳>.log`（val 的 stdout 與 stderr 都在裡面），以及實驗目錄下的 `failure.json`（基線失敗時寫入，含完整診斷）。2026-09-09 第一次 GPU 基線就是被 warning 契約擋下（11 個而非 9 個），原因與修正記在協定 §3。
 
 不要做的事：不要同時開第二個視窗再跑一次；不要在 GPU 有別的工作時去掉 `-WaitForGpu`（腳本會直接以代碼 4 退出，不會硬擠）。

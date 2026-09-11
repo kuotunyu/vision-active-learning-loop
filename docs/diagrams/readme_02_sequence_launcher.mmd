@@ -1,0 +1,30 @@
+%% Source of the fenced block in README.md（在 GPU 上跑）. Derived from scripts/run_lite_seed17.ps1: exit 3 preflight/lock, exit 4 GPU busy or 4 h timeout, exit 2 any stage, exit 0 done.
+sequenceDiagram
+    participant O as 👤 owner（PowerShell 5.1）
+    participant L as run_lite_seed17.ps1
+    participant N as nvidia-smi
+    participant V as val.exe
+    participant E as 證據目錄 lite\
+
+    O->>L: -WaitForGpu -Rule fixed-epochs -Reference [-Seed N]
+    L->>L: preflight：val、python、manifest、影像、模型快照
+    Note over L: 缺任一輸入 → exit 3（-DryRun 在此停止，exit 0）
+    L->>E: 建立 RUNNING.lock
+    Note over L,E: 鎖檔已存在 → exit 3，不啟動第二份
+    loop 每 30 秒取樣，直到連續兩次低於 4,000 MiB 且低於 5%
+        L->>N: 查記憶體與利用率
+        N-->>L: used、util
+    end
+    Note over L,N: 沒帶 -WaitForGpu 且 GPU 忙 → exit 4；等超過 4 小時 → exit 4
+    L->>V: lite baseline（共享 2% 起點）
+    V-->>E: metrics-shared-0.02.json、fit 收據、checkpoint.pt
+    L->>V: lite gate
+    Note over L,V: 任一階段回傳非 0 → exit 2，不重試、不覆寫
+    L->>V: lite reference（-Reference）
+    V-->>E: metrics-reference-1.00.json、fit 收據
+    L->>V: lite gate --role reference
+    Note over L: -ReferenceOnly：到此 exit 0，不跑完整實驗
+    L->>V: lite run（3 arm × 3 輪，10 個 fit）
+    V-->>E: metrics.csv、curve.svg、ledger-*.json、experiment-receipt.json
+    L->>E: 刪除 RUNNING.lock，關閉 transcript（run-lite-…log）
+    L-->>O: done. results: lite-czech-…（exit 0）
