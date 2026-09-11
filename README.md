@@ -20,9 +20,9 @@ v0.2.1 的預先登記協定（規則、常數、判定條件，看到結果前�
 
 | 項目 | 位置 |
 |---|---|
-| `main` | `8217a93`，只有設計規格與 8 個 wave 的計畫文件 |
+| `main` | `235e1df` 起包含 v0.2-lite 與 v0.2.1 的全部工作（2026-09-11 由 `codex/revival-entry-20260909` fast-forward 併入；之前只有設計規格與 8 個 wave 的計畫文件） |
 | 主要開發分支 `codex/wave0-model-contract` | `10d866c`，147 個 commit，已推到私人 GitHub |
-| 復活分支 `codex/revival-entry-20260909` | 由 `10d866c` 分出。加入 README、現況文件、v0.2-lite 協定與 `lite/` 模組；不改動任何既有 Wave 0 程式、測試、腳本或證據 |
+| 復活分支 `codex/revival-entry-20260909`（已併入 `main` 並於 2026-09-11 刪除） | 由 `10d866c` 分出。加入 README、現況文件、v0.2-lite 與 v0.2.1 協定、`lite/` 模組與兩輪結果；不改動任何既有 Wave 0 程式、測試、腳本或證據 |
 | GPU 執行證據（不進 Git） | `<evidence-root>\wave0`（2026-09-02 由 `D:\vision-active-learning-loop-artifacts` 搬入） |
 | 設計規格 | [docs/superpowers/specs/2026-08-23-vision-active-learning-loop-design.md](docs/superpowers/specs/2026-08-23-vision-active-learning-loop-design.md) |
 | 計畫索引 | [docs/superpowers/plans/2026-08-23-vision-active-learning-loop-plan-index.md](docs/superpowers/plans/2026-08-23-vision-active-learning-loop-plan-index.md) |
@@ -64,20 +64,20 @@ v0.2-lite 復活進度（`src/vision_active_learning_loop/lite/`）：
 設 `VAL_LITE_SNAPSHOT` 可另跑用真 RT-DETR 在 CPU 走完整路徑的整合測試（fit、評估、基線命令、完整實驗；已通過）。`scripts/run_lite_seed17.ps1` 是把以上串起來的唯一啟動點，有 Windows PowerShell 5.1 解析檢查與 dry-run 測試。
 
 真實資料：RDD2022 Czech train 子樹已於 2026-09-09 取得並建好 manifest（2,829 張、1,745 框、test 574／pool 2,255），來源、雜湊與計數見 [docs/data-card.md](docs/data-card.md)。
-三個 seed 的結果檔在 [docs/results/](docs/results/)：每個 seed 一個目錄，加上跨 seed 的 [summary-3seeds/](docs/results/summary-3seeds/)。
+兩輪的結果檔在 [docs/results/](docs/results/)：每個實驗與參考基線一個目錄，加上跨 seed 的 [summary-3seeds/](docs/results/summary-3seeds/)（v0.2-lite）、[summary-ep18-3seeds/](docs/results/summary-ep18-3seeds/) 與 [summary-3seeds-with-reference/](docs/results/summary-3seeds-with-reference/)（v0.2.1）。
 
 ## 在本機（CPU）檢查
 
 ```powershell
-cd .worktrees\wave0-model-contract
+cd "<repo>"
 .venv\Scripts\python.exe -m pytest -q -p no:cacheprovider
 ```
 
-- `.venv` 已是 Python 3.12.11 + torch 2.12.0+cu126 + transformers 5.15.0，與鎖定版本一致。
+- `.venv` 在 repo 根目錄（2026-09-11 移除 worktree 後以 `uv sync --frozen` 重建），Python 3.12.11 + torch 2.12.0+cu126 + transformers 5.15.0，與鎖定版本一致。
 - 測試不啟動 Docker、不做 GPU 運算，但 checkpoint 載入器會讀取 CUDA RNG 狀態，因此需要本機看得到一顆 GPU（不要設 `CUDA_VISIBLE_DEVICES=""`）。
 - 測試收集約需 4 分鐘（啟動器測試會解析大型 PowerShell 腳本）。
 - 2026-09-09 實測：773 passed、569 failed、14 skipped。569 個失敗全部是兩個啟動器測試檔找不到 `pwsh`（PowerShell 7 目前不在 PATH），Python 層測試全數通過。
-- 2026-09-10 `tests/lite`：209 passed、7 skipped（skipped 是設 `VAL_LITE_SNAPSHOT` 才跑的 CPU 整合測試）。
+- 2026-09-10 `tests/lite`：209 passed、7 skipped（skipped 是設 `VAL_LITE_SNAPSHOT` 才跑的 CPU 整合測試）；2026-09-11 在根目錄重建的環境：210 passed、7 skipped。
 - 用既有 12 個 GPU 副本在 CPU 上重算 A11 的 13 個配對指標，全部落在實務上限內；數字與腳本在 `docs/status/`。
 
 ## 跑 GPU 實驗（一條指令）
@@ -87,13 +87,13 @@ cd .worktrees\wave0-model-contract
 先只做檢查，不啟動任何東西：
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File "<repo>\.worktrees\wave0-model-contract\scripts\run_lite_seed17.ps1" -DryRun
+powershell -ExecutionPolicy Bypass -File "<repo>\scripts\run_lite_seed17.ps1" -DryRun
 ```
 
 每一行都是 `ok` 才往下。正式執行（GPU 被別的工作占用時會每 30 秒等一次，最多 4 小時）：
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File "<repo>\.worktrees\wave0-model-contract\scripts\run_lite_seed17.ps1" -WaitForGpu
+powershell -ExecutionPolicy Bypass -File "<repo>\scripts\run_lite_seed17.ps1" -WaitForGpu
 ```
 
 換 seed 就在後面加 `-Seed 29` 或 `-Seed 43`。腳本檔名固定不變，seed 由參數決定，輸出目錄與紀錄檔會自動帶上該 seed。
@@ -101,7 +101,7 @@ powershell -ExecutionPolicy Bypass -File "<repo>\.worktrees\wave0-model-contract
 v0.2.1（固定 epoch 規則加全標籤參考基線）用同一支腳本，多兩個參數；2026-09-11 已照下面的順序跑完三個 seed。pilot 先只跑 seed 17：
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File "<repo>\.worktrees\wave0-model-contract\scripts\run_lite_seed17.ps1" -WaitForGpu -Rule fixed-epochs -Reference
+powershell -ExecutionPolicy Bypass -File "<repo>\scripts\run_lite_seed17.ps1" -WaitForGpu -Rule fixed-epochs -Reference
 ```
 
 順序是：2% 基線（200 步）→ 門檻 → 參考基線（2,255 張、5,058 步）→ 門檻 → 完整實驗（10 個 fit）。輸出目錄帶 `ep18`：`lite-czech-ep18-s17-<時間戳>\`、`lite-czech-ref-fixed-epochs-s17-<時間戳>\`。pilot 通過後再加 `-Seed 29`、`-Seed 43`；規則 A 的參考基線用 `-Rule fixed-steps -ReferenceOnly`（只跑參考 fit 與它的門檻，不重跑已完成的固定步數基線與實驗）。
