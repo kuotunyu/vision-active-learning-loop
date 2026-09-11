@@ -8,21 +8,26 @@ from dataclasses import dataclass
 from manim import (
     DOWN,
     LEFT,
+    PI,
     RIGHT,
     UP,
     Arrow,
+    Axes,
     ChangeDecimalToValue,
+    Create,
     FadeIn,
     FadeOut,
     Indicate,
     Integer,
     LaggedStart,
+    Polygon,
     Rectangle,
     Scene,
     Square,
     SurroundingRectangle,
     Text,
     VGroup,
+    Write,
 )
 
 from val_explainer.copy import render_copy
@@ -283,6 +288,92 @@ def loop_segment(scene: Scene, ctx: Context, layout: PoolLayout, fade_out: bool 
     return lane_set
 
 
+# ------------------------------------------------------------------ curve
+
+X_TICKS = {0.02: "2%", 0.05: "5%", 0.10: "10%", 0.20: "20%"}
+
+
+def _tick(ctx: Context, label: str) -> Text:
+    return Text(label, font=ctx.style.font, font_size=ctx.style.sizes["small"], color=ctx.style.colors["muted"])
+
+
+def _axes(ctx: Context, y_max: float) -> Axes:
+    step = 0.01 if y_max <= 0.05 else 0.02
+    small = ctx.style.sizes["small"]
+    axes = Axes(
+        x_range=[0, 0.22, 0.05],
+        y_range=[0, y_max, step],
+        x_length=6.4,
+        y_length=4.0,
+        tips=False,
+        axis_config={"include_numbers": False, "stroke_color": ctx.style.colors["muted"]},
+    )
+    axes.x_axis.add_labels({x: _tick(ctx, label) for x, label in X_TICKS.items()}, font_size=small)
+    y_labels = {}
+    value = step
+    while value <= y_max + 1e-9:
+        y_labels[value] = _tick(ctx, f"{value:.2f}")
+        value = round(value + step, 6)
+    axes.y_axis.add_labels(y_labels, font_size=small)
+    return axes
+
+
+def _line(axes: Axes, points: list[tuple[float, float]], color: str, width: float, opacity: float = 1.0):
+    graph = axes.plot_line_graph(
+        x_values=[p[0] for p in points],
+        y_values=[p[1] for p in points],
+        line_color=color,
+        stroke_width=width,
+        add_vertex_dots=True,
+        vertex_dot_radius=0.05,
+        vertex_dot_style={"fill_color": color},
+    )
+    graph.set_opacity(opacity)
+    return graph
+
+
+def curve_segment(scene: Scene, ctx: Context, fade_out: bool = True) -> None:
+    style = ctx.style
+    data = ctx.data
+    first, *others = data.seeds
+    y_max = max(p[1] for seed in data.seeds for arm in ("random", "margin") for p in data.curves[seed][arm]) * 1.15
+    y_max = round(y_max + 0.005, 2)
+    axes = _axes(ctx, y_max).to_edge(LEFT, buff=0.7).shift(UP * 0.2)
+    x_label = text(ctx, "axis_x", "small", style.colors["muted"]).next_to(axes.x_axis, DOWN, buff=0.45)
+    y_label = text(ctx, "axis_y", "small", style.colors["muted"]).rotate(PI / 2).next_to(axes.y_axis, LEFT, buff=0.35)
+    scene.play(Create(axes), FadeIn(x_label), FadeIn(y_label), run_time=0.8)
+
+    rand = _line(axes, data.curves[first]["random"], style.colors["random"], 4)
+    marg = _line(axes, data.curves[first]["margin"], style.colors["margin"], 4)
+    scene.play(Create(rand), run_time=1.0)
+    scene.play(Create(marg), run_time=1.0)
+
+    forward = [axes.c2p(x, y) for x, y in data.curves[first]["margin"]]
+    backward = [axes.c2p(x, y) for x, y in reversed(data.curves[first]["random"])]
+    area = Polygon(*forward, *backward, fill_color=style.colors["margin"], fill_opacity=0.3, stroke_width=0)
+
+    panel = VGroup(text(ctx, "delta_title", "label", style.colors["margin"]))
+    lines = {seed: text(ctx, f"delta_seed_{seed}", "label") for seed in data.seeds}
+    for seed in data.seeds:
+        panel.add(lines[seed])
+    sign = text(ctx, "sign", "label", style.colors["start"])
+    note = text(ctx, "range_note", "small", style.colors["muted"])
+    panel.add(sign, note)
+    panel.arrange(DOWN, aligned_edge=LEFT, buff=0.22).to_edge(RIGHT, buff=0.6).shift(UP * 0.2)
+
+    scene.play(FadeIn(area), FadeIn(panel[0]), Write(lines[first]), run_time=1.2)
+    scene.wait(0.4)
+    for seed in others:
+        thin_r = _line(axes, data.curves[seed]["random"], style.colors["random"], 2, opacity=0.55)
+        thin_m = _line(axes, data.curves[seed]["margin"], style.colors["margin"], 2, opacity=0.55)
+        scene.play(Create(thin_r), Create(thin_m), Write(lines[seed]), run_time=1.1)
+    scene.play(FadeIn(sign, shift=UP * 0.1), run_time=0.5)
+    scene.play(FadeIn(note), run_time=0.4)
+    scene.wait(1.6)
+    if fade_out:
+        scene.play(FadeOut(*scene.mobjects), run_time=0.5)
+
+
 # ------------------------------------------------------------------ scenes
 
 
@@ -307,6 +398,11 @@ class LoopSegment(Scene):
         loop_segment(self, ctx, layout, fade_out=False)
 
 
+class CurveSegment(Scene):
+    def construct(self) -> None:
+        curve_segment(self, make_context(), fade_out=False)
+
+
 class ValLoopShort(Scene):
     def construct(self) -> None:
         ctx = make_context()
@@ -314,3 +410,4 @@ class ValLoopShort(Scene):
         layout = build_pool_layout(ctx)
         pool_segment(self, ctx, layout)
         loop_segment(self, ctx, layout)
+        curve_segment(self, ctx)
