@@ -76,7 +76,7 @@ def chapter_card(scene: Scene, ctx: LongContext, title_key: str, sub_key: str) -
     title = text_long(ctx, title_key, "title")
     sub = text_long(ctx, sub_key, "sub", ctx.style.colors["muted"]).next_to(title, DOWN, buff=0.4)
     scene.play(FadeIn(title, shift=UP * 0.2), FadeIn(sub), run_time=0.7)
-    scene.wait(1.3)
+    scene.wait(2.2)
     scene.play(FadeOut(title), FadeOut(sub), run_time=0.4)
 
 
@@ -156,7 +156,7 @@ def chapter_rules_segment(scene: Scene, ctx: LongContext, fade_out: bool = True)
         run_time=1.0,
     )
     scene.play(LaggedStart(*[FadeIn(label, shift=UP * 0.1) for label in epochs_a], lag_ratio=0.15), FadeIn(computed), run_time=0.9)
-    scene.wait(1.8)
+    scene.wait(5.0)
 
     steps_b = _epoch_labels(ctx, bars, "bar_steps_b", style.colors["text"])
     epochs_b = _epoch_labels(ctx, bars, "bar_epochs_b", style.colors["start"])
@@ -172,7 +172,7 @@ def chapter_rules_segment(scene: Scene, ctx: LongContext, fade_out: bool = True)
         FadeOut(computed),
         run_time=1.0,
     )
-    scene.wait(2.0)
+    scene.wait(5.5)
 
     scene.play(
         FadeOut(bars), FadeOut(ticks), FadeOut(counts), FadeOut(epochs_b), FadeOut(steps_b),
@@ -190,7 +190,7 @@ def chapter_rules_segment(scene: Scene, ctx: LongContext, fade_out: bool = True)
     scene.play(FadeIn(panel_a[3]), FadeIn(panel_b[3]), run_time=0.5)
     scene.play(FadeIn(both), run_time=0.5)
     scene.play(FadeIn(fair), run_time=0.4)
-    scene.wait(2.2)
+    scene.wait(7.0)
     if fade_out:
         scene.play(FadeOut(*scene.mobjects), run_time=0.5)
 
@@ -227,13 +227,13 @@ def chapter_reference_segment(scene: Scene, ctx: LongContext, fade_out: bool = T
     _fit_panel([head, head_range])
     panel = VGroup(head, head_range).arrange(DOWN, aligned_edge=LEFT, buff=0.15).to_edge(RIGHT, buff=0.6).shift(UP * 1.6)
     scene.play(Create(ref_line), FadeIn(panel), run_time=1.0)
-    scene.wait(1.2)
+    scene.wait(3.5)
 
     ratio = text_long(ctx, "ch2_ratio", "caption")
     _fit_panel([ratio])
     ratio.next_to(panel, DOWN, buff=0.5, aligned_edge=LEFT)
     scene.play(FadeIn(ratio), run_time=0.6)
-    scene.wait(2.0)
+    scene.wait(6.0)
 
     band = Polygon(
         axes.c2p(0, min(ref_a)), axes.c2p(0.22, min(ref_a)), axes.c2p(0.22, max(ref_a)), axes.c2p(0, max(ref_a)),
@@ -244,7 +244,7 @@ def chapter_reference_segment(scene: Scene, ctx: LongContext, fade_out: bool = T
     VGroup(ref_a_text, ref_a_note).arrange(DOWN, buff=0.15).to_edge(DOWN, buff=0.4)
     scene.play(FadeIn(band), FadeIn(ref_a_text), run_time=0.8)
     scene.play(FadeIn(ref_a_note), run_time=0.5)
-    scene.wait(2.4)
+    scene.wait(7.0)
     if fade_out:
         scene.play(FadeOut(*scene.mobjects), run_time=0.5)
 
@@ -308,7 +308,7 @@ def chapter_recall_segment(scene: Scene, ctx: LongContext, fade_out: bool = True
     panel_a = VGroup(head_a, ranges_a).arrange(DOWN, aligned_edge=LEFT, buff=0.2).to_edge(RIGHT, buff=0.5).shift(UP * 1.2)
     scene.play(LaggedStart(*[FadeIn(dot, scale=0.5) for dot in dots_a], lag_ratio=0.05), run_time=1.0)
     scene.play(Create(brackets_a), FadeIn(panel_a), run_time=0.9)
-    scene.wait(2.2)
+    scene.wait(6.5)
 
     dots_b, brackets_b = _recall_marks(ctx, axes, b)
     head_b = text_long(ctx, "ch3_b", "label")
@@ -323,12 +323,48 @@ def chapter_recall_segment(scene: Scene, ctx: LongContext, fade_out: bool = True
     )
     scene.play(FadeIn(head_b), run_time=0.5)
     scene.play(FadeIn(note_b), run_time=0.5)
-    scene.wait(2.4)
+    scene.wait(7.0)
     if fade_out:
         scene.play(FadeOut(*scene.mobjects), run_time=0.5)
 
 
+# ------------------------------------------------------------------ closing
+
+
+def closing_segment(scene: Scene, ctx: LongContext, fade_out: bool = True) -> None:
+    style = ctx.style
+    lines = VGroup(
+        text_long(ctx, "close_1", "label", style.colors["start"]),
+        text_long(ctx, "close_2", "label"),
+    ).arrange(DOWN, buff=0.35)
+    path = text_long(ctx, "close_path", "small", style.colors["muted"]).next_to(lines, DOWN, buff=0.6)
+    scene.play(LaggedStart(*[FadeIn(line, shift=UP * 0.15) for line in lines], lag_ratio=0.4), run_time=1.2)
+    scene.play(FadeIn(path), run_time=0.4)
+    scene.wait(8.0)
+    if fade_out:
+        scene.play(FadeOut(*scene.mobjects), run_time=0.6)
+
+
 # ------------------------------------------------------------------ scenes
+
+
+class Closing(Scene):
+    def construct(self) -> None:
+        closing_segment(self, make_long_context(), fade_out=False)
+
+
+class ValLoopLong(Scene):
+    def construct(self) -> None:
+        ctx = make_long_context()
+        title_segment(self, ctx.short)
+        layout = build_pool_layout(ctx.short)
+        pool_segment(self, ctx.short, layout)
+        loop_segment(self, ctx.short, layout)
+        curve_segment(self, ctx.short)
+        chapter_rules_segment(self, ctx)
+        chapter_reference_segment(self, ctx)
+        chapter_recall_segment(self, ctx)
+        closing_segment(self, ctx)
 
 
 class ChapterRecall(Scene):
