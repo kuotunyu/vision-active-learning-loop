@@ -1,5 +1,7 @@
 # Vision Active Learning Loop Implementation Plan Suite Index
 
+> **Historical 8-wave protocol.** Preserved for provenance; this is not the current task queue. The original Wave 0 gate did not pass. The separately approved lite research completed its v0.3 five-strategy first comparison on 2026-09-12; see the [current README](../../../README.md) and [v0.3 results](../../results/2026-09-12-v0.3-diversity.md).
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Deliver the approved active-learning experiment as eight review-gated implementation waves without allowing dataset access, formal evaluation, or publication to outrun their protocol prerequisites.

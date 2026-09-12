@@ -3,7 +3,9 @@
 RT-DETR（`PekingU/rtdetr_r18vd`）在 RDD 道路損壞資料上的主動學習實驗基礎建設。
 目標是比較 random / entropy / margin / core-set / hybrid 五種選樣策略在固定預算下的偵測表現。
 
-**現況（2026-09-11）：v0.2.1 跑完。** 在固定 epoch 規則（`fixed-epochs`，每個 fit `max(200, 18 × floor(N/8))` 步）下重跑三個 seed（30 個 fit），並為兩種訓練長度規則各跑三個全標籤參考基線（2,255 張）。
+**現況（2026-09-12）：v0.3 五策略第一輪比較完成，主要入口為 `main`。**
+
+前一輪 v0.2.1 已於 2026-09-11 跑完。在固定 epoch 規則（`fixed-epochs`，每個 fit `max(200, 18 × floor(N/8))` 步）下重跑三個 seed（30 個 fit），並為兩種訓練長度規則各跑三個全標籤參考基線（2,255 張）。
 entropy 與 margin 的配對 nAUBC 差對 random 在新規則下**仍然三個 seed 都是正的**（與固定 1,000 步的 v0.2-lite 相同，兩種規則各 3/3）；20% 預算時 entropy／margin 約達同 seed 參考基線的 0.49 到 0.63，random 0.30 到 0.45。
 一個負面結果：v0.2-lite 報告的「20% 最低類別 recall 三個 arm 區間不重疊」在固定 epoch 規則下不成立。
 **v0.3（2026-09-12）補齊 core-set 與 hybrid**（DINOv2-small 向量、貪婪 k-center；hybrid 先用 entropy 篩候選），同樣三個 seed、固定 epoch 規則、實驗內與 random 配對：hybrid 對 random 三個 seed 都為正（3/3）；core-set 在一個 seed 為負（2/3），依預先登記的規則寫「不一致」。五種策略的第一輪比較到此完成，見 [docs/results/2026-09-12-v0.3-diversity.md](docs/results/2026-09-12-v0.3-diversity.md)（含 12 對 random arm 的同機重播差，最大 0.0075，是讀所有配對差量值的尺度）。
@@ -25,8 +27,8 @@ v0.2.1 的預先登記協定（規則、常數、判定條件，看到結果前�
 
 | 項目 | 位置 |
 |---|---|
-| `main` | `235e1df` 起包含 v0.2-lite 與 v0.2.1 的全部工作（2026-09-11 由 `codex/revival-entry-20260909` fast-forward 併入；之前只有設計規格與 8 個 wave 的計畫文件） |
-| 主要開發分支 `codex/wave0-model-contract` | `10d866c`，147 個 commit，已推到私人 GitHub |
+| `main`（目前成果與重現入口） | 包含 v0.2-lite、v0.2.1 與已完成的 v0.3 五策略第一輪比較；`7cc404c` 記錄 v0.3 完成結果 |
+| 歷史 Wave 0 分支 `codex/wave0-model-contract`（非目前開發入口） | `10d866c`，147 個 commit，已推到私人 GitHub |
 | 復活分支 `codex/revival-entry-20260909`（已併入 `main` 並於 2026-09-11 刪除） | 由 `10d866c` 分出。加入 README、現況文件、v0.2-lite 與 v0.2.1 協定、`lite/` 模組與兩輪結果；不改動任何既有 Wave 0 程式、測試、腳本或證據 |
 | GPU 執行證據（不進 Git） | `<evidence-root>\wave0`（2026-09-02 由 `D:\vision-active-learning-loop-artifacts` 搬入） |
 | 設計規格 | [docs/superpowers/specs/2026-08-23-vision-active-learning-loop-design.md](docs/superpowers/specs/2026-08-23-vision-active-learning-loop-design.md) |
@@ -34,7 +36,7 @@ v0.2.1 的預先登記協定（規則、常數、判定條件，看到結果前�
 
 ## 程式碼裡有什麼
 
-整條 lite pipeline 與每個檔案從哪裡來。節點是實際註冊的 `val lite` 命令與它們寫出的檔案；圖源在 [docs/diagrams/](docs/diagrams/)，改程式時一起改。
+下圖說明預設 random／entropy／margin 三 arm 的 lite 路徑；v0.3 的 core-set／hybrid 擴充與執行方式見下方及 v0.3 結果報告。節點是實際註冊的 `val lite` 命令與它們寫出的檔案；圖源在 [docs/diagrams/](docs/diagrams/)，改程式時一起改。
 
 ```mermaid
 flowchart TD
@@ -61,7 +63,7 @@ flowchart TD
     class STOP stop
 ```
 
-`val` CLI（`src/vision_active_learning_loop/`）目前有 8 個命令，全部是 Wave 0：
+以下是原 Wave 0 CLI 的歷史命令與執行紀錄；目前 `val lite` 命令與已完成模組見下表：
 
 | 命令 | 作用 | 實際在 GPU 跑過 |
 |---|---|---|
@@ -73,9 +75,9 @@ flowchart TD
 | `diagnose grid-sample-attribution` | 把重播差異歸因到 `grid_sampler_2d_backward_cuda` | 是，結果 `ATTRIBUTED` |
 | `gate statistical-replay calibrate` / `validate` | A11 統計重播包絡（12+12 副本） | 否；6 次啟動皆在彙總前失敗 |
 
-沒有的東西：RDD 資料下載與 manifest、多輪訓練器、pycocotools 評估、預算曲線。
+原 Wave 0 尚未實作 RDD manifest、多輪訓練器、pycocotools 評估與預算曲線；這些已由下列 lite pipeline 完成。原 8-wave 正式協定與 lite 研究的驗證範圍分開保留。
 
-v0.2-lite 復活進度（`src/vision_active_learning_loop/lite/`）：
+已完成的 lite 模組（`src/vision_active_learning_loop/lite/`；表中測試數為各輪完成時的紀錄）：
 
 | 模組 | 狀態 |
 |---|---|
@@ -91,12 +93,13 @@ v0.2-lite 復活進度（`src/vision_active_learning_loop/lite/`）：
 | `gate.py` | 已完成。`val lite gate`：§8 門檻（基線 loss 前 10% 中位數 > 後 10% 中位數；CUDA 時 allowlist warning 恰為 9），輸出 `PASS/FAIL {...}`，退出碼 0／2／3；`--role reference` 對參考基線做同一門檻 |
 | `train.py` 的訓練規則（v0.2.1） | 已完成，2026-09-11 在 GPU 跑完三 seed。`TrainingRule`：`fixed-steps`（1,000 步，原協定）與 `fixed-epochs`（`max(200, 18 × floor(N/8))` 步）；所有 `val lite` 命令加 `--rule`；fit 收據記錄規則、實際步數、開始的 epoch 數與秒數；實驗收據記錄 fit／打分／評估各階段秒數 |
 | `reference.py`（v0.2.1） | 已完成，2026-09-11 兩種規則各跑三個 seed。`val lite reference`：用 pool 全部 2,255 張與全部標籤訓練一個 fit 並在凍結 test 評估，輸出 `metrics-reference-1.00.json`；不讀 test 做任何選擇 |
+| `diversity.py`（v0.3） | 已完成 DINOv2-small 向量、core-set 貪婪 k-center 與 entropy 候選後的 hybrid；三 seed 結果與限制見 [v0.3 報告](docs/results/2026-09-12-v0.3-diversity.md) |
 | `summary.py`（v0.2.1 擴充） | `val lite summarize` 加 `--reference`：報告訓練規則、各設定平均步數與秒數、跨 seed 的最小／最大**範圍**（不是信賴區間）、20% 相對參考基線的比例；對舊收據輸出的 nAUBC、配對差與曲線與已發布的 `summary-3seeds` 逐位元相同 |
 
 設 `VAL_LITE_SNAPSHOT` 可另跑用真 RT-DETR 在 CPU 走完整路徑的整合測試（fit、評估、基線命令、完整實驗；已通過）。`scripts/run_lite_seed17.ps1` 是把以上串起來的唯一啟動點，有 Windows PowerShell 5.1 解析檢查與 dry-run 測試。
 
 真實資料：RDD2022 Czech train 子樹已於 2026-09-09 取得並建好 manifest（2,829 張、1,745 框、test 574／pool 2,255），來源、雜湊與計數見 [docs/data-card.md](docs/data-card.md)。
-兩輪的結果檔在 [docs/results/](docs/results/)：每個實驗與參考基線一個目錄，加上跨 seed 的 [summary-3seeds/](docs/results/summary-3seeds/)（v0.2-lite）、[summary-ep18-3seeds/](docs/results/summary-ep18-3seeds/) 與 [summary-3seeds-with-reference/](docs/results/summary-3seeds-with-reference/)（v0.2.1）。
+三輪的結果檔在 [docs/results/](docs/results/)：每個實驗與參考基線一個目錄，加上跨 seed 的 [summary-3seeds/](docs/results/summary-3seeds/)（v0.2-lite）、[summary-ep18-3seeds/](docs/results/summary-ep18-3seeds/) 與 [summary-3seeds-with-reference/](docs/results/summary-3seeds-with-reference/)（v0.2.1），以及 [summary-ep18-div-3seeds/](docs/results/summary-ep18-div-3seeds/)（v0.3）。
 
 ## 在本機（CPU）檢查
 

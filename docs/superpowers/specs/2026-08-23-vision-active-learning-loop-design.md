@@ -1,5 +1,7 @@
 # Vision Active Learning Loop — Formal Design Specification
 
+> **Historical 8-wave protocol.** Preserved for provenance; this is not the current task queue. The original Wave 0 gate did not pass. The separately approved lite research completed its v0.3 five-strategy first comparison on 2026-09-12; see the [current README](../../../README.md) and [v0.3 results](../../results/2026-09-12-v0.3-diversity.md).
+
 **Status:** A11 independently calibrated same-host statistical-replay written-spec review pending
 **Milestone:** M0 complete for the original design; A6 remains frozen at `WAVE0_A6_NORMATIVE_FAIL / WAVE1_FORBIDDEN`; the A10-bound A7 campaign is closed at `WAVE0_A7_DIAGNOSTIC_ATTRIBUTED / WAVE0_NOT_PASSED / WAVE1_FORBIDDEN`
 **Owner approval date:** 2026-08-23

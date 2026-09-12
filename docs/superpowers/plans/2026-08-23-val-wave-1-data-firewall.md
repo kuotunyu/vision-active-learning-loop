@@ -1,5 +1,7 @@
 # Wave 1 Data and Oracle Firewall Implementation Plan
 
+> **Historical 8-wave protocol.** Preserved for provenance; this is not the current task queue. The original Wave 0 gate did not pass. The separately approved lite research completed its v0.3 five-strategy first comparison on 2026-09-12; see the [current README](../../../README.md) and [v0.3 results](../../results/2026-09-12-v0.3-diversity.md).
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Produce one license-compliant, globally de-duplicated, group-aware RDD manifest and prove that strategy/trainer processes cannot access hidden pool, source-test, or China Drone annotations.
