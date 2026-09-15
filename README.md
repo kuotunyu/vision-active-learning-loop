@@ -3,6 +3,20 @@
 RT-DETR（`PekingU/rtdetr_r18vd`）在 RDD 道路損壞資料上的主動學習實驗基礎建設。
 目標是比較 random / entropy / margin / core-set / hybrid 五種選樣策略在固定預算下的偵測表現。
 
+## 這個 repo 怎麼讀（五分鐘）
+
+問題只有一個：固定標註預算下，哪些選樣策略穩定優於 random。三輪實驗都用同一份 RDD2022 Czech manifest、同一個 pinned RT-DETR、同一台機器，每輪三個 seed；判定規則在看到結果前登記：主要量是同一次實驗內「arm − random」的配對 nAUBC 差，三個 seed 正負號一致（3/3）才算一致。
+
+| 輪次 | 一句結論 | 結果報告 |
+|---|---|---|
+| v0.2-lite（2026-09-09）固定 1,000 步 | entropy 與 margin 對 random 各 3/3 為正 | [2026-09-09-lite-czech-three-seeds.md](docs/results/2026-09-09-lite-czech-three-seeds.md) |
+| v0.2.1（2026-09-11）固定 epoch 規則，加全標籤參考基線 | 換規則後 entropy／margin 仍各 3/3；20% 預算約達參考基線的 0.49 到 0.63，random 0.30 到 0.45；v0.2-lite 的最低類別 recall 分離在新規則下消失（負面結果） | [2026-09-11-v0.2.1-training-rule.md](docs/results/2026-09-11-v0.2.1-training-rule.md) |
+| v0.3（2026-09-12）core-set 與 hybrid | hybrid 對 random 3/3；core-set 2/3，依規則寫「不一致」；12 對 random arm 的同機重播差最大 0.0075，是讀所有配對差量值的尺度 | [2026-09-12-v0.3-diversity.md](docs/results/2026-09-12-v0.3-diversity.md) |
+
+撐得住的是正負號一致，不是任何一個平均值：配對差的量值與同機重播差同一數量級。邊界：不宣稱降低人工標註成本（沒量標註時間，各 arm 揭露的框數不同）、不宣稱 deterministic 或跨機可重現、三個 seed 的最大／最小只叫「範圍」不是信賴區間；絕對 mAP 仍低（20% 最高 0.041，全標籤參考基線 0.066），不與外部數字比較。每份報告的「還不能宣稱什麼」一節寫得更細。
+
+要核對而不只是讀：每個 fit 有收據與 checkpoint 雜湊，[docs/status/](docs/status/) 的核對腳本從證據磁碟重算全部檢查，v0.3 連 core-set／hybrid 的選樣都能從存檔向量逐筆重放。只想看流程：下面的 30 秒動畫與兩張流程圖。五策略第一輪比較到此完成，沒有進行中的實驗；關閉範圍的決定與未排程的方向記在 [docs/status/2026-09-15-closure.md](docs/status/2026-09-15-closure.md)。
+
 **現況（2026-09-12）：v0.3 五策略第一輪比較完成，主要入口為 `main`。**
 
 前一輪 v0.2.1 已於 2026-09-11 跑完。在固定 epoch 規則（`fixed-epochs`，每個 fit `max(200, 18 × floor(N/8))` 步）下重跑三個 seed（30 個 fit），並為兩種訓練長度規則各跑三個全標籤參考基線（2,255 張）。
@@ -14,6 +28,7 @@ entropy 與 margin 的配對 nAUBC 差對 random 在新規則下**仍然三個 s
 ![主動學習迴圈（30 秒）：三個 arm 從同一個 46 張起點分岔，三個 seed 的 margin − random 配對差都為正](docs/media/val-loop-short.gif)
 
 上面的動畫由 [docs/media/manim/](docs/media/manim/) 渲染，數字直接讀自 `docs/results/` 的 summary 與收據；它只做說明，不是證據。
+長版（約 110 秒，1080p60；短版四段接三章：訓練長度規則、全標籤參考基線、最低類別 recall 的負面結果）不進 git，掛在 GitHub Release [v0.3.0](https://github.com/kuotunyu/vision-active-learning-loop/releases/tag/v0.3.0) 的附件；分鏡與畫面文字凍結在 [docs/superpowers/specs/2026-09-11-val-explainer-manim-long-design.md](docs/superpowers/specs/2026-09-11-val-explainer-manim-long-design.md)，同樣只做說明，不是證據。
 
 上一輪 v0.2-lite（2026-09-09，固定 1,000 步）的三 seed 結果原樣保留：[docs/results/2026-09-09-lite-czech-three-seeds.md](docs/results/2026-09-09-lite-czech-three-seeds.md)。
 v0.2.1 的預先登記協定（規則、常數、判定條件，看到結果前後未改）在 [docs/superpowers/specs/2026-09-10-val-v0.2.1-training-rule-protocol.md](docs/superpowers/specs/2026-09-10-val-v0.2.1-training-rule-protocol.md)；
