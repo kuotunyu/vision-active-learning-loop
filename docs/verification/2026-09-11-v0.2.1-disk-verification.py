@@ -78,7 +78,10 @@ def verify(seed: int, rule: str) -> dict:
     failures: list[str] = []
     report: dict = {"seed": seed, "rule": rule}
     if rule == "fixed-epochs":
-        baseline = only_dir(f"lite-czech-ep18-s{seed}-baseline-*", failures)
+        # The v0.3 runs later created baselines with the same name prefix; bind to this round's experiment stamp.
+        runs = sorted(glob.glob(str(EVIDENCE / f"lite-czech-ep18-s{seed}-2*")))
+        stamp = Path(runs[0]).name.rsplit("-", 1)[1] if len(runs) == 1 else "*"
+        baseline = only_dir(f"lite-czech-ep18-s{seed}-baseline-{stamp}", failures)
         if baseline is not None:
             metrics = load(baseline / "metrics-shared-0.02.json")
             fit = load(baseline / "fits" / "shared-0.02" / "fit-receipt.json")["normative"]

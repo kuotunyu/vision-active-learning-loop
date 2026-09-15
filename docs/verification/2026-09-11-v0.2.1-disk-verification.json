@@ -1,5 +1,5 @@
 {
- "evidence_root": "<evidence-root>\\lite",
+ "evidence_root": "<evidence-root>/lite",
  "running_lock_present": false,
  "runs": [
   {
