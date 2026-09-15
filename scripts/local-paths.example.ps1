@@ -1,6 +1,6 @@
 # Copy this file to scripts\local-paths.ps1 (git-ignored) and fill in the paths for your machine.
 # run_lite_seed17.ps1 dot-sources it; explicit parameters always win, the file only fills parameters left empty.
-# The two environment variables serve the verification scripts in docs\status\ (dot-source this file first).
+# The two environment variables serve the verification scripts in docs\verification\ (dot-source this file first).
 $LocalDefaults = @{
     Manifest   = '<evidence-root>\lite\data\czech\manifest.json'
     PublicView = '<evidence-root>\lite\data\czech\public-pool.json'

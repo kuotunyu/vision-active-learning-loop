@@ -1,4 +1,4 @@
-%% Source of the fenced block in README.md（在 GPU 上跑）. Derived from scripts/run_lite_seed17.ps1: exit 3 preflight/lock, exit 4 GPU busy or 4 h timeout, exit 2 any stage, exit 0 done.
+%% Standalone diagram (not embedded in README). Derived from scripts/run_lite_seed17.ps1: exit 3 preflight/lock, exit 4 GPU busy or 4 h timeout, exit 2 any stage, exit 0 done.
 sequenceDiagram
     participant O as 👤 owner（PowerShell 5.1）
     participant L as run_lite_seed17.ps1
@@ -7,7 +7,7 @@ sequenceDiagram
     participant E as 證據目錄 lite\
 
     O->>L: -WaitForGpu -Rule fixed-epochs -Reference [-Seed N]
-    L->>L: preflight：val、python、manifest、影像、模型快照
+    L->>L: preflight：由 local-paths.ps1 補齊路徑；val、python、manifest、影像、模型快照
     Note over L: 缺任一輸入 → exit 3（-DryRun 在此停止，exit 0）
     L->>E: 建立 RUNNING.lock
     Note over L,E: 鎖檔已存在 → exit 3，不啟動第二份

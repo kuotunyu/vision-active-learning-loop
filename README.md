@@ -41,7 +41,7 @@ flowchart TD
     G2 -->|PASS| RUN["val lite run --rule fixed-steps／fixed-epochs<br/>3 arm × 3 輪：打分 → 選前 k → fit → 評估<br/>random 凍結序；entropy／margin 依分數"]
     RUN --> OUT["metrics.csv、curve.svg<br/>ledger-random／entropy／margin.json<br/>experiment-receipt.json"]
     OUT --> S["val lite summarize（三 seed，--reference）<br/>summary.json、summary.csv、mean-curve.svg"]
-    S --> V["docs/status/2026-09-11-v0.2.1-disk-verification.py<br/>雜湊、步數、warning、ledger 巢狀"]
+    S --> V["docs/verification/2026-09-11-v0.2.1-disk-verification.py<br/>雜湊、步數、warning、ledger 巢狀"]
 
     classDef cmd fill:#90EE90,stroke:#333,stroke-width:2px,color:#0B3D0B
     classDef file fill:#E6E6FA,stroke:#333,stroke-width:2px,color:#1A1A5E
@@ -68,7 +68,7 @@ v0.3 在同一條路徑上加 `val lite embed`（pool 向量算一次、存檔�
 ## 3. 可重現性與驗證
 
 - 每個 fit 一份收據：步數與 epoch、`grid_sampler_2d_backward_cuda` warning 數（須恰為 9）、SDPA backend（MATH）、模型與 checkpoint 的 SHA-256、manifest 雜湊。
-- `docs/status/` 的核對腳本從證據磁碟重算全部檢查；v0.3 的 core-set 與 hybrid 選樣可從存檔向量逐筆重放。
+- `docs/verification/` 的核對腳本從證據磁碟重算全部檢查；v0.3 的 core-set 與 hybrid 選樣可從存檔向量逐筆重放。
 - 不宣稱 deterministic 或跨機可重現。原 Wave 0 的 gate 在位元界限下 FAIL，差異歸因到 `grid_sampler_2d_backward_cuda`；lite 研究不再要求位元相同，改以同機重播差作為量值尺度。
 - 收據、checkpoint 與逐字紀錄不進 git，放在 repo 之外的私有證據目錄（文件中寫作 `<evidence-root>`），另有一份逐檔雜湊核對過的備份。
 
@@ -84,7 +84,7 @@ CPU 測試（不做 GPU 運算，但 checkpoint 載入器會讀 CUDA RNG 狀態�
 
 2026-09-15：999 passed、17 skipped、0 failed，約 2.5 分鐘。沒有 `pwsh` 時兩個 Wave 0 啟動器測試檔整檔 skip。
 
-GPU 實驗只有一個啟動點 `scripts/run_lite_seed17.ps1`。先 dry-run，只檢查輸入，不啟動：
+GPU 實驗只有一個啟動點 `scripts/run_lite_seed17.ps1`（檔名沿用第一次 pilot，所有 seed 共用）。先 dry-run，只檢查輸入，不啟動：
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts\run_lite_seed17.ps1 -DryRun
@@ -106,7 +106,7 @@ v0.3 的向量先算一次（GPU 約 1 分鐘）：
 
 啟動器依序跑 2% 基線 → gate →（參考基線 → gate）→ 完整實驗（10 個 fit）。任一階段失敗即停，不重試、不覆寫；退出碼 2 為階段失敗、3 為 preflight 或 `RUNNING.lock`、4 為 GPU 忙碌。輸出在 `<evidence-root>\lite\` 的 `lite-czech-…\` 與 `run-lite-…log`；基線失敗時另寫 `failure.json`。不要同時開第二份。
 
-磁碟核對：先 `. .\scripts\local-paths.ps1`，再執行 `.venv\Scripts\python.exe docs\status\2026-09-11-v0.3-disk-verification.py`（v0.2.1 同理）。
+磁碟核對：先 `. .\scripts\local-paths.ps1`，再執行 `.venv\Scripts\python.exe docs\verification\2026-09-11-v0.3-disk-verification.py`（v0.2.1 同理）。
 
 ## 5. 限制
 
@@ -115,25 +115,21 @@ v0.3 的向量先算一次（GPU 約 1 分鐘）：
 - 最低類別 recall 不下結論；5% 預算兩種規則都無優勢。
 - 秒數不可比：執行期間與其他專案共用 GPU。
 - 原 8-wave 協定要求 Wave 0 PASS 才能碰資料，Wave 0 至今沒有 PASS；lite 研究依 2026-09-09 的復活評估另行界定前提，兩者的驗證範圍分開保留。
-- 本 repo 不放影像、標註、權重、checkpoint。程式碼 Apache-2.0；資料以 CC BY-SA 4.0 對待；模型授權由 `assets verify` 的登記檔記錄。
+- 本 repo 不放影像、標註、權重、checkpoint。程式碼 Apache-2.0；資料以 CC BY-SA 4.0 對待；模型的 pinned revision 與授權證據見 `docs/model-licenses.md`。
 
 ## 6. 文件
 
-| 文件 | 內容 |
+| 位置 | 內容 |
 |---|---|
 | [docs/results/2026-09-12-v0.3-diversity.md](docs/results/2026-09-12-v0.3-diversity.md) | v0.3 結果：core-set、hybrid、重播尺度、還不能宣稱什麼 |
 | [docs/results/2026-09-11-v0.2.1-training-rule.md](docs/results/2026-09-11-v0.2.1-training-rule.md) | v0.2.1 結果：兩種訓練規則、參考基線、負面結果 |
-| [docs/results/2026-09-09-lite-czech-three-seeds.md](docs/results/2026-09-09-lite-czech-three-seeds.md) | v0.2-lite 結果 |
+| [docs/results/2026-09-09-lite-czech-three-seeds.md](docs/results/2026-09-09-lite-czech-three-seeds.md) | v0.2-lite 結果；同目錄另有 seed 17 的單 seed 報告 |
 | [docs/results/](docs/results/) | 每個實驗與參考基線一個目錄；每輪一個 `summary-*/` |
-| [docs/superpowers/specs/2026-09-11-val-v0.3-diversity-protocol.md](docs/superpowers/specs/2026-09-11-val-v0.3-diversity-protocol.md) | v0.3 協定 |
-| [docs/superpowers/specs/2026-09-10-val-v0.2.1-training-rule-protocol.md](docs/superpowers/specs/2026-09-10-val-v0.2.1-training-rule-protocol.md) | v0.2.1 協定 |
-| [docs/superpowers/specs/2026-09-09-val-v0.2-lite-protocol.md](docs/superpowers/specs/2026-09-09-val-v0.2-lite-protocol.md) | v0.2-lite 協定，含可重現性宣稱的措辭 |
-| [docs/status/2026-09-11-v0.3-disk-verification.py](docs/status/2026-09-11-v0.3-disk-verification.py) | v0.3 磁碟核對，含選樣重放；同名 `.json` 為輸出 |
-| [docs/status/2026-09-11-v0.2.1-disk-verification.py](docs/status/2026-09-11-v0.2.1-disk-verification.py) | v0.2.1 磁碟核對；同名 `.json` 為輸出 |
-| [docs/status/2026-09-10-lite-sanity-audit.md](docs/status/2026-09-10-lite-sanity-audit.md) | 開跑前的 CPU sanity audit 與同機重播對照 |
-| [docs/status/2026-09-15-closure.md](docs/status/2026-09-15-closure.md) | 收尾：關閉的範圍、備份、公開前檢查 |
-| [docs/status/2026-09-09-revival-assessment.md](docs/status/2026-09-09-revival-assessment.md) | 從 Wave 0 到 lite 研究的評估 |
+| [docs/protocols/](docs/protocols/) | 三輪的預先登記協定：規則、常數、判定條件 |
+| [docs/verification/](docs/verification/) | 開跑前 sanity audit、兩輪磁碟核對、證據備份核對；每支腳本旁是同名 JSON 輸出 |
+| [docs/decisions/](docs/decisions/) | 從 Wave 0 轉向 lite 研究的評估；收尾、公開與路徑修補紀錄 |
 | [docs/data-card.md](docs/data-card.md) | 資料來源、雜湊、計數、授權 |
+| [docs/model-licenses.md](docs/model-licenses.md) | RT-DETR 與 DINOv2 的 pinned revision 與授權證據 |
 | [docs/diagrams/](docs/diagrams/) | Mermaid 圖源：pipeline、啟動器時序、證據鏈 |
-| [docs/media/manim/](docs/media/manim/) | 動畫專案；長版（110 秒，1080p60）在 [Release v0.3.0](https://github.com/kuotunyu/vision-active-learning-loop/releases/tag/v0.3.0) |
-| [docs/superpowers/specs/2026-08-23-vision-active-learning-loop-design.md](docs/superpowers/specs/2026-08-23-vision-active-learning-loop-design.md) | 原 8-wave 設計規格；計畫索引在同層 `plans/` |
+| [docs/media/manim/](docs/media/manim/) | 動畫專案與分鏡規格；長版（110 秒，1080p60）在 [Release v0.3.0](https://github.com/kuotunyu/vision-active-learning-loop/releases/tag/v0.3.0) |
+| [docs/archive/wave0/](docs/archive/wave0/) | 原 8-wave 設計規格與計畫、Wave 0 runbook、環境邊界、A11 離線診斷 |
