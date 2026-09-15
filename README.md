@@ -213,3 +213,4 @@ sequenceDiagram
 - 原 8-wave 協定要求 Wave 0 `PASS` 才能碰資料；Wave 0 至今沒有 `PASS`。復活評估的結論是這個前提可以重新界定，不必先完成 A11。
 - 證據根目錄已搬遷，A11 啟動器凍結的 64,306 檔歷史清單已無法重現，任何 A11 重跑都會在 preflight 停下。
 - 本 repo 不放 RDD 影像、標註、權重、checkpoint。
+- 程式碼授權 Apache-2.0（[LICENSE](LICENSE)）。資料（RDD2022，以 CC BY-SA 4.0 對待）的來源與雜湊見 [docs/data-card.md](docs/data-card.md)；模型權重（RT-DETR、DINOv2）的 revision、雜湊與授權由 `assets verify` 的登記檔記錄。
