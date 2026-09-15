@@ -15,6 +15,16 @@ requires_powershell = pytest.mark.skipif(
 )
 
 
+NO_LOCAL_PATHS = Path(__file__).with_name("no-local-paths.ps1")  # never created
+
+
+def _with_local_paths(arguments: tuple[str, ...]) -> list[str]:
+    """Keep every test independent of the developer's scripts/local-paths.ps1."""
+    if "-LocalPaths" in arguments:
+        return list(arguments)
+    return [*arguments, "-LocalPaths", str(NO_LOCAL_PATHS)]
+
+
 def _run(*arguments: str) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         [
@@ -25,7 +35,7 @@ def _run(*arguments: str) -> subprocess.CompletedProcess[str]:
             "Bypass",
             "-File",
             str(SCRIPT),
-            *arguments,
+            *_with_local_paths(arguments),
         ],
         capture_output=True,
         text=True,
@@ -140,3 +150,27 @@ def test_dry_run_reports_the_arms_and_requires_embeddings_for_diversity(tmp_path
     assert "arms=random,coreset,hybrid" in completed.stdout
     assert "embeddings=" in completed.stdout
     assert "preflight ok" in completed.stdout
+
+
+@requires_powershell
+def test_dry_run_without_inputs_or_local_paths_file_exits_3() -> None:
+    completed = _run("-DryRun")
+
+    assert completed.returncode == 3, completed.stdout + completed.stderr
+    assert "MISSING local paths" in completed.stdout
+    assert "-Manifest" in completed.stdout
+
+
+@requires_powershell
+def test_local_paths_file_fills_inputs_left_empty(tmp_path: Path) -> None:
+    pairs = _overrides(tmp_path)
+    values = dict(zip(pairs[0::2], pairs[1::2]))
+    local = tmp_path / "local-paths.ps1"
+    body = ["$LocalDefaults = @{"] + [f"    {flag[1:]} = '{value}'" for flag, value in values.items()] + ["}"]
+    local.write_text("\n".join(body) + "\n", encoding="utf-8")
+
+    completed = _run("-DryRun", "-LocalPaths", str(local))
+
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    assert "preflight ok (dry run; nothing launched)" in completed.stdout
+    assert str(tmp_path / "manifest.json") in completed.stdout

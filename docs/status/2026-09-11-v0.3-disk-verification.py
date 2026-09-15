@@ -22,6 +22,7 @@ import argparse
 import glob
 import hashlib
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -35,7 +36,9 @@ from vision_active_learning_loop.lite.diversity import (  # noqa: E402
 )
 from vision_active_learning_loop.lite.loop import shared_start_items  # noqa: E402
 
-EVIDENCE = Path(r"<evidence-root>/lite")
+if not os.environ.get("VAL_EVIDENCE_ROOT"):
+    sys.exit("set VAL_EVIDENCE_ROOT to the private evidence root; see scripts/local-paths.example.ps1")
+EVIDENCE = Path(os.environ["VAL_EVIDENCE_ROOT"]) / "lite"
 DATA = EVIDENCE / "data" / "czech"
 V02_LITE_MODEL_SHA256 = "bb736d5335079f9234a73724092b86433614fdbe7281e6b718161641e589a809"
 MANIFEST_SHA256 = "3d961040969e9008b1c534740f5c1c5b4f019c6394db7170acd99cddd8f9388d"
@@ -179,7 +182,7 @@ def main() -> int:
     parser.add_argument("--seeds", default="17,29,43")
     arguments = parser.parse_args()
     seeds = [int(s) for s in arguments.seeds.split(",") if s]
-    results = {"evidence_root": str(EVIDENCE), "running_lock_present": (EVIDENCE / "RUNNING.lock").exists(), "runs": []}
+    results = {"evidence_root": "<evidence-root>/lite", "running_lock_present": (EVIDENCE / "RUNNING.lock").exists(), "runs": []}
     total = 0
     for seed in seeds:
         report = verify(seed)

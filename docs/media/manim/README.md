@@ -31,6 +31,6 @@ powershell -ExecutionPolicy Bypass -File docs\media\manim\render.ps1 -Scene ValL
 
 長版 = 短版四段 ＋ 三章（訓練長度規則、全標籤參考基線、最低類別 recall 的負面結果）＋ 結尾卡；規格在 [../../superpowers/specs/2026-09-11-val-explainer-manim-long-design.md](../../superpowers/specs/2026-09-11-val-explainer-manim-long-design.md)。單章檢查：`uv run python -m manim -ql -s --media_dir media val_explainer/scenes_long.py <ChapterRules|ChapterReference|ChapterRecall|Closing>`。句子裡的主張（3/3、範圍互不重疊或重疊、欠訓）在 `render_copy_long` 內對資料驗證，資料變了會拒絕渲染而不是講錯。
 
-輸出：`docs/media/val-loop-short.gif`（進 git，≤ 8 MB）；mp4 複製到 `<evidence-root>\media\`（不進 git）。單段檢查用 `uv run python -m manim -ql -s --media_dir media val_explainer/scenes_short.py <TitleSegment|PoolSegment|LoopSegment|CurveSegment|OutroSegment>`，最後一幀輸出到 `media/images/scenes_short/`。
+輸出：`docs/media/val-loop-short.gif`（進 git，≤ 8 MB）；mp4 用 `-EvidenceMediaDir <目錄>` 複製到 repo 外（不進 git）。單段檢查用 `uv run python -m manim -ql -s --media_dir media val_explainer/scenes_short.py <TitleSegment|PoolSegment|LoopSegment|CurveSegment|OutroSegment>`，最後一幀輸出到 `media/images/scenes_short/`。
 
 字型：Microsoft JhengHei（備援 Noto Sans TC）。沒有 LaTeX 也能渲染：文字用 Pango `Text`，計數器的數字用 `DecimalNumber(mob_class=Text 子類別)`。

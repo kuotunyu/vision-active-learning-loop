@@ -16,6 +16,7 @@ from __future__ import annotations
 import csv
 import hashlib
 import json
+import os
 import random
 import sys
 from collections import Counter
@@ -31,8 +32,12 @@ from vision_active_learning_loop.lite.manifest import (  # noqa: E402
 )
 from vision_active_learning_loop.lite.rounds import budget_count  # noqa: E402
 
-ARTIFACTS = Path(r"<evidence-root>\lite")
-DATA = Path(r"<data-root>\rdd2022\czech")
+if not os.environ.get("VAL_EVIDENCE_ROOT"):
+    sys.exit("set VAL_EVIDENCE_ROOT to the private evidence root; see scripts/local-paths.example.ps1")
+ARTIFACTS = Path(os.environ["VAL_EVIDENCE_ROOT"]) / "lite"
+if not os.environ.get("VAL_DATA_ROOT"):
+    sys.exit("set VAL_DATA_ROOT to the RDD2022 data root; see scripts/local-paths.example.ps1")
+DATA = Path(os.environ["VAL_DATA_ROOT"]) / "rdd2022" / "czech"
 EXPERIMENTS = (
     "lite-czech-s17-20260909T1002Z",
     "lite-czech-s29-20260909T1145Z",

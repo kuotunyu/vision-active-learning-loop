@@ -1,0 +1,2 @@
+# Machine-specific inputs for scripts/run_lite_seed17.ps1; copy scripts/local-paths.example.ps1 and fill it in.
+scripts/local-paths.ps1

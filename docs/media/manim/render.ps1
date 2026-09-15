@@ -11,7 +11,7 @@ param(
     [switch]$Check,
     [ValidateSet('h', 'l')][string]$Quality = 'h',
     [ValidateSet('ValLoopShort', 'ValLoopLong')][string]$Scene = 'ValLoopShort',
-    [string]$EvidenceMediaDir = '<evidence-root>\media'
+    [string]$EvidenceMediaDir = ''
 )
 
 Set-StrictMode -Version 2.0
@@ -27,6 +27,15 @@ $GifOut = Join-Path (Split-Path -Parent $Project) 'val-loop-short.gif'
 $MaxGifBytes = 8MB
 $MaxSeconds = if ($IsLong) { 130.0 } else { 32.0 }
 $env:PYTHONDONTWRITEBYTECODE = '1'
+
+function Copy-ToEvidence([string]$Source) {
+    if (-not $EvidenceMediaDir) { Write-Host "mp4  kept at $Source (pass -EvidenceMediaDir to copy it out of the project)"; return }
+    if (-not (Test-Path -LiteralPath $EvidenceMediaDir)) { New-Item -ItemType Directory -Path $EvidenceMediaDir | Out-Null }
+    $stamp = (Get-Date).ToUniversalTime().ToString('yyyyMMddTHHmmZ')
+    $dest = Join-Path $EvidenceMediaDir "$OutputStem-$stamp.mp4"
+    Copy-Item -LiteralPath $Source -Destination $dest
+    Write-Host "mp4  -> $dest"
+}
 
 Push-Location $Project
 try {
@@ -49,11 +58,7 @@ try {
 
     if ($IsLong) {
         # portfolio video: mp4 only, no GIF, never committed
-        if (-not (Test-Path -LiteralPath $EvidenceMediaDir)) { New-Item -ItemType Directory -Path $EvidenceMediaDir | Out-Null }
-        $stamp = (Get-Date).ToUniversalTime().ToString('yyyyMMddTHHmmZ')
-        $dest = Join-Path $EvidenceMediaDir "$OutputStem-$stamp.mp4"
-        Copy-Item -LiteralPath $Mp4 -Destination $dest
-        Write-Host "mp4  -> $dest"
+        Copy-ToEvidence $Mp4
         exit 0
     }
 
@@ -75,11 +80,8 @@ try {
 
     Move-Item -LiteralPath $tmpGif -Destination $GifOut -Force
     Remove-Item -LiteralPath $palette -Force -ErrorAction SilentlyContinue
-    if (-not (Test-Path -LiteralPath $EvidenceMediaDir)) { New-Item -ItemType Directory -Path $EvidenceMediaDir | Out-Null }
-    $stamp = (Get-Date).ToUniversalTime().ToString('yyyyMMddTHHmmZ')
-    Copy-Item -LiteralPath $Mp4 -Destination (Join-Path $EvidenceMediaDir "$OutputStem-$stamp.mp4")
     Write-Host "gif  -> $GifOut"
-    Write-Host "mp4  -> $EvidenceMediaDir\$OutputStem-$stamp.mp4"
+    Copy-ToEvidence $Mp4
     exit 0
 } finally {
     Pop-Location

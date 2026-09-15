@@ -70,23 +70,24 @@ v0.3 在同一條路徑上加 `val lite embed`（pool 向量算一次、存檔�
 - 每個 fit 一份收據：步數與 epoch、`grid_sampler_2d_backward_cuda` warning 數（須恰為 9）、SDPA backend（MATH）、模型與 checkpoint 的 SHA-256、manifest 雜湊。
 - `docs/status/` 的核對腳本從證據磁碟重算全部檢查；v0.3 的 core-set 與 hybrid 選樣可從存檔向量逐筆重放。
 - 不宣稱 deterministic 或跨機可重現。原 Wave 0 的 gate 在位元界限下 FAIL，差異歸因到 `grid_sampler_2d_backward_cuda`；lite 研究不再要求位元相同，改以同機重播差作為量值尺度。
-- 收據、checkpoint 與逐字紀錄不進 git，放在 `<evidence-root>\`，另有一份逐檔雜湊核對過的備份。
+- 收據、checkpoint 與逐字紀錄不進 git，放在 repo 之外的私有證據目錄（文件中寫作 `<evidence-root>`），另有一份逐檔雜湊核對過的備份。
 
 ## 4. 執行
+
+本機路徑不寫進 repo：複製 `scripts/local-paths.example.ps1` 為 `scripts/local-paths.ps1`（git 忽略）並填入 `<evidence-root>`、`<data-root>` 等位置；啟動器從它取得預設值，核對腳本讀它設定的 `VAL_EVIDENCE_ROOT` 與 `VAL_DATA_ROOT`。以下命令都在 repo 根目錄執行。
 
 CPU 測試（不做 GPU 運算，但 checkpoint 載入器會讀 CUDA RNG 狀態，需看得到一顆 GPU）：
 
 ```powershell
-cd "<repo>"
 .venv\Scripts\python.exe -m pytest -q -p no:cacheprovider
 ```
 
-2026-09-15：997 passed、17 skipped、0 failed，約 2.5 分鐘。沒有 `pwsh` 時兩個 Wave 0 啟動器測試檔整檔 skip。
+2026-09-15：999 passed、17 skipped、0 failed，約 2.5 分鐘。沒有 `pwsh` 時兩個 Wave 0 啟動器測試檔整檔 skip。
 
 GPU 實驗只有一個啟動點 `scripts/run_lite_seed17.ps1`。先 dry-run，只檢查輸入，不啟動：
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File "<repo>\scripts\run_lite_seed17.ps1" -DryRun
+powershell -ExecutionPolicy Bypass -File scripts\run_lite_seed17.ps1 -DryRun
 ```
 
 正式執行依輪加參數；`-Seed 29`、`-Seed 43` 換 seed；`-WaitForGpu` 在 GPU 忙碌時每 30 秒等一次，最多 4 小時：
@@ -95,15 +96,17 @@ powershell -ExecutionPolicy Bypass -File "<repo>\scripts\run_lite_seed17.ps1" -D
 |---|---|
 | v0.2-lite | `-WaitForGpu` |
 | v0.2.1 | `-WaitForGpu -Rule fixed-epochs -Reference` |
-| v0.3 | `-WaitForGpu -Rule fixed-epochs -Arms random,coreset,hybrid -Embeddings "<evidence-root>\lite\data\czech\embeddings-dinov2-small.npz"` |
+| v0.3 | `-WaitForGpu -Rule fixed-epochs -Arms random,coreset,hybrid`（embeddings 路徑來自 local-paths） |
 
 v0.3 的向量先算一次（GPU 約 1 分鐘）：
 
 ```powershell
-<repo>\.venv\Scripts\val.exe lite embed --manifest "<evidence-root>\lite\data\czech\manifest.json" --images "<data-root>\rdd2022\czech\images" --snapshot "<evidence-root>\wave0\model_cache\snapshots\facebook--dinov2-small\ed25f3a31f01632728cabb09d1542f84ab7b0056" --output-dir "<evidence-root>\lite\data\czech" --device cuda
+.venv\Scripts\val.exe lite embed --manifest "<evidence-root>\lite\data\czech\manifest.json" --images "<data-root>\rdd2022\czech\images" --snapshot "<evidence-root>\wave0\model_cache\snapshots\facebook--dinov2-small\ed25f3a31f01632728cabb09d1542f84ab7b0056" --output-dir "<evidence-root>\lite\data\czech" --device cuda
 ```
 
-啟動器依序跑 2% 基線 → gate →（參考基線 → gate）→ 完整實驗（10 個 fit）。任一階段失敗即停，不重試、不覆寫；退出碼 2 為階段失敗、3 為 preflight 或 `RUNNING.lock`、4 為 GPU 忙碌。輸出在證據目錄的 `lite-czech-…\` 與 `run-lite-…log`；基線失敗時另寫 `failure.json`。不要同時開第二份。
+啟動器依序跑 2% 基線 → gate →（參考基線 → gate）→ 完整實驗（10 個 fit）。任一階段失敗即停，不重試、不覆寫；退出碼 2 為階段失敗、3 為 preflight 或 `RUNNING.lock`、4 為 GPU 忙碌。輸出在 `<evidence-root>\lite\` 的 `lite-czech-…\` 與 `run-lite-…log`；基線失敗時另寫 `failure.json`。不要同時開第二份。
+
+磁碟核對：先 `. .\scripts\local-paths.ps1`，再執行 `.venv\Scripts\python.exe docs\status\2026-09-11-v0.3-disk-verification.py`（v0.2.1 同理）。
 
 ## 5. 限制
 

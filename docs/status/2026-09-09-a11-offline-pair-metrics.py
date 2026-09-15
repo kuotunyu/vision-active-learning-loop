@@ -8,14 +8,14 @@ from __future__ import annotations
 
 import json
 import math
+import os
 import sys
 import time
 from pathlib import Path
 
-ROOT = Path(
-    r"<evidence-root>\wave0"
-    r"\a11-runs\wave0-a11-calibration-20260831T051426556Z-b3e22466"
-)
+if not os.environ.get("VAL_EVIDENCE_ROOT"):
+    sys.exit("set VAL_EVIDENCE_ROOT to the private evidence root; see scripts/local-paths.example.ps1")
+ROOT = Path(os.environ["VAL_EVIDENCE_ROOT"]) / "wave0" / "a11-runs" / "wave0-a11-calibration-20260831T051426556Z-b3e22466"
 OUT = Path(sys.argv[1])
 
 from vision_active_learning_loop.gates.statistical_replay import (  # noqa: E402
@@ -90,7 +90,7 @@ def main() -> int:
 
     result = {
         "diagnostic": "offline-cpu-recompute-of-a11-pair-metrics",
-        "source_root": str(ROOT),
+        "source_root": "<evidence-root>/wave0/a11-runs/wave0-a11-calibration-20260831T051426556Z-b3e22466",
         "note": (
             "Read-only recomputation over the frozen steven006 calibration replicas. "
             "Not an A11 receipt; not a Wave 0 pass; makes no claim beyond same-host replay spread."

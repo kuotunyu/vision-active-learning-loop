@@ -27,7 +27,9 @@ import os
 import sys
 from pathlib import Path
 
-EVIDENCE = Path(r"<evidence-root>/lite")
+if not os.environ.get("VAL_EVIDENCE_ROOT"):
+    sys.exit("set VAL_EVIDENCE_ROOT to the private evidence root; see scripts/local-paths.example.ps1")
+EVIDENCE = Path(os.environ["VAL_EVIDENCE_ROOT"]) / "lite"
 V02_LITE_MODEL_SHA256 = "bb736d5335079f9234a73724092b86433614fdbe7281e6b718161641e589a809"
 MANIFEST_SHA256 = "3d961040969e9008b1c534740f5c1c5b4f019c6394db7170acd99cddd8f9388d"
 RULE_B_STEPS = {0.02: 200, 0.05: 252, 0.10: 504, 0.20: 1008}
@@ -170,7 +172,7 @@ def verify(seed: int, rule: str) -> dict:
 
 
 def main() -> int:
-    results = {"evidence_root": str(EVIDENCE), "running_lock_present": (EVIDENCE / "RUNNING.lock").exists(), "runs": []}
+    results = {"evidence_root": "<evidence-root>/lite", "running_lock_present": (EVIDENCE / "RUNNING.lock").exists(), "runs": []}
     total = 0
     for rule in ("fixed-epochs", "fixed-steps"):
         for seed in SEEDS:

@@ -39,11 +39,12 @@ param(
     [switch]$DryRun,
     [string]$Arms = 'random,entropy,margin',
     [string]$Embeddings = '',
-    [string]$Manifest ='<evidence-root>\lite\data\czech\manifest.json',
-    [string]$PublicView = '<evidence-root>\lite\data\czech\public-pool.json',
-    [string]$Images = '<data-root>\rdd2022\czech\images',
-    [string]$Snapshot = '<evidence-root>\wave0\model_cache\snapshots\PekingU--rtdetr_r18vd\cc5b50f32f0100caaa3bd275343e2fb17762c73d',
-    [string]$OutputRoot = '<evidence-root>\lite'
+    [string]$Manifest = '',
+    [string]$PublicView = '',
+    [string]$Images = '',
+    [string]$Snapshot = '',
+    [string]$OutputRoot = '',
+    [string]$LocalPaths = ''
 )
 
 Set-StrictMode -Version 2.0
@@ -52,6 +53,28 @@ $ErrorActionPreference = 'Stop'
 $Worktree = Split-Path -Parent $PSScriptRoot
 $Val = Join-Path $Worktree '.venv\Scripts\val.exe'
 $Python = Join-Path $Worktree '.venv\Scripts\python.exe'
+
+# Machine-specific inputs live outside git in scripts/local-paths.ps1 (copy local-paths.example.ps1).
+# Explicit parameters win; the file only fills parameters that were left empty.
+if (-not $LocalPaths) { $LocalPaths = Join-Path $PSScriptRoot 'local-paths.ps1' }
+$LocalDefaults = @{}
+if (Test-Path -LiteralPath $LocalPaths) {
+    . $LocalPaths
+    if (-not ($LocalDefaults -is [hashtable])) {
+        Write-Host ('local-paths file must define $LocalDefaults = @{ ... }: ' + $LocalPaths)
+        exit 3
+    }
+}
+foreach ($name in @('Manifest', 'PublicView', 'Images', 'Snapshot', 'OutputRoot', 'Embeddings')) {
+    if (-not (Get-Variable -Name $name -ValueOnly) -and $LocalDefaults.ContainsKey($name)) {
+        Set-Variable -Name $name -Value ([string]$LocalDefaults[$name])
+    }
+}
+$unset = @(@('Manifest', 'PublicView', 'Images', 'Snapshot', 'OutputRoot') | Where-Object { -not (Get-Variable -Name $_ -ValueOnly) })
+if ($unset.Count -gt 0) {
+    Write-Host ('MISSING local paths       -' + ($unset -join ', -') + ': pass the parameter(s) or set them in ' + $LocalPaths + ' (see scripts/local-paths.example.ps1)')
+    exit 3
+}
 $GpuFreeMiB = 4000
 $GpuFreeUtil = 5
 $WaitSeconds = 30
