@@ -11,6 +11,9 @@ from pathlib import Path
 
 import pytest
 
+if shutil.which("pwsh") is None:
+    pytest.skip("PowerShell 7 (pwsh) is not on PATH; these tests drive the real pwsh", allow_module_level=True)
+
 _ROOT = Path(__file__).resolve().parents[2]
 _LAUNCHER = _ROOT / "scripts" / "start_wave0_a7.ps1"
 _RUNNER = _ROOT / "scripts" / "run_wave0_a7.ps1"

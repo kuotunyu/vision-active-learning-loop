@@ -5,6 +5,7 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import shutil
 import subprocess
 import tempfile
 from datetime import datetime
@@ -13,6 +14,9 @@ from pathlib import Path, PureWindowsPath
 import pytest
 
 from vision_active_learning_loop.gates import statistical_replay
+
+if shutil.which("pwsh") is None:
+    pytest.skip("PowerShell 7 (pwsh) is not on PATH; these tests drive the real pwsh", allow_module_level=True)
 
 _ROOT = Path(__file__).resolve().parents[2]
 _SCRIPT = _ROOT / "scripts" / "run_wave0_a11.ps1"

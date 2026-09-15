@@ -1,0 +1,15 @@
+{
+ "source": "<evidence-root>",
+ "destination": "<backup-root>\\vision-active-learning-loop-artifacts",
+ "source_files": 1871,
+ "destination_files": 1871,
+ "source_bytes": 40357195913,
+ "hash_checked_files": 1871,
+ "hash_checked_bytes": 40357195913,
+ "missing_in_destination": [],
+ "extra_in_destination": [],
+ "size_mismatch": [],
+ "hash_mismatch": [],
+ "seconds": 395.2,
+ "ok": true
+}

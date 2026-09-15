@@ -711,7 +711,12 @@ def test_tf32_is_disabled_and_runtime_controls_are_exact(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Catch seeded determinism leaving TF32, benchmarking, or fallback warnings enabled."""
-    monkeypatch.delenv("CUBLAS_WORKSPACE_CONFIG", raising=False)
+    if torch.cuda.is_initialized():
+        # An earlier test in the session already initialized CUDA; the workspace
+        # can then only be verified, not set (see the "before CUDA initialization" test).
+        monkeypatch.setenv("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
+    else:
+        monkeypatch.delenv("CUBLAS_WORKSPACE_CONFIG", raising=False)
 
     state = configure_determinism(seed=17)
 

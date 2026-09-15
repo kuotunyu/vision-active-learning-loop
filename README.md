@@ -43,7 +43,7 @@ v0.2.1 的預先登記協定（規則、常數、判定條件，看到結果前�
 | 項目 | 位置 |
 |---|---|
 | `main`（目前成果與重現入口） | 包含 v0.2-lite、v0.2.1 與已完成的 v0.3 五策略第一輪比較；`7cc404c` 記錄 v0.3 完成結果 |
-| 歷史 Wave 0 分支 `codex/wave0-model-contract`（非目前開發入口） | `10d866c`，147 個 commit，已推到私人 GitHub |
+| 歷史 Wave 0 分支 `codex/wave0-model-contract`（非目前開發入口） | 分支已刪除，遠端只剩 `main`；它的 147 個 commit 是 `main` 歷史的一部分（`10d866c` 是 `main` 的祖先，`git log 10d866c` 可看） |
 | 復活分支 `codex/revival-entry-20260909`（已併入 `main` 並於 2026-09-11 刪除） | 由 `10d866c` 分出。加入 README、現況文件、v0.2-lite 與 v0.2.1 協定、`lite/` 模組與兩輪結果；不改動任何既有 Wave 0 程式、測試、腳本或證據 |
 | GPU 執行證據（不進 Git） | `<evidence-root>\wave0`（2026-09-02 由 `D:\vision-active-learning-loop-artifacts` 搬入） |
 | 設計規格 | [docs/superpowers/specs/2026-08-23-vision-active-learning-loop-design.md](docs/superpowers/specs/2026-08-23-vision-active-learning-loop-design.md) |
@@ -125,8 +125,8 @@ cd "<repo>"
 
 - `.venv` 在 repo 根目錄（2026-09-11 移除 worktree 後以 `uv sync --frozen` 重建），Python 3.12.11 + torch 2.12.0+cu126 + transformers 5.15.0，與鎖定版本一致。
 - 測試不啟動 Docker、不做 GPU 運算，但 checkpoint 載入器會讀取 CUDA RNG 狀態，因此需要本機看得到一顆 GPU（不要設 `CUDA_VISIBLE_DEVICES=""`）。
-- 測試收集約需 4 分鐘（啟動器測試會解析大型 PowerShell 腳本）。
-- 2026-09-09 實測：773 passed、569 failed、14 skipped。569 個失敗全部是兩個啟動器測試檔找不到 `pwsh`（PowerShell 7 目前不在 PATH），Python 層測試全數通過。
+- 全套約 2.5 分鐘（2026-09-15，機器空閒時；有其他 I/O 負載時可到 6 分鐘）。
+- 2026-09-15 實測（全套）：997 passed、17 skipped、0 failed。兩個 Wave 0 啟動器測試檔（`tests/gates/test_wave0_a7_launcher.py`、`test_wave0_a11_launcher.py`）在 PATH 上沒有 `pwsh`（PowerShell 7）時整檔 skip，理由用 `-rs` 可見；其餘 skip 是 Windows 沒有 symlink 權限時的檔案系統契約測試，以及要設 `VAL_LITE_SNAPSHOT`／`VAL_DINOV2_SNAPSHOT` 才跑的整合測試。2026-09-09 的紀錄是 773 passed、569 failed，失敗全是那兩檔找不到 `pwsh`；此外 `tests/probes` 的 TF32 測試原本假設 CUDA 尚未初始化，v0.2.1 之後 `tests/lite/test_baseline.py` 會先初始化 CUDA，2026-09-15 改成該情況下只驗證工作區設定。
 - 2026-09-10 `tests/lite`：209 passed、7 skipped（skipped 是設 `VAL_LITE_SNAPSHOT` 才跑的 CPU 整合測試）；2026-09-11 在根目錄重建的環境：210 passed、7 skipped。
 - 用既有 12 個 GPU 副本在 CPU 上重算 A11 的 13 個配對指標，全部落在實務上限內；數字與腳本在 `docs/status/`。
 
