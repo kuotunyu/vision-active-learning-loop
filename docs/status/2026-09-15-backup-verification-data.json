@@ -1,0 +1,15 @@
+{
+ "source": "<data-root>",
+ "destination": "<backup-root>\\vision-active-learning-loop-data",
+ "source_files": 5662,
+ "destination_files": 5662,
+ "source_bytes": 13727135519,
+ "hash_checked_files": 5662,
+ "hash_checked_bytes": 13727135519,
+ "missing_in_destination": [],
+ "extra_in_destination": [],
+ "size_mismatch": [],
+ "hash_mismatch": [],
+ "seconds": 233.9,
+ "ok": true
+}
